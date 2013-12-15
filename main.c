@@ -1,5 +1,8 @@
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+#include <string.h>
 
 // Config
 
@@ -15,15 +18,156 @@
 int width;
 int height;
 
-void handle_input(GLFWwindow* window)
+// Render::Matrix
+
+float sqr(float a)
 {
- 	if (glfwGetKey(window, 'Q'))
-	{
-		glfwSetWindowShouldClose(window, GL_TRUE);
-	}
+	return a * a;
 }
 
-// Render::Matrix
+void normalize(float* x, float* y, float* z)
+{
+    float d = sqrtf(sqr(*x) + sqr(*y) + sqr(*z));
+    *x /= d;
+    *y /= d;
+    *z /= d;
+}
+
+void matrix_identity(float matrix[16])
+{
+    matrix[0] = 1;
+    matrix[1] = 0;
+    matrix[2] = 0;
+    matrix[3] = 0;
+    matrix[4] = 0;
+    matrix[5] = 1;
+    matrix[6] = 0;
+    matrix[7] = 0;
+    matrix[8] = 0;
+    matrix[9] = 0;
+    matrix[10] = 1;
+    matrix[11] = 0;
+    matrix[12] = 0;
+    matrix[13] = 0;
+    matrix[14] = 0;
+    matrix[15] = 1;
+}
+
+void matrix_translate(float matrix[16], float dx, float dy, float dz)
+{
+    matrix[0] = 1;
+    matrix[1] = 0;
+    matrix[2] = 0;
+    matrix[3] = 0;
+    matrix[4] = 0;
+    matrix[5] = 1;
+    matrix[6] = 0;
+    matrix[7] = 0;
+    matrix[8] = 0;
+    matrix[9] = 0;
+    matrix[10] = 1;
+    matrix[11] = 0;
+    matrix[12] = dx;
+    matrix[13] = dy;
+    matrix[14] = dz;
+    matrix[15] = 1;
+}
+
+void matrix_rotate(float matrix[16], float x, float y, float z, float angle)
+{
+    normalize(&x, &y, &z);
+    float s = sinf(angle);
+    float c = cosf(angle);
+    float m = 1 - c;
+    matrix[0] = m * x * x + c;
+    matrix[1] = m * x * y - z * s;
+    matrix[2] = m * z * x + y * s;
+    matrix[3] = 0;
+    matrix[4] = m * x * y + z * s;
+    matrix[5] = m * y * y + c;
+    matrix[6] = m * y * z - x * s;
+    matrix[7] = 0;
+    matrix[8] = m * z * x - y * s;
+    matrix[9] = m * y * z + x * s;
+    matrix[10] = m * z * z + c;
+    matrix[11] = 0;
+    matrix[12] = 0;
+    matrix[13] = 0;
+    matrix[14] = 0;
+    matrix[15] = 1;
+}
+
+void matrix_vector_multiply(float vector[4], float a[16], float b[4])
+{
+    float result[4];
+    for (int i = 0; i < 4; i++) {
+        float total = 0;
+        for (int j = 0; j < 4; j++) {
+            int p = j * 4 + i;
+            int q = j;
+            total += a[p] * b[q];
+        }
+        vector[i] = total;
+    }
+    memcpy(vector, result, 4 * sizeof(float));
+}
+
+void matrix_multiply(float matrix[16], float a[16], float b[16])
+{
+    float result[16];
+    for (int c = 0; c < 4; c++)
+    {
+        for (int r = 0; r < 4; r++)
+	{
+            float total = 0;
+            for (int i = 0; i < 4; i++)
+	    {
+                total += a[i * 4 + r] * b[c * 4 + i];
+            }
+            result[c * 4 + r] = total;
+        }
+    }
+    memcpy(matrix, result, 16 * sizeof(float));
+}
+
+void matrix_apply(float data[3], float matrix[16], int count)
+{
+	float vec[4] = {0, 0, 0, 1};
+	memcpy(vec, data, sizeof(float) * 3);
+        matrix_vector_multiply(vec, matrix, vec);
+	memcpy(data, vec, sizeof(float) * 3);
+}
+
+void mat_frustum(float* matrix, float left, float right, float bottom, float top, float znear, float zfar)
+{
+    float temp = 2.0 * znear;
+    float temp2 = right - left;
+    float temp3 = top - bottom;
+    float temp4 = zfar - znear;
+    matrix[0] = temp / temp2;
+    matrix[1] = 0.0;
+    matrix[2] = 0.0;
+    matrix[3] = 0.0;
+    matrix[4] = 0.0;
+    matrix[5] = temp / temp3;
+    matrix[6] = 0.0;
+    matrix[7] = 0.0;
+    matrix[8] = (right + left) / temp2;
+    matrix[9] = (top + bottom) / temp3;
+    matrix[10] = (-zfar - znear) / temp4;
+    matrix[11] = -1.0;
+    matrix[12] = 0.0;
+    matrix[13] = 0.0;
+    matrix[14] = (-temp * zfar) / temp4;
+    matrix[15] = 0.0;
+}
+
+void matrix_perspective(float matrix[16], float fov, float aspect, float znear, float zfar)
+{
+    float ymax = znear * tanf(fov * M_PI / 360.0);
+    float xmax = ymax * aspect;
+    mat_frustum(matrix, -xmax, xmax, -ymax, ymax, znear, zfar);
+}
 
 void matrix_ortho(float matrix[16], float left, float right, float bottom, float top, float near, float far)
 {
@@ -48,6 +192,17 @@ void matrix_ortho(float matrix[16], float left, float right, float bottom, float
 void matrix_2d(float matrix[16], int width, int height)
 {
     matrix_ortho(matrix, 0, width, 0, height, -1, 1);
+}
+
+void matrix_3d(float matrix[16], float x, float y, float z, float aspect, float fov)
+{
+	float a[16];
+	float b[16];
+	matrix_translate(a, -x, -y, -z);
+	matrix_rotate(b, 1, 0, 0, M_PI/2);
+	matrix_multiply(a, b, a);
+	matrix_perspective(b, fov, aspect, 0.1, 100.0);
+	matrix_multiply(matrix, b, a);
 }
 
 // Render::Buffers
@@ -194,7 +349,7 @@ GLuint load_program(const char* path1, const char* path2)
     return program;
 }
 
-// Text
+// Render::Text
 
 GLuint text_texture;
 GLuint text_program;
@@ -212,7 +367,7 @@ void text_init()
 	text_uv_loc = glGetAttribLocation(text_program, "uv");
 
 	glGenTextures(1, &text_texture);
-	glActiveTexture(GL_TEXTURE0);
+	//glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -285,57 +440,128 @@ void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, c
     glDeleteBuffers(1, &uv_buffer);
 }
 
+// Model
+
+typedef struct _Vector3f
+{
+	float x, y, z;
+} Vector3f;
+
+static Vector3f player = { 0, 0, 2 };
+
+double last_time;
+
+Vector3f vector(float x, float y, float z)
+{
+	Vector3f v;
+	v.x = x;
+	v.y = y;
+	v.z = z;
+	return v;
+}
+
+void model_init()
+{
+	last_time = glfwGetTime();
+}
+
+void model_frame(GLFWwindow* window)
+{
+	double time = glfwGetTime();
+	double dt = (time - last_time) < 0.5 ? (time - last_time) : 0.5;
+	last_time = time;
+
+ 	if (glfwGetKey(window, 'Q'))
+	{
+		glfwSetWindowShouldClose(window, GL_TRUE);
+	}
+
+	Vector3f dir = vector(0, 0, 0);
+ 	if (glfwGetKey(window, GLFW_KEY_LEFT))
+	{
+		dir.x -= 1;
+	}
+ 	if (glfwGetKey(window, GLFW_KEY_RIGHT))
+	{
+		dir.x += 1;
+	}
+ 	if (glfwGetKey(window, GLFW_KEY_UP))
+	{
+		dir.y += 1;
+	}
+ 	if (glfwGetKey(window, GLFW_KEY_DOWN))
+	{
+		dir.y -= 1;
+	}
+
+	float speed = 2;
+	player.x += dir.x * speed * dt;
+	player.y += dir.y * speed * dt;
+	player.z += dir.z * speed * dt;
+}
+
 // Render
 
 void render_init()
 {
 	glEnable(GL_CULL_FACE);
-	glClearColor(0.2, 0.2, 1.0, 1.0);
+	glClearColor(0, 0, 0, 1.0);
+}
+
+void render_world()
+{
+	float matrix[16];
+        matrix_3d(matrix, player.x, player.y, player.z, width / (float)height, 65.0);
+	
+	glEnable(GL_DEPTH_TEST);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	// Simple grid
+	glLoadMatrixf(matrix);
+	glLineWidth(1);
+	glBegin(GL_LINES);
+	int ix = player.x;
+	int iy = player.y;
+	for (int i = -20; i <= 20; i++)
+	{
+		if (ix+i < 0) glColor3f(1,0,0); else if (ix+i > 0) glColor3f(0,0,1); else glColor3f(1,1,1);
+		glVertex3f(ix + i, iy - 20, 0);
+		glVertex3f(ix + i, iy + 20, 0);
+	}
+	for (int i = -20; i <= 20; i++)
+	{
+		if (iy+i < 0) glColor3f(1,0,0); else if (iy+i > 0) glColor3f(0,0,1); else glColor3f(1,1,1);
+		glVertex3f(ix - 20, iy + i, 0);
+		glVertex3f(ix + 20, iy + i, 0);
+	}
+	glEnd();
+	
+	glDisable(GL_DEPTH_TEST);
+}
+
+void render_gui()
+{
+	float matrix[16];
+        matrix_2d(matrix, width, height);
+	
+	// Text test
+	glUseProgram(text_program);
+	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
+        glUniform1i(text_sampler_loc, 0/*text_texture*/);
+        char text_buffer[1024];
+        float ts = height / 80;
+        float tx = ts / 2;
+        float ty = height - ts;
+        snprintf(text_buffer, sizeof(text_buffer), "%.1f %.1f %.1f", player.x, player.y, player.z);
+        text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
+	glUseProgram(0);
 }
 
 void render_frame()
 {
 	glViewport(0, 0, width, height);
-	float ratio = width / (float) height;
-       
-	// Render 3D world
-	glEnable(GL_DEPTH_TEST);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-	// Render 2D gui
-	glDisable(GL_DEPTH_TEST);
-        
-	// Rotating triangle test
-	glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(-ratio, ratio, -1.f, 1.f, 1.f, -1.f); 
-	glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-        
-	glRotatef((float) glfwGetTime() * 50.f, 0.f, 0.f, 1.f);
-        glBegin(GL_TRIANGLES);
-        glColor3f(1.f, 0.f, 0.f);
-        glVertex3f(-0.6f, -0.4f, 0.f);
-        glColor3f(0.f, 1.f, 0.f);
-        glVertex3f(0.6f, -0.4f, 0.f);
-        glColor3f(0.f, 0.f, 1.f);
-        glVertex3f(0.f, 0.6f, 0.f);
-        glEnd();	
-	
-	// Text test
-	float matrix[16];
-        matrix_2d(matrix, width, height);
-	
-	glUseProgram(text_program);
-	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
-        glUniform1i(text_sampler_loc, 0);
-        char text_buffer[1024];
-        float ts = 24;
-        float tx = width / 2 + ts / 2;
-        float ty = height / 2 - ts;
-        snprintf(text_buffer, sizeof(text_buffer), "Example text!");
-        text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
-	glUseProgram(0);
+	render_world();
+	render_gui();
 }
 
 int main(int argc, char** argv)
@@ -354,6 +580,7 @@ int main(int argc, char** argv)
 	glfwSwapInterval(VSYNC);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
+	model_init();
 	text_init();
 	render_init();
 	
@@ -361,7 +588,7 @@ int main(int argc, char** argv)
 	{
 		glfwGetFramebufferSize(window, &width, &height);
 
-		handle_input(window);
+		model_frame(window);
 		render_frame();
 
 		glfwSwapBuffers(window);
