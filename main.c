@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -9,7 +8,7 @@
 #define VSYNC 1
 
 // GUI
-
+//#define GLFW_INCLUDE_GLCOREARB
 #ifndef __APPLE_CC__
     #include <GL/glew.h>
 #endif
@@ -303,7 +302,7 @@ GLuint make_shader(GLenum type, const char* source)
         glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
         GLchar* info = calloc(length, sizeof(GLchar));
         glGetShaderInfoLog(shader, length, NULL, info);
-        fprintf(stderr, "glCompileShader failed:\n%s\n", info);
+        fprintf(stderr, "glCompileShader failed on [%s]:\n%s\n", source, info);
         exit(1);
     }
     return shader;
@@ -365,6 +364,7 @@ void text_init()
 	text_sampler_loc = glGetUniformLocation(text_program, "sampler");
 	text_position_loc = glGetAttribLocation(text_program, "position");
 	text_uv_loc = glGetAttribLocation(text_program, "uv");
+	//glBindFragDataLocation(text_program, 0, "color");
 
 	glGenTextures(1, &text_texture);
 	//glActiveTexture(GL_TEXTURE0);
@@ -377,26 +377,26 @@ void text_init()
 void make_character(float* vertex, float* texture, float x, float y, float n, float m, char c)
 {
     float* v = vertex;
-    float* t = texture;
-    float s = 0.0625;
-    float a = s;
-    float b = s * 2;
-    int w = c - 32;
-    float du = (w % 16) * a;
-    float dv = 1 - (w / 16) * b - b;
-    float p = 0;
     *v++ = x - n; *v++ = y - m;
     *v++ = x + n; *v++ = y - m;
     *v++ = x + n; *v++ = y + m;
     *v++ = x - n; *v++ = y - m;
     *v++ = x + n; *v++ = y + m;
-    *(v++) = x - n; *(v++) = y + m;
-    *(t++) = du + 0; *(t++) = dv + p;
-    *(t++) = du + a; *(t++) = dv + p;
-    *(t++) = du + a; *(t++) = dv + b - p;
-    *(t++) = du + 0; *(t++) = dv + p;
-    *(t++) = du + a; *(t++) = dv + b - p;
-    *(t++) = du + 0; *(t++) = dv + b - p;
+    *v++ = x - n; *v++ = y + m;
+    
+    float a = 0.0625;
+    float b = a * 2;
+    int w = c - 32;
+    float du = (w % 16) * a;
+    float dv = 1 - (w / 16) * b - b;
+    float p = 0;
+    float* t = texture;
+    *t++ = du + 0; *t++ = dv + p;
+    *t++ = du + a; *t++ = dv + p;
+    *t++ = du + a; *t++ = dv + b - p;
+    *t++ = du + 0; *t++ = dv + p;
+    *t++ = du + a; *t++ = dv + b - p;
+    *t++ = du + 0; *t++ = dv + b - p;
 }        
 
 void text_gen_buffers(GLuint* position_buffer, GLuint* uv_buffer, float x, float y, float n, char* text)
@@ -419,12 +419,14 @@ void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnableVertexAttribArray(text_position_loc);
     glEnableVertexAttribArray(text_uv_loc);
+
     glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
     glVertexAttribPointer(position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
     glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
     glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glDrawArrays(GL_TRIANGLES, 0, length * 6);
+
     glDisableVertexAttribArray(position_loc);
     glDisableVertexAttribArray(uv_loc);
     glDisable(GL_BLEND);
@@ -442,23 +444,11 @@ void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, c
 
 // Model
 
-typedef struct _Vector3f
-{
-	float x, y, z;
-} Vector3f;
+typedef float Vector3f[3];
 
 static Vector3f player = { 0, 0, 2 };
 
 double last_time;
-
-Vector3f vector(float x, float y, float z)
-{
-	Vector3f v;
-	v.x = x;
-	v.y = y;
-	v.z = z;
-	return v;
-}
 
 void model_init()
 {
@@ -476,34 +466,33 @@ void model_frame(GLFWwindow* window)
 		glfwSetWindowShouldClose(window, GL_TRUE);
 	}
 
-	Vector3f dir = vector(0, 0, 0);
+	Vector3f dir = { 0, 0, 0 };
  	if (glfwGetKey(window, GLFW_KEY_LEFT))
 	{
-		dir.x -= 1;
+		dir[0] -= 1;
 	}
  	if (glfwGetKey(window, GLFW_KEY_RIGHT))
 	{
-		dir.x += 1;
+		dir[0] += 1;
 	}
  	if (glfwGetKey(window, GLFW_KEY_UP))
 	{
-		dir.y += 1;
+		dir[1] += 1;
 	}
  	if (glfwGetKey(window, GLFW_KEY_DOWN))
 	{
-		dir.y -= 1;
+		dir[1] -= 1;
 	}
 
 	float speed = 2;
-	player.x += dir.x * speed * dt;
-	player.y += dir.y * speed * dt;
-	player.z += dir.z * speed * dt;
+	for (int i = 0; i < 3; i++) player[i] += dir[i] * speed * dt;
 }
 
 // Render
 
 void render_init()
 {
+	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
 	glEnable(GL_CULL_FACE);
 	glClearColor(0, 0, 0, 1.0);
 }
@@ -511,7 +500,7 @@ void render_init()
 void render_world()
 {
 	float matrix[16];
-        matrix_3d(matrix, player.x, player.y, player.z, width / (float)height, 65.0);
+        matrix_3d(matrix, player[0], player[1], player[2], width / (float)height, 65.0);
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -520,15 +509,15 @@ void render_world()
 	glLoadMatrixf(matrix);
 	glLineWidth(1);
 	glBegin(GL_LINES);
-	int ix = player.x;
-	int iy = player.y;
-	for (int i = -20; i <= 20; i++)
+	int ix = player[0];
+	int iy = player[1];
+	for (int i = -30; i <= 30; i++)
 	{
-		if (ix+i < 0) glColor3f(1,0,0); else if (ix+i > 0) glColor3f(0,0,1); else glColor3f(1,1,1);
+		if (ix+i < 0) glColor3f(0,1,0); else if (ix+i > 0) glColor3f(1,1,0); else glColor3f(1,1,1);
 		glVertex3f(ix + i, iy - 20, 0);
 		glVertex3f(ix + i, iy + 20, 0);
 	}
-	for (int i = -20; i <= 20; i++)
+	for (int i = -30; i <= 30; i++)
 	{
 		if (iy+i < 0) glColor3f(1,0,0); else if (iy+i > 0) glColor3f(0,0,1); else glColor3f(1,1,1);
 		glVertex3f(ix - 20, iy + i, 0);
@@ -552,9 +541,29 @@ void render_gui()
         float ts = height / 80;
         float tx = ts / 2;
         float ty = height - ts;
-        snprintf(text_buffer, sizeof(text_buffer), "%.1f %.1f %.1f", player.x, player.y, player.z);
+        snprintf(text_buffer, sizeof(text_buffer), "%.1f %.1f %.1f", player[0], player[1], player[2]);
         text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
 	glUseProgram(0);
+
+	#ifdef NEVER
+	// Simple quad
+	glUseProgram(text_program);
+	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
+        glUniform1i(text_sampler_loc, 0/*text_texture*/);
+
+	GLuint vao_quad;
+	glGenVertexArrays(1, &vao_quad);
+        glBindVertexArray(vao_quad);
+
+	float vertices[] = { 0, 0, 100, 0, 0, 100 };
+	int v = gen_buffer(GL_ARRAY_BUFFER, sizeof(vertices), vertices);
+	float colors[] = { 0, 0, 100, 0, 0, 100 };
+	int c = gen_buffer(GL_ARRAY_BUFFER, sizeof(colors), colors);
+
+        glDrawArrays(GL_QUADS, 0, 4);
+
+	glDeleteVertexArrays(1, &vao_quad);
+	#endif
 }
 
 void render_frame()
@@ -570,6 +579,12 @@ int main(int argc, char** argv)
 	{
 		return 0;
 	}
+
+	//glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+	//glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+	//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+	//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
 	GLFWwindow* window = glfwCreateWindow(1024, 768, "Arena", NULL, NULL);
 	if (!window)
 	{
@@ -581,8 +596,8 @@ int main(int argc, char** argv)
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
 	model_init();
-	text_init();
 	render_init();
+	text_init();
 	
 	while (!glfwWindowShouldClose(window))
 	{
