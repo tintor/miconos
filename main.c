@@ -581,65 +581,84 @@ void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, c
 
 // Map
 
-typedef unsigned char byte;
+typedef unsigned char block;
 
-#define BLOCK_SIZE 8
+#define RENDER_LIMIT 61
+#define CHUNK_SIZE 16
 
-typedef struct _Block
+#define MAP_SIZE 128 // >= (1 + RENDER_LIMIT * 2 + 4)
+block* map_cache;
+int* map_height_cache;
+
+long map_xmin = 1000000000, map_ymin = 1000000000, map_zmin = 1000000000;
+
+long mod(long x)
 {
-	byte voxel[BLOCK_SIZE][BLOCK_SIZE][BLOCK_SIZE];
-} Block;
+	return ((unsigned long)x) % MAP_SIZE;
+}
 
-typedef struct _Map
+block map_get(long x, long y, long z)
 {
-	//
-} Map;
+	return map_cache[(mod(x) * MAP_SIZE + mod(y)) * MAP_SIZE + mod(z)];
+}
 
-Map map;
+float map_refresh_time_ms = 0;
 
-void map_set_voxel(int x, int y, int z, byte c)
+// extend world if player moves
+void map_refresh(long player_x, long player_y, long player_z)
 {
-} 
+	if (player_x == map_xmin + MAP_SIZE / 2 && player_y == map_ymin + MAP_SIZE / 2 && player_z == map_zmin + MAP_SIZE / 2)
+	{
+		return;
+	}
 
-byte map_get_voxel(int x, int y)
-{
-	return 0;
+	float time_start = glfwGetTime();
+	// TODO simplex2 is very slow!
+	long xmin = player_x - MAP_SIZE / 2;
+	long ymin = player_y - MAP_SIZE / 2;
+	long zmin = player_z - MAP_SIZE / 2;
+	for (long x = xmin; x < xmin + MAP_SIZE; x++)
+	{
+		for (long y = ymin; y < ymin + MAP_SIZE; y++)
+		{
+			long q = mod(x) * MAP_SIZE + mod(y);
+			if (mod(x) + map_xmin != x || mod(y) + map_ymin != y)			
+			{
+				map_height_cache[q] = (simplex2(x * 0.007, y * 0.007, 4, 1.0 / 2, 2) - 0.5) * 60;
+			}
+			long i = map_height_cache[q];
+			for (long z = zmin; z < zmin + MAP_SIZE; z++)
+			{
+				if (mod(x) + map_xmin != x || mod(y) + map_ymin != y || mod(z) + map_zmin != z)
+				{
+					block b = (z > i) ? 0 : (1 + simplex2(x * -0.044, y * -0.044, 2, 1.0 / 2, 2) * 10);
+					map_cache[q * MAP_SIZE + mod(z)] = b;
+				}
+			}
+		} 
+	}
+	map_xmin = xmin;
+	map_ymin = ymin;
+	map_zmin = zmin;
+	map_refresh_time_ms = (glfwGetTime() - time_start) * 1000;
 }
 
 // Model
 
 static Vector3f player_position = { 0, 0, 2 };
 static float player_yaw = 0, player_pitch = 0;
-double last_time;
+float last_time;
 
 void model_init(GLFWwindow* window)
 {
 	last_time = glfwGetTime();
 	glfwSetCursorPos(window, 0, 0);
+	map_cache = malloc(MAP_SIZE * MAP_SIZE * MAP_SIZE * sizeof(block));
+	map_height_cache = malloc(MAP_SIZE * MAP_SIZE * sizeof(int));
 }
 
-void model_frame(GLFWwindow* window)
+void model_move_player(GLFWwindow* window, double dt)
 {
-	double time = glfwGetTime();
-	double dt = (time - last_time) < 0.5 ? (time - last_time) : 0.5;
-	last_time = time;
-
- 	if (glfwGetKey(window, GLFW_KEY_ESCAPE))
-	{
-		glfwSetWindowShouldClose(window, GL_TRUE);
-	}
-
-	double cursor_x, cursor_y;
-	glfwGetCursorPos(window, &cursor_x, &cursor_y);
-	if (cursor_x != 0 || cursor_y != 0)
-	{
-		player_yaw += cursor_x / 100;
-		player_pitch += cursor_y / 100;
-		if (player_pitch > M_PI / 2) player_pitch = M_PI / 2;
-		if (player_pitch < -M_PI / 2) player_pitch = -M_PI / 2;
-		glfwSetCursorPos(window, 0, 0);
-	}
-	
 	Matrix4f ma, mb;
 	matrix_rotate(mb, 0, 0, 1, player_yaw);
 	matrix_rotate(ma, 1, 0, 0, player_pitch);
@@ -677,6 +696,33 @@ void model_frame(GLFWwindow* window)
 		float speed = 5;
 		for (int i = 0; i < 3; i++) player_position[i] += dir[i] * speed * dt;
 	}
+}
+
+void model_frame(GLFWwindow* window)
+{
+	double time = glfwGetTime();
+	double dt = (time - last_time) < 0.5 ? (time - last_time) : 0.5;
+	last_time = time;
+
+ 	if (glfwGetKey(window, GLFW_KEY_ESCAPE))
+	{
+		glfwSetWindowShouldClose(window, GL_TRUE);
+	}
+
+	double cursor_x, cursor_y;
+	glfwGetCursorPos(window, &cursor_x, &cursor_y);
+	if (cursor_x != 0 || cursor_y != 0)
+	{
+		player_yaw += cursor_x / 100;
+		player_pitch += cursor_y / 100;
+		if (player_pitch > M_PI / 2) player_pitch = M_PI / 2;
+		if (player_pitch < -M_PI / 2) player_pitch = -M_PI / 2;
+		glfwSetCursorPos(window, 0, 0);
+	}
+	
+	model_move_player(window, dt);
+	
+	map_refresh(player_position[0], player_position[1], player_position[2]);
 }
 
 // Render
@@ -717,78 +763,88 @@ void light_color(float nx, float ny, float nz)
 	glColor3f(c, c, c);
 }
 
-void render_cube(int x, int y)
+void render_block(long x, long y, long z, int tx, int ty)
 {
-	float ax = x / 16.0, ay = y / 16.0, bx = (x + 1) / 16.0, by = (y + 1) / 16.0;
-	glBegin(GL_QUADS);
-	// xmin
-	light_color(-1, 0, 0);
-	glTexCoord2f(ax, ay); glVertex3f(0, 0, 0);
-	glTexCoord2f(ax, by); glVertex3f(0, 0, 1);
-	glTexCoord2f(bx, by); glVertex3f(0, 1, 1);
-	glTexCoord2f(bx, ay); glVertex3f(0, 1, 0);
-	// xmax	
-	light_color(1, 0, 0);
-	glTexCoord2f(ax, ay); glVertex3f(1, 0, 0);
-	glTexCoord2f(ax, by); glVertex3f(1, 1, 0);
-	glTexCoord2f(bx, by); glVertex3f(1, 1, 1);
-	glTexCoord2f(bx, ay); glVertex3f(1, 0, 1);
-	// ymin
-	light_color(0, -1, 0);
-	glTexCoord2f(ax, ay); glVertex3f(0, 0, 0);
-	glTexCoord2f(ax, by); glVertex3f(1, 0, 0);
-	glTexCoord2f(bx, by); glVertex3f(1, 0, 1);
-	glTexCoord2f(bx, ay); glVertex3f(0, 0, 1);
-	// ymax
-	light_color(0, 1, 0);
-	glTexCoord2f(ax, ay); glVertex3f(0, 1, 0);
-	glTexCoord2f(ax, by); glVertex3f(0, 1, 1);
-	glTexCoord2f(bx, by); glVertex3f(1, 1, 1);
-	glTexCoord2f(bx, ay); glVertex3f(1, 1, 0);
-	// zmin
-	light_color(0, 0, -1);
-	glTexCoord2f(ax, ay); glVertex3f(0, 0, 0);
-	glTexCoord2f(ax, by); glVertex3f(0, 1, 0);
-	glTexCoord2f(bx, by); glVertex3f(1, 1, 0);
-	glTexCoord2f(bx, ay); glVertex3f(1, 0, 0);
-	// zmax
-	light_color(0, 0, 1);
-	glTexCoord2f(ax, ay); glVertex3f(0, 0, 1);
-	glTexCoord2f(ax, by); glVertex3f(1, 0, 1);
-	glTexCoord2f(bx, by); glVertex3f(1, 1, 1);
-	glTexCoord2f(bx, ay); glVertex3f(0, 1, 1);
-	glEnd();
+	float ax = tx / 16.0, ay = ty / 16.0, bx = (tx + 1) / 16.0, by = (ty + 1) / 16.0;
+	if (map_get(x - 1, y, z) == 0)
+	{
+		light_color(-1, 0, 0);
+		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+0);
+		glTexCoord2f(ax, by); glVertex3f(x+0, y+0, z+1);
+		glTexCoord2f(bx, by); glVertex3f(x+0, y+1, z+1);
+		glTexCoord2f(bx, ay); glVertex3f(x+0, y+1, z+0);
+	}
+	if (map_get(x + 1, y, z) == 0)
+	{
+		light_color(1, 0, 0);
+		glTexCoord2f(ax, ay); glVertex3f(x+1, y+0, z+0);
+		glTexCoord2f(ax, by); glVertex3f(x+1, y+1, z+0);
+		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+1);
+		glTexCoord2f(bx, ay); glVertex3f(x+1, y+0, z+1);
+	}
+	if (map_get(x, y - 1, z) == 0)
+	{
+		light_color(0, -1, 0);
+		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+0);
+		glTexCoord2f(ax, by); glVertex3f(x+1, y+0, z+0);
+		glTexCoord2f(bx, by); glVertex3f(x+1, y+0, z+1);
+		glTexCoord2f(bx, ay); glVertex3f(x+0, y+0, z+1);
+	}
+	if (map_get(x, y + 1, z) == 0)
+	{
+		light_color(0, 1, 0);
+		glTexCoord2f(ax, ay); glVertex3f(x+0, y+1, z+0);
+		glTexCoord2f(ax, by); glVertex3f(x+0, y+1, z+1);
+		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+1);
+		glTexCoord2f(bx, ay); glVertex3f(x+1, y+1, z+0);
+	}
+	if (map_get(x, y, z - 1) == 0)
+	{
+		light_color(0, 0, -1);
+		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+0);
+		glTexCoord2f(ax, by); glVertex3f(x+0, y+1, z+0);
+		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+0);
+		glTexCoord2f(bx, ay); glVertex3f(x+1, y+0, z+0);
+	}
+	if (map_get(x, y, z + 1) == 0)
+	{
+		light_color(0, 0, 1);
+		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+1);
+		glTexCoord2f(ax, by); glVertex3f(x+1, y+0, z+1);
+		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+1);
+		glTexCoord2f(bx, ay); glVertex3f(x+0, y+1, z+1);
+	}
 }
 
-#define RENDER_LIMIT 50
+float block_render_time_ms = 0;
 
 void render_world_blocks()
 {
+	float time_start = glfwGetTime();
 	glEnable(GL_TEXTURE_2D);
 	glBindTexture(GL_TEXTURE_2D, block_texture);
-	int px = player_position[0];
-	int py = player_position[1];
-	int pz = player_position[2];
-	for (int x = -RENDER_LIMIT; x <= RENDER_LIMIT; x++)
+	long px = player_position[0];
+	long py = player_position[1];
+	long pz = player_position[2];
+	glBegin(GL_QUADS);
+	for (long x = px - RENDER_LIMIT; x <= px + RENDER_LIMIT; x++)
 	{
-		for (int y = -RENDER_LIMIT; y <= RENDER_LIMIT; y++)
+		// TODO lower bound on ymin and ymax here, sphere instead of cube
+		for (long y = py - RENDER_LIMIT; y <= py + RENDER_LIMIT; y++)
 		{
-			int ti = simplex2((px + x)*0.02, (py + y)*0.02, 3, 1.0 / 2, 2) * 8;
-			float i = simplex2((px + x)*0.01, (py + y)*0.01, 5, 1.0 / 2, 2); 
-			float w = (i - 0.5) * 30; 
-			for (int z = -RENDER_LIMIT / 2; z <= RENDER_LIMIT / 2; z++)
+			for (long z = pz - RENDER_LIMIT; z <= pz + RENDER_LIMIT; z++)
 			{
-				if (w > pz + z)
+				block v = map_get(x, y, z);
+				if (v != 0)
 				{
-					glPushMatrix();
-					glTranslatef(px + x, py + y, pz + z);
-					render_cube(ti, 0);
-					glPopMatrix();
+					render_block(x, y, z, v - 1, 0);
 				}
 			}
 		}
 	}
+	glEnd();
 	glDisable(GL_TEXTURE_2D);
+	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
 }
 
 void render_world()
@@ -819,7 +875,7 @@ void render_gui()
         float ts = height / 80;
         float tx = ts / 2;
         float ty = height - ts;
-        snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f", player_position[0], player_position[1], player_position[2]);
+        snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, blocks: %.0fms, map: %.0f", player_position[0], player_position[1], player_position[2], block_render_time_ms, map_refresh_time_ms);
         text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
 	glUseProgram(0);
 
