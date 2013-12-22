@@ -19,17 +19,116 @@ int height;
 
 // Render::Matrix
 
-float sqr(float a)
+typedef float Vector3f[3];
+typedef float Vector4f[4];
+typedef float Matrix3f[9];
+typedef float Matrix4f[16];
+
+float dot(Vector3f a, Vector3f b)
 {
-	return a * a;
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
 }
 
 void normalize(float* x, float* y, float* z)
 {
-    float d = sqrtf(sqr(*x) + sqr(*y) + sqr(*z));
+    float d = sqrtf(*x**x + *y**y + *z**z);
     *x /= d;
     *y /= d;
     *z /= d;
+}
+
+void normalize3(Vector3f a)
+{
+    float d = sqrtf(dot(a, a));
+    a[0] /= d;
+    a[1] /= d;
+    a[2] /= d;
+}
+
+void normalize4(Vector4f a)
+{
+	float d = sqrtf(a[0]*a[0] + a[1]*a[1] + a[2]*a[2] + a[3]*a[3]);
+	a[0] /= d;
+	a[1] /= d;
+	a[2] /= d;
+	a[3] /= d;
+}
+
+void quaternion_from_axis_angle(Vector4f quat, Vector3f axis, float angle)
+{
+	float d = sinf(angle / 2) / sqrt(dot(axis, axis));
+	quat[0] = axis[0] * d;
+	quat[1] = axis[1] * d;
+	quat[2] = axis[2] * d;
+	quat[3] = cosf(angle / 2);
+}
+
+void quaternion_multiply(Vector4f quat, Vector4f a, Vector4f b)
+{
+	float ix = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
+	float iy = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
+	float iz = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
+	float iw = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
+	quat[0] = ix;
+	quat[1] = iy;
+	quat[2] = iz;
+	quat[3] = iw;
+}
+
+void quaternion_to_matrix3(Vector4f quat, Matrix3f mat)
+{
+	float x = quat[0];
+	float y = quat[1];
+	float z = quat[2];
+	float w = quat[3];
+
+	float dx = x * 2, x2 = x * dx, wx = w * dx;
+	float dy = y * 2, xy = x * dy, y2 = y * dy, wy = w * dy;
+	float dz = z * 2, xz = x * dz, yz = y * dz, z2 = z * dz, wz = w * dz;
+
+	mat[0] = 1 - y2 - z2;
+	mat[1] = xy - wz;
+	mat[2] = xz + wy;
+
+	mat[3] = xy + wz;
+	mat[4] = 1 - x2 - z2;
+	mat[5] = yz - wx;
+
+	mat[6] = xz - wy;
+	mat[7] = yz + wx;
+	mat[8] = 1 - x2 - y2;
+}
+
+void quaternion_to_matrix4(Vector4f quat, Matrix4f mat, int inverse)
+{
+	float x = quat[0];
+	float y = quat[1];
+	float z = quat[2];
+	float w = quat[3];
+
+	float dx = x * 2, x2 = x * dx, wx = w * dx;
+	float dy = y * 2, xy = x * dy, y2 = y * dy, wy = w * dy;
+	float dz = z * 2, xz = x * dz, yz = y * dz, z2 = z * dz, wz = w * dz;
+
+	mat[0] = 1 - y2 - z2;
+	mat[1] = inverse ? xy + wz : xy - wz;
+	mat[2] = inverse ? xz - wy : xz + wy;
+	mat[3] = 0;
+
+	mat[4] = inverse ? xy - wz : xy + wz;
+	mat[5] = 1 - x2 - z2;
+	mat[6] = inverse ? yz + wx : yz - wx;
+	mat[7] = 0;
+
+	mat[8] = inverse ? xz + wy : xz - wy;
+	mat[9] = inverse ? yz - wx : yz + wx;
+	mat[10] = 1 - x2 - y2;
+	mat[11] = 0;
+
+	mat[12] = 0;
+	mat[13] = 0;
+	mat[14] = 0;
+	mat[15] = 1;
 }
 
 void matrix_identity(float matrix[16])
@@ -52,7 +151,7 @@ void matrix_identity(float matrix[16])
     matrix[15] = 1;
 }
 
-void matrix_translate(float matrix[16], float dx, float dy, float dz)
+void matrix_translate(float matrix[16], Vector3f d)
 {
     matrix[0] = 1;
     matrix[1] = 0;
@@ -66,9 +165,29 @@ void matrix_translate(float matrix[16], float dx, float dy, float dz)
     matrix[9] = 0;
     matrix[10] = 1;
     matrix[11] = 0;
-    matrix[12] = dx;
-    matrix[13] = dy;
-    matrix[14] = dz;
+    matrix[12] = d[0];
+    matrix[13] = d[1];
+    matrix[14] = d[2];
+    matrix[15] = 1;
+}
+
+void matrix_translate_inverse(float matrix[16], Vector3f d)
+{
+    matrix[0] = 1;
+    matrix[1] = 0;
+    matrix[2] = 0;
+    matrix[3] = 0;
+    matrix[4] = 0;
+    matrix[5] = 1;
+    matrix[6] = 0;
+    matrix[7] = 0;
+    matrix[8] = 0;
+    matrix[9] = 0;
+    matrix[10] = 1;
+    matrix[11] = 0;
+    matrix[12] = -d[0];
+    matrix[13] = -d[1];
+    matrix[14] = -d[2];
     matrix[15] = 1;
 }
 
@@ -96,7 +215,7 @@ void matrix_rotate(float matrix[16], float x, float y, float z, float angle)
     matrix[15] = 1;
 }
 
-void matrix_vector_multiply(float vector[4], float a[16], float b[4])
+void matrix_vector_multiply(Vector4f vector, float a[16], float b[4])
 {
     float result[4];
     for (int i = 0; i < 4; i++) {
@@ -129,7 +248,7 @@ void matrix_multiply(float matrix[16], float a[16], float b[16])
     memcpy(matrix, result, 16 * sizeof(float));
 }
 
-void matrix_apply(float data[3], float matrix[16], int count)
+void matrix_apply(float data[3], float matrix[16])
 {
 	float vec[4] = {0, 0, 0, 1};
 	memcpy(vec, data, sizeof(float) * 3);
@@ -193,12 +312,13 @@ void matrix_2d(float matrix[16], int width, int height)
     matrix_ortho(matrix, 0, width, 0, height, -1, 1);
 }
 
-void matrix_3d(float matrix[16], float x, float y, float z, float aspect, float fov)
+void matrix_3d(float matrix[16], Vector3f position, Vector4f orientation, float aspect, float fov)
 {
 	float a[16];
 	float b[16];
-	matrix_translate(a, -x, -y, -z);
-	matrix_rotate(b, 1, 0, 0, M_PI/2);
+	float c[16];
+	matrix_translate_inverse(a, position);
+	quaternion_to_matrix4(orientation, b, 1/*inverse*/);
 	matrix_multiply(a, b, a);
 	matrix_perspective(b, fov, aspect, 0.1, 100.0);
 	matrix_multiply(matrix, b, a);
@@ -444,15 +564,16 @@ void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, c
 
 // Model
 
-typedef float Vector3f[3];
-
-static Vector3f player = { 0, 0, 2 };
+static Vector3f player_position = { 0, 0, 2 };
+static Vector4f player_orientation;
 
 double last_time;
 
 void model_init()
 {
 	last_time = glfwGetTime();
+	Vector3f axis = { 1, 0, 0 };
+	quaternion_from_axis_angle(player_orientation, axis, -M_PI / 2);
 }
 
 void model_frame(GLFWwindow* window)
@@ -461,31 +582,64 @@ void model_frame(GLFWwindow* window)
 	double dt = (time - last_time) < 0.5 ? (time - last_time) : 0.5;
 	last_time = time;
 
- 	if (glfwGetKey(window, 'Q'))
+ 	if (glfwGetKey(window, GLFW_KEY_ESCAPE))
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
 	}
 
+	double cursor_x, cursor_y;
+	glfwGetCursorPos(window, &cursor_x, &cursor_y);
+	if (cursor_x != 0 || cursor_y != 0)
+	{
+		Vector4f quat;
+		Vector3f axis = { cursor_y, cursor_x, 0 };
+		float angle = sqrt(dot(axis, axis)) / 150;
+		normalize3(axis);
+		quaternion_from_axis_angle(quat, axis, angle);
+		quaternion_multiply(player_orientation, quat, player_orientation);
+		glfwSetCursorPos(window, 0, 0);
+	}
+	
+	Matrix3f m;
+	quaternion_to_matrix3(player_orientation, m);
 	Vector3f dir = { 0, 0, 0 };
- 	if (glfwGetKey(window, GLFW_KEY_LEFT))
+ 	if (glfwGetKey(window, 'A'))
 	{
-		dir[0] -= 1;
+		for (int i = 0; i < 3; i++) dir[i] -= m[i];
 	}
- 	if (glfwGetKey(window, GLFW_KEY_RIGHT))
+ 	if (glfwGetKey(window, 'D'))
 	{
-		dir[0] += 1;
+		for (int i = 0; i < 3; i++) dir[i] += m[i];
 	}
- 	if (glfwGetKey(window, GLFW_KEY_UP))
+ 	if (glfwGetKey(window, 'W'))
 	{
-		dir[1] += 1;
+		for (int i = 0; i < 3; i++) dir[i] -= m[i+6];
 	}
- 	if (glfwGetKey(window, GLFW_KEY_DOWN))
+ 	if (glfwGetKey(window, 'S'))
 	{
-		dir[1] -= 1;
+		for (int i = 0; i < 3; i++) dir[i] += m[i+6];
+	}
+ 	if (glfwGetKey(window, 'Q'))
+	{
+		Vector4f quat;
+		Vector3f a = { 0, 0, 1 };
+		quaternion_from_axis_angle(quat, a, -dt*1.5);
+		quaternion_multiply(player_orientation, quat, player_orientation);
+	}
+ 	if (glfwGetKey(window, 'E'))
+	{
+		Vector4f quat;
+		Vector3f a = { 0, 0, 1 };
+		quaternion_from_axis_angle(quat, a, +dt*1.5);
+		quaternion_multiply(player_orientation, quat, player_orientation);
 	}
 
-	float speed = 2;
-	for (int i = 0; i < 3; i++) player[i] += dir[i] * speed * dt;
+	if (dir[0] != 0 || dir[1] != 0 || dir[2] != 0)
+	{
+		normalize3(dir);
+		float speed = 2;
+		for (int i = 0; i < 3; i++) player_position[i] += dir[i] * speed * dt;
+	}
 }
 
 // Render
@@ -500,30 +654,36 @@ void render_init()
 void render_world()
 {
 	float matrix[16];
-        matrix_3d(matrix, player[0], player[1], player[2], width / (float)height, 65.0);
+        matrix_3d(matrix, player_position, player_orientation, width / (float)height, 65.0);
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	// Simple grid
 	glLoadMatrixf(matrix);
-	glLineWidth(1);
+	glLineWidth(2);
+	glEnable(GL_BLEND);
+	glEnable(GL_LINE_SMOOTH);
+	glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glBegin(GL_LINES);
-	int ix = player[0];
-	int iy = player[1];
+	int ix = player_position[0];
+	int iy = player_position[1];
 	for (int i = -30; i <= 30; i++)
 	{
 		if (ix+i < 0) glColor3f(0,1,0); else if (ix+i > 0) glColor3f(1,1,0); else glColor3f(1,1,1);
-		glVertex3f(ix + i, iy - 20, 0);
-		glVertex3f(ix + i, iy + 20, 0);
+		glVertex3f(ix + i, iy - 30, 0);
+		glVertex3f(ix + i, iy + 30, 0);
 	}
 	for (int i = -30; i <= 30; i++)
 	{
 		if (iy+i < 0) glColor3f(1,0,0); else if (iy+i > 0) glColor3f(0,0,1); else glColor3f(1,1,1);
-		glVertex3f(ix - 20, iy + i, 0);
-		glVertex3f(ix + 20, iy + i, 0);
+		glVertex3f(ix - 30, iy + i, 0);
+		glVertex3f(ix + 30, iy + i, 0);
 	}
 	glEnd();
+	glDisable(GL_BLEND);
+	glDisable(GL_LINE_SMOOTH);
 	
 	glDisable(GL_DEPTH_TEST);
 }
@@ -541,7 +701,7 @@ void render_gui()
         float ts = height / 80;
         float tx = ts / 2;
         float ty = height - ts;
-        snprintf(text_buffer, sizeof(text_buffer), "%.1f %.1f %.1f", player[0], player[1], player[2]);
+        snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f", player_position[0], player_position[1], player_position[2]);
         text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
 	glUseProgram(0);
 
