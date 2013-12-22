@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 
+#include "noise.h"
+
 // Config
 
 #define VSYNC 1
@@ -503,7 +505,6 @@ void text_init()
 	//glBindFragDataLocation(text_program, 0, "color");
 
 	glGenTextures(1, &text_texture);
-	//glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -578,6 +579,33 @@ void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, c
     glDeleteBuffers(1, &uv_buffer);
 }
 
+// Map
+
+typedef unsigned char byte;
+
+#define BLOCK_SIZE 8
+
+typedef struct _Block
+{
+	byte voxel[BLOCK_SIZE][BLOCK_SIZE][BLOCK_SIZE];
+} Block;
+
+typedef struct _Map
+{
+	//
+} Map;
+
+Map map;
+
+void map_set_voxel(int x, int y, int z, byte c)
+{
+} 
+
+byte map_get_voxel(int x, int y)
+{
+	return 0;
+}
+
 // Model
 
 static Vector3f player_position = { 0, 0, 2 };
@@ -646,53 +674,133 @@ void model_frame(GLFWwindow* window)
 	if (dir[0] != 0 || dir[1] != 0 || dir[2] != 0)
 	{
 		normalize3(dir);
-		float speed = 2;
+		float speed = 5;
 		for (int i = 0; i < 3; i++) player_position[i] += dir[i] * speed * dt;
 	}
 }
 
 // Render
 
+GLuint block_texture;
+Vector3f light_direction = { 0.5, 1, -1 };
+
 void render_init()
 {
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
 	glEnable(GL_CULL_FACE);
 	glClearColor(0, 0, 0, 1.0);
+
+	glGenTextures(1, &block_texture);
+	glBindTexture(GL_TEXTURE_2D, block_texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	load_png_texture("texture.png");
+
+	normalize3(light_direction);
+}
+
+float minf(float a, float b)
+{
+	return a < b ? a : b;
+}
+
+float maxf(float a, float b)
+{
+	return a > b ? a : b;
+}
+
+void light_color(float nx, float ny, float nz)
+{
+	Vector3f normal = { nx, ny, nz };
+	float a = maxf(0, -dot(normal, light_direction));
+	float c = 0.2 + a * 0.8;
+	glColor3f(c, c, c);
+}
+
+void render_cube(int x, int y)
+{
+	float ax = x / 16.0, ay = y / 16.0, bx = (x + 1) / 16.0, by = (y + 1) / 16.0;
+	glBegin(GL_QUADS);
+	// xmin
+	light_color(-1, 0, 0);
+	glTexCoord2f(ax, ay); glVertex3f(0, 0, 0);
+	glTexCoord2f(ax, by); glVertex3f(0, 0, 1);
+	glTexCoord2f(bx, by); glVertex3f(0, 1, 1);
+	glTexCoord2f(bx, ay); glVertex3f(0, 1, 0);
+	// xmax	
+	light_color(1, 0, 0);
+	glTexCoord2f(ax, ay); glVertex3f(1, 0, 0);
+	glTexCoord2f(ax, by); glVertex3f(1, 1, 0);
+	glTexCoord2f(bx, by); glVertex3f(1, 1, 1);
+	glTexCoord2f(bx, ay); glVertex3f(1, 0, 1);
+	// ymin
+	light_color(0, -1, 0);
+	glTexCoord2f(ax, ay); glVertex3f(0, 0, 0);
+	glTexCoord2f(ax, by); glVertex3f(1, 0, 0);
+	glTexCoord2f(bx, by); glVertex3f(1, 0, 1);
+	glTexCoord2f(bx, ay); glVertex3f(0, 0, 1);
+	// ymax
+	light_color(0, 1, 0);
+	glTexCoord2f(ax, ay); glVertex3f(0, 1, 0);
+	glTexCoord2f(ax, by); glVertex3f(0, 1, 1);
+	glTexCoord2f(bx, by); glVertex3f(1, 1, 1);
+	glTexCoord2f(bx, ay); glVertex3f(1, 1, 0);
+	// zmin
+	light_color(0, 0, -1);
+	glTexCoord2f(ax, ay); glVertex3f(0, 0, 0);
+	glTexCoord2f(ax, by); glVertex3f(0, 1, 0);
+	glTexCoord2f(bx, by); glVertex3f(1, 1, 0);
+	glTexCoord2f(bx, ay); glVertex3f(1, 0, 0);
+	// zmax
+	light_color(0, 0, 1);
+	glTexCoord2f(ax, ay); glVertex3f(0, 0, 1);
+	glTexCoord2f(ax, by); glVertex3f(1, 0, 1);
+	glTexCoord2f(bx, by); glVertex3f(1, 1, 1);
+	glTexCoord2f(bx, ay); glVertex3f(0, 1, 1);
+	glEnd();
+}
+
+#define RENDER_LIMIT 50
+
+void render_world_blocks()
+{
+	glEnable(GL_TEXTURE_2D);
+	glBindTexture(GL_TEXTURE_2D, block_texture);
+	int px = player_position[0];
+	int py = player_position[1];
+	int pz = player_position[2];
+	for (int x = -RENDER_LIMIT; x <= RENDER_LIMIT; x++)
+	{
+		for (int y = -RENDER_LIMIT; y <= RENDER_LIMIT; y++)
+		{
+			int ti = simplex2((px + x)*0.02, (py + y)*0.02, 3, 1.0 / 2, 2) * 8;
+			float i = simplex2((px + x)*0.01, (py + y)*0.01, 5, 1.0 / 2, 2); 
+			float w = (i - 0.5) * 30; 
+			for (int z = -RENDER_LIMIT / 2; z <= RENDER_LIMIT / 2; z++)
+			{
+				if (w > pz + z)
+				{
+					glPushMatrix();
+					glTranslatef(px + x, py + y, pz + z);
+					render_cube(ti, 0);
+					glPopMatrix();
+				}
+			}
+		}
+	}
+	glDisable(GL_TEXTURE_2D);
 }
 
 void render_world()
 {
 	float matrix[16];
         matrix_3d_ab(matrix, player_position, player_yaw, player_pitch, width / (float)height, 65.0);
+	glLoadMatrixf(matrix);
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	// Simple grid
-	glLoadMatrixf(matrix);
-	glLineWidth(2);
-	glEnable(GL_BLEND);
-	glEnable(GL_LINE_SMOOTH);
-	glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glBegin(GL_LINES);
-	int ix = player_position[0];
-	int iy = player_position[1];
-	for (int i = -30; i <= 30; i++)
-	{
-		if (ix+i < 0) glColor3f(0,1,0); else if (ix+i > 0) glColor3f(1,1,0); else glColor3f(1,1,1);
-		glVertex3f(ix + i, iy - 30, 0);
-		glVertex3f(ix + i, iy + 30, 0);
-	}
-	for (int i = -30; i <= 30; i++)
-	{
-		if (iy+i < 0) glColor3f(1,0,0); else if (iy+i > 0) glColor3f(0,0,1); else glColor3f(1,1,1);
-		glVertex3f(ix - 30, iy + i, 0);
-		glVertex3f(ix + 30, iy + i, 0);
-	}
-	glEnd();
-	glDisable(GL_BLEND);
-	glDisable(GL_LINE_SMOOTH);
+	render_world_blocks();
 	
 	glDisable(GL_DEPTH_TEST);
 }
@@ -703,6 +811,7 @@ void render_gui()
         matrix_2d(matrix, width, height);
 	
 	// Text test
+	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glUseProgram(text_program);
 	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
         glUniform1i(text_sampler_loc, 0/*text_texture*/);
