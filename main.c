@@ -324,6 +324,22 @@ void matrix_3d(float matrix[16], Vector3f position, Vector4f orientation, float 
 	matrix_multiply(matrix, b, a);
 }
 
+void matrix_3d_ab(float matrix[16], Vector3f position, float yaw, float pitch, float aspect, float fov)
+{
+	float a[16];
+	float b[16];
+	float c[16];
+	matrix_translate_inverse(a, position);
+	matrix_rotate(b, 1, 0, 0, M_PI / 2);
+	matrix_multiply(a, b, a);
+	matrix_rotate(b, 0, 1, 0, -yaw);
+	matrix_multiply(a, b, a);
+	matrix_rotate(b, 1, 0, 0, -pitch);
+	matrix_multiply(a, b, a);
+	matrix_perspective(b, fov, aspect, 0.1, 100.0);
+	matrix_multiply(matrix, b, a);
+}
+
 // Render::Buffers
 
 int gen_buffer(GLenum target, GLsizei size, const void* data)
@@ -565,15 +581,13 @@ void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, c
 // Model
 
 static Vector3f player_position = { 0, 0, 2 };
-static Vector4f player_orientation;
-
+static float player_yaw = 0, player_pitch = 0;
 double last_time;
 
-void model_init()
+void model_init(GLFWwindow* window)
 {
 	last_time = glfwGetTime();
-	Vector3f axis = { 1, 0, 0 };
-	quaternion_from_axis_angle(player_orientation, axis, -M_PI / 2);
+	glfwSetCursorPos(window, 0, 0);
 }
 
 void model_frame(GLFWwindow* window)
@@ -591,47 +605,42 @@ void model_frame(GLFWwindow* window)
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
 	if (cursor_x != 0 || cursor_y != 0)
 	{
-		Vector4f quat;
-		Vector3f axis = { cursor_y, cursor_x, 0 };
-		float angle = sqrt(dot(axis, axis)) / 150;
-		normalize3(axis);
-		quaternion_from_axis_angle(quat, axis, angle);
-		quaternion_multiply(player_orientation, quat, player_orientation);
+		player_yaw += cursor_x / 100;
+		player_pitch += cursor_y / 100;
+		if (player_pitch > M_PI / 2) player_pitch = M_PI / 2;
+		if (player_pitch < -M_PI / 2) player_pitch = -M_PI / 2;
 		glfwSetCursorPos(window, 0, 0);
 	}
 	
-	Matrix3f m;
-	quaternion_to_matrix3(player_orientation, m);
+	Matrix4f ma, mb;
+	matrix_rotate(mb, 0, 0, 1, player_yaw);
+	matrix_rotate(ma, 1, 0, 0, player_pitch);
+	matrix_multiply(ma, mb, ma);
+
 	Vector3f dir = { 0, 0, 0 };
  	if (glfwGetKey(window, 'A'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] -= m[i];
+		for (int i = 0; i < 3; i++) dir[i] -= ma[i];
 	}
  	if (glfwGetKey(window, 'D'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] += m[i];
+		for (int i = 0; i < 3; i++) dir[i] += ma[i];
 	}
  	if (glfwGetKey(window, 'W'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] -= m[i+6];
+		for (int i = 0; i < 3; i++) dir[i] += ma[i+4];
 	}
  	if (glfwGetKey(window, 'S'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] += m[i+6];
+		for (int i = 0; i < 3; i++) dir[i] -= ma[i+4];
 	}
  	if (glfwGetKey(window, 'Q'))
 	{
-		Vector4f quat;
-		Vector3f a = { 0, 0, 1 };
-		quaternion_from_axis_angle(quat, a, -dt*1.5);
-		quaternion_multiply(player_orientation, quat, player_orientation);
+		dir[2] += 1;
 	}
  	if (glfwGetKey(window, 'E'))
 	{
-		Vector4f quat;
-		Vector3f a = { 0, 0, 1 };
-		quaternion_from_axis_angle(quat, a, +dt*1.5);
-		quaternion_multiply(player_orientation, quat, player_orientation);
+		dir[2] -= 1;
 	}
 
 	if (dir[0] != 0 || dir[1] != 0 || dir[2] != 0)
@@ -654,7 +663,7 @@ void render_init()
 void render_world()
 {
 	float matrix[16];
-        matrix_3d(matrix, player_position, player_orientation, width / (float)height, 65.0);
+        matrix_3d_ab(matrix, player_position, player_yaw, player_pitch, width / (float)height, 65.0);
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -755,7 +764,7 @@ int main(int argc, char** argv)
 	glfwSwapInterval(VSYNC);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-	model_init();
+	model_init(window);
 	render_init();
 	text_init();
 	
