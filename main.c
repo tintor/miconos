@@ -338,7 +338,7 @@ void matrix_3d_ab(float matrix[16], Vector3f position, float yaw, float pitch, f
 	matrix_multiply(a, b, a);
 	matrix_rotate(b, 1, 0, 0, -pitch);
 	matrix_multiply(a, b, a);
-	matrix_perspective(b, fov, aspect, 0.1, 100.0);
+	matrix_perspective(b, fov, aspect, 0.03, 100.0);
 	matrix_multiply(matrix, b, a);
 }
 
@@ -645,7 +645,7 @@ void map_refresh(long player_x, long player_y, long player_z)
 
 // Model
 
-static Vector3f player_position = { 0, 0, 2 };
+static Vector3f player_position = { 0, 0, 20 };
 static float player_yaw = 0, player_pitch = 0;
 float last_time;
 
@@ -655,6 +655,32 @@ void model_init(GLFWwindow* window)
 	glfwSetCursorPos(window, 0, 0);
 	map_cache = malloc(MAP_SIZE * MAP_SIZE * MAP_SIZE * sizeof(block));
 	map_height_cache = malloc(MAP_SIZE * MAP_SIZE * sizeof(int));
+}
+
+// TODO non-sticking collision responce
+int collision_with_blocks()
+{
+	float px = player_position[0];
+	float py = player_position[1];
+	float pz = player_position[2];
+	float r = 0.5 + sqrtf(3) / 2 + 0.15; 
+	for (long x = (long)px - 1; x <= (long)px + 1; x++)
+	{
+		float dx = x + 0.5 - px;
+		for (long y = (long)py - 1; y <= (long)py + 1; y++)
+		{
+			float dy = y + 0.5 - py;
+			for (long z = (long)pz - 1; z <= (long)pz + 1; z++)
+			{
+				float dz = z + 0.5 - pz;
+				if (map_get(x, y, z) != 0 && dx * dx + dy * dy + dz * dz < r * r)
+				{
+					return 1;
+				}
+			}
+		}
+	}
+	return 0;
 }
 
 void model_move_player(GLFWwindow* window, double dt)
@@ -694,7 +720,16 @@ void model_move_player(GLFWwindow* window, double dt)
 	{
 		normalize3(dir);
 		float speed = 5;
-		for (int i = 0; i < 3; i++) player_position[i] += dir[i] * speed * dt;
+		for (int k = 0; k < 100; k++)
+		{
+			for (int i = 0; i < 3; i++) player_position[i] += dir[i] * speed * dt * 0.01;
+
+			if (collision_with_blocks())
+			{
+				for (int i = 0; i < 3; i++) player_position[i] -= dir[i] * speed * dt * 0.01;
+				break;
+			}
+		}
 	}
 }
 
