@@ -1,18 +1,19 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <string.h>
+#include <cmath>
+#include <string>
+#include <iostream>
+#include <fstream>
+#include <vector>
 
-#include "noise.h"
+#include "noise.hh"
 
 // Config
 
-#define VSYNC 1
+const int VSYNC = 1;
 
 // GUI
 //#define GLFW_INCLUDE_GLCOREARB
 #ifndef __APPLE_CC__
-    #include <GL/glew.h>
+	#include <GL/glew.h>
 #endif
 #include <GLFW/glfw3.h>
 
@@ -28,23 +29,23 @@ typedef float Matrix4f[16];
 
 float dot(Vector3f a, Vector3f b)
 {
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+	return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
 }
 
 void normalize(float* x, float* y, float* z)
 {
-    float d = sqrtf(*x**x + *y**y + *z**z);
-    *x /= d;
-    *y /= d;
-    *z /= d;
+	float d = sqrtf(*x**x + *y**y + *z**z);
+	*x /= d;
+	*y /= d;
+	*z /= d;
 }
 
 void normalize3(Vector3f a)
 {
-    float d = sqrtf(dot(a, a));
-    a[0] /= d;
-    a[1] /= d;
-    a[2] /= d;
+	float d = sqrtf(dot(a, a));
+	a[0] /= d;
+	a[1] /= d;
+	a[2] /= d;
 }
 
 void normalize4(Vector4f a)
@@ -135,183 +136,185 @@ void quaternion_to_matrix4(Vector4f quat, Matrix4f mat, int inverse)
 
 void matrix_identity(float matrix[16])
 {
-    matrix[0] = 1;
-    matrix[1] = 0;
-    matrix[2] = 0;
-    matrix[3] = 0;
-    matrix[4] = 0;
-    matrix[5] = 1;
-    matrix[6] = 0;
-    matrix[7] = 0;
-    matrix[8] = 0;
-    matrix[9] = 0;
-    matrix[10] = 1;
-    matrix[11] = 0;
-    matrix[12] = 0;
-    matrix[13] = 0;
-    matrix[14] = 0;
-    matrix[15] = 1;
+	matrix[0] = 1;
+	matrix[1] = 0;
+	matrix[2] = 0;
+	matrix[3] = 0;
+	matrix[4] = 0;
+	matrix[5] = 1;
+	matrix[6] = 0;
+	matrix[7] = 0;
+	matrix[8] = 0;
+	matrix[9] = 0;
+	matrix[10] = 1;
+	matrix[11] = 0;
+	matrix[12] = 0;
+	matrix[13] = 0;
+	matrix[14] = 0;
+	matrix[15] = 1;
 }
 
 void matrix_translate(float matrix[16], Vector3f d)
 {
-    matrix[0] = 1;
-    matrix[1] = 0;
-    matrix[2] = 0;
-    matrix[3] = 0;
-    matrix[4] = 0;
-    matrix[5] = 1;
-    matrix[6] = 0;
-    matrix[7] = 0;
-    matrix[8] = 0;
-    matrix[9] = 0;
-    matrix[10] = 1;
-    matrix[11] = 0;
-    matrix[12] = d[0];
-    matrix[13] = d[1];
-    matrix[14] = d[2];
-    matrix[15] = 1;
+	matrix[0] = 1;
+	matrix[1] = 0;
+	matrix[2] = 0;
+	matrix[3] = 0;
+	matrix[4] = 0;
+	matrix[5] = 1;
+	matrix[6] = 0;
+	matrix[7] = 0;
+	matrix[8] = 0;
+	matrix[9] = 0;
+	matrix[10] = 1;
+	matrix[11] = 0;
+	matrix[12] = d[0];
+	matrix[13] = d[1];
+	matrix[14] = d[2];
+	matrix[15] = 1;
 }
 
 void matrix_translate_inverse(float matrix[16], Vector3f d)
 {
-    matrix[0] = 1;
-    matrix[1] = 0;
-    matrix[2] = 0;
-    matrix[3] = 0;
-    matrix[4] = 0;
-    matrix[5] = 1;
-    matrix[6] = 0;
-    matrix[7] = 0;
-    matrix[8] = 0;
-    matrix[9] = 0;
-    matrix[10] = 1;
-    matrix[11] = 0;
-    matrix[12] = -d[0];
-    matrix[13] = -d[1];
-    matrix[14] = -d[2];
-    matrix[15] = 1;
+	matrix[0] = 1;
+	matrix[1] = 0;
+	matrix[2] = 0;
+	matrix[3] = 0;
+	matrix[4] = 0;
+	matrix[5] = 1;
+	matrix[6] = 0;
+	matrix[7] = 0;
+	matrix[8] = 0;
+	matrix[9] = 0;
+	matrix[10] = 1;
+	matrix[11] = 0;
+	matrix[12] = -d[0];
+	matrix[13] = -d[1];
+	matrix[14] = -d[2];
+	matrix[15] = 1;
 }
 
 void matrix_rotate(float matrix[16], float x, float y, float z, float angle)
 {
-    normalize(&x, &y, &z);
-    float s = sinf(angle);
-    float c = cosf(angle);
-    float m = 1 - c;
-    matrix[0] = m * x * x + c;
-    matrix[1] = m * x * y - z * s;
-    matrix[2] = m * z * x + y * s;
-    matrix[3] = 0;
-    matrix[4] = m * x * y + z * s;
-    matrix[5] = m * y * y + c;
-    matrix[6] = m * y * z - x * s;
-    matrix[7] = 0;
-    matrix[8] = m * z * x - y * s;
-    matrix[9] = m * y * z + x * s;
-    matrix[10] = m * z * z + c;
-    matrix[11] = 0;
-    matrix[12] = 0;
-    matrix[13] = 0;
-    matrix[14] = 0;
-    matrix[15] = 1;
+	normalize(&x, &y, &z);
+	float s = sinf(angle);
+	float c = cosf(angle);
+	float m = 1 - c;
+	matrix[0] = m * x * x + c;
+	matrix[1] = m * x * y - z * s;
+	matrix[2] = m * z * x + y * s;
+	matrix[3] = 0;
+	matrix[4] = m * x * y + z * s;
+	matrix[5] = m * y * y + c;
+	matrix[6] = m * y * z - x * s;
+	matrix[7] = 0;
+	matrix[8] = m * z * x - y * s;
+	matrix[9] = m * y * z + x * s;
+	matrix[10] = m * z * z + c;
+	matrix[11] = 0;
+	matrix[12] = 0;
+	matrix[13] = 0;
+	matrix[14] = 0;
+	matrix[15] = 1;
 }
 
 void matrix_vector_multiply(Vector4f vector, float a[16], float b[4])
 {
-    float result[4];
-    for (int i = 0; i < 4; i++) {
-        float total = 0;
-        for (int j = 0; j < 4; j++) {
-            int p = j * 4 + i;
-            int q = j;
-            total += a[p] * b[q];
-        }
-        vector[i] = total;
-    }
-    memcpy(vector, result, 4 * sizeof(float));
+	float result[4];
+	for (int i = 0; i < 4; i++)
+	{
+		float total = 0;
+		for (int j = 0; j < 4; j++)
+		{
+			int p = j * 4 + i;
+			int q = j;
+			total += a[p] * b[q];
+		}
+		vector[i] = total;
+	}
+	memcpy(vector, result, 4 * sizeof(float));
 }
 
 void matrix_multiply(float matrix[16], float a[16], float b[16])
 {
-    float result[16];
-    for (int c = 0; c < 4; c++)
-    {
-        for (int r = 0; r < 4; r++)
+	float result[16];
+	for (int c = 0; c < 4; c++)
 	{
-            float total = 0;
-            for (int i = 0; i < 4; i++)
-	    {
-                total += a[i * 4 + r] * b[c * 4 + i];
-            }
-            result[c * 4 + r] = total;
-        }
-    }
-    memcpy(matrix, result, 16 * sizeof(float));
+		for (int r = 0; r < 4; r++)
+		{
+			float total = 0;
+			for (int i = 0; i < 4; i++)
+			{
+				total += a[i * 4 + r] * b[c * 4 + i];
+			}
+			result[c * 4 + r] = total;
+		}
+	}
+	memcpy(matrix, result, 16 * sizeof(float));
 }
 
 void matrix_apply(float data[3], float matrix[16])
 {
 	float vec[4] = {0, 0, 0, 1};
 	memcpy(vec, data, sizeof(float) * 3);
-        matrix_vector_multiply(vec, matrix, vec);
+		matrix_vector_multiply(vec, matrix, vec);
 	memcpy(data, vec, sizeof(float) * 3);
 }
 
 void mat_frustum(float* matrix, float left, float right, float bottom, float top, float znear, float zfar)
 {
-    float temp = 2.0 * znear;
-    float temp2 = right - left;
-    float temp3 = top - bottom;
-    float temp4 = zfar - znear;
-    matrix[0] = temp / temp2;
-    matrix[1] = 0.0;
-    matrix[2] = 0.0;
-    matrix[3] = 0.0;
-    matrix[4] = 0.0;
-    matrix[5] = temp / temp3;
-    matrix[6] = 0.0;
-    matrix[7] = 0.0;
-    matrix[8] = (right + left) / temp2;
-    matrix[9] = (top + bottom) / temp3;
-    matrix[10] = (-zfar - znear) / temp4;
-    matrix[11] = -1.0;
-    matrix[12] = 0.0;
-    matrix[13] = 0.0;
-    matrix[14] = (-temp * zfar) / temp4;
-    matrix[15] = 0.0;
+	float temp = 2.0 * znear;
+	float temp2 = right - left;
+	float temp3 = top - bottom;
+	float temp4 = zfar - znear;
+	matrix[0] = temp / temp2;
+	matrix[1] = 0.0;
+	matrix[2] = 0.0;
+	matrix[3] = 0.0;
+	matrix[4] = 0.0;
+	matrix[5] = temp / temp3;
+	matrix[6] = 0.0;
+	matrix[7] = 0.0;
+	matrix[8] = (right + left) / temp2;
+	matrix[9] = (top + bottom) / temp3;
+	matrix[10] = (-zfar - znear) / temp4;
+	matrix[11] = -1.0;
+	matrix[12] = 0.0;
+	matrix[13] = 0.0;
+	matrix[14] = (-temp * zfar) / temp4;
+	matrix[15] = 0.0;
 }
 
 void matrix_perspective(float matrix[16], float fov, float aspect, float znear, float zfar)
 {
-    float ymax = znear * tanf(fov * M_PI / 360.0);
-    float xmax = ymax * aspect;
-    mat_frustum(matrix, -xmax, xmax, -ymax, ymax, znear, zfar);
+	float ymax = znear * tanf(fov * M_PI / 360.0);
+	float xmax = ymax * aspect;
+	mat_frustum(matrix, -xmax, xmax, -ymax, ymax, znear, zfar);
 }
 
 void matrix_ortho(float matrix[16], float left, float right, float bottom, float top, float near, float far)
 {
-    matrix[0] = 2 / (right - left);
-    matrix[1] = 0;
-    matrix[2] = 0;
-    matrix[3] = 0;
-    matrix[4] = 0;
-    matrix[5] = 2 / (top - bottom);
-    matrix[6] = 0;
-    matrix[7] = 0;
-    matrix[8] = 0;
-    matrix[9] = 0;
-    matrix[10] = -2 / (far - near);
-    matrix[11] = 0;
-    matrix[12] = -(right + left) / (right - left);
-    matrix[13] = -(top + bottom) / (top - bottom);
-    matrix[14] = -(far + near) / (far - near);
-    matrix[15] = 1;
+	matrix[0] = 2 / (right - left);
+	matrix[1] = 0;
+	matrix[2] = 0;
+	matrix[3] = 0;
+	matrix[4] = 0;
+	matrix[5] = 2 / (top - bottom);
+	matrix[6] = 0;
+	matrix[7] = 0;
+	matrix[8] = 0;
+	matrix[9] = 0;
+	matrix[10] = -2 / (far - near);
+	matrix[11] = 0;
+	matrix[12] = -(right + left) / (right - left);
+	matrix[13] = -(top + bottom) / (top - bottom);
+	matrix[14] = -(far + near) / (far - near);
+	matrix[15] = 1;
 }
 
 void matrix_2d(float matrix[16], int width, int height)
 {
-    matrix_ortho(matrix, 0, width, 0, height, -1, 1);
+	matrix_ortho(matrix, 0, width, 0, height, -1, 1);
 }
 
 void matrix_3d(float matrix[16], Vector3f position, Vector4f orientation, float aspect, float fov)
@@ -346,144 +349,147 @@ void matrix_3d_ab(float matrix[16], Vector3f position, float yaw, float pitch, f
 
 int gen_buffer(GLenum target, GLsizei size, const void* data)
 {
-    GLuint buffer;
-    glGenBuffers(1, &buffer);
-    glBindBuffer(target, buffer);
-    glBufferData(target, size, data, GL_STATIC_DRAW);
-    glBindBuffer(target, 0);
-    return buffer;
+	GLuint buffer;
+	glGenBuffers(1, &buffer);
+	glBindBuffer(target, buffer);
+	glBufferData(target, size, data, GL_STATIC_DRAW);
+	glBindBuffer(target, 0);
+	return buffer;
 }
 
 void gen_buffers(int components, int faces,
-    GLfloat* position_data,  GLfloat* normal_data,  GLfloat* uv_data,
-    GLuint*  position_buffer, GLuint* normal_buffer, GLuint* uv_buffer)
+	GLfloat* position_data,  GLfloat* normal_data,  GLfloat* uv_data,
+	GLuint*  position_buffer, GLuint* normal_buffer, GLuint* uv_buffer)
 {
-    if (position_buffer)
-    {
-        glDeleteBuffers(1, position_buffer);
-        *position_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, position_data);
-        free(position_data);
-    }
-    if (normal_buffer)
-    {
-        glDeleteBuffers(1, normal_buffer);
-        *normal_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, normal_data);
-        free(normal_data);
-    }
-    if (uv_buffer)
-    {
-        glDeleteBuffers(1, uv_buffer);
-        *uv_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * 2, uv_data);
-        free(uv_data);
-    }
+	if (position_buffer)
+	{
+		glDeleteBuffers(1, position_buffer);
+		*position_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, position_data);
+		delete[] position_data;
+	}
+	if (normal_buffer)
+	{
+		glDeleteBuffers(1, normal_buffer);
+		*normal_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, normal_data);
+		delete[] normal_data;
+	}
+	if (uv_buffer)
+	{
+		glDeleteBuffers(1, uv_buffer);
+		*uv_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * 2, uv_data);
+		delete[] uv_data;
+	}
 }
 
 void malloc_buffers(int components, int faces, GLfloat** position_data, GLfloat** normal_data, GLfloat** uv_data)
 {
-    if (position_data)
-    {
-        *position_data = malloc(sizeof(GLfloat) * faces * 6 * components);
-    }
-    if (normal_data)
-    {
-        *normal_data = malloc(sizeof(GLfloat) * faces * 6 * components);
-    }
-    if (uv_data)
-    {
-        *uv_data = malloc(sizeof(GLfloat) * faces * 6 * 2);
-    }
+	if (position_data)
+	{
+	  *position_data = new GLfloat[faces * 6 * components];
+	}
+	if (normal_data)
+	{
+	  *normal_data = new GLfloat[faces * 6 * components];
+	}
+	if (uv_data)
+	{
+	  *uv_data = new GLfloat[faces * 6 * 2];
+	}
 }
 
 // Render::Texture
 
+#define LODEPNG_COMPILE_CPP
 #include "lodepng/lodepng.h"
 
-void load_png_texture(const char* file_name)
+void load_png_texture(std::string filename)
 {
-    unsigned char* image;
-    unsigned width, height;
-    unsigned error = lodepng_decode32_file(&image, &width, &height, file_name);
-    if (error)
-    {
-        fprintf(stderr, "lodepgn_decode32_file error %u: %s\n", error, lodepng_error_text(error));
-    	exit(1);
-    }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
-    free(image);
+	unsigned char* image;
+	unsigned width, height;
+	unsigned error = lodepng_decode32_file(&image, &width, &height, filename.c_str());
+	if (error)
+	{
+		fprintf(stderr, "lodepgn_decode32_file error %u: %s\n", error, lodepng_error_text(error));
+		exit(1);
+	}
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
+	free(image);
 }
 
 // Render::Shader
 
-char* load_text_file(const char* path)
+std::string read_file(std::string filename)
 {
-    FILE* file = fopen(path, "rb");
-    fseek(file, 0, SEEK_END);
-    int length = ftell(file);
-    rewind(file);
-    char* data = malloc(length + 1);
-    fread(data, 1, length, file);
-    data[length] = 0;
-    fclose(file);
-    return data;
+	std::ifstream in(filename, std::ios::in | std::ios::binary);
+	if (in)
+	{
+		std::string contents;
+		in.seekg(0, std::ios::end);
+		contents.resize(in.tellg());
+		in.seekg(0, std::ios::beg);
+		in.read(&contents[0], contents.size());
+		in.close();
+		return contents;
+	}
+	throw errno;
 }
 
-GLuint make_shader(GLenum type, const char* source)
+GLuint make_shader(GLenum type, std::string source)
 {
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, NULL);
-    glCompileShader(shader);
-    GLint status;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-    if (status == GL_FALSE)
-    {
-        GLint length;
-        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
-        GLchar* info = calloc(length, sizeof(GLchar));
-        glGetShaderInfoLog(shader, length, NULL, info);
-        fprintf(stderr, "glCompileShader failed on [%s]:\n%s\n", source, info);
-        exit(1);
-    }
-    return shader;
+	GLuint shader = glCreateShader(type);
+	const GLchar* c = source.c_str();
+	glShaderSource(shader, 1, &c, NULL);
+	glCompileShader(shader);
+	GLint status;
+	glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+	if (status == GL_FALSE)
+	{
+		GLint length;
+		glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+		GLchar* info = new GLchar[length];
+		glGetShaderInfoLog(shader, length, NULL, info);
+		info[length] = 0;
+		std::cerr << "glCompileShader failed on [" << source << "]:\n" << info << std::endl;
+		exit(1);
+	}
+	return shader;
 }
 
-GLuint load_shader(GLenum type, const char *path)
+GLuint load_shader(GLenum type, std::string path)
 {
-    char* data = load_text_file(path);
-    GLuint result = make_shader(type, data);
-    free(data);
-    return result;
+	return make_shader(type, read_file(path));
 }
 
 GLuint make_program(GLuint shader1, GLuint shader2)
 {
-    GLuint program = glCreateProgram();
-    glAttachShader(program, shader1);
-    glAttachShader(program, shader2);
-    glLinkProgram(program);
-    GLint status;
-    glGetProgramiv(program, GL_LINK_STATUS, &status);
-    if (status == GL_FALSE)
-    {
-        GLint length;
-        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
-        GLchar* info = calloc(length, sizeof(GLchar));
-        glGetProgramInfoLog(program, length, NULL, info);
-        fprintf(stderr, "glLinkProgram failed: %s\n", info);
-        exit(1);
-    }
-    glDetachShader(program, shader1);
-    glDetachShader(program, shader2);
-    glDeleteShader(shader1);
-    glDeleteShader(shader2);
-    return program;
+	GLuint program = glCreateProgram();
+	glAttachShader(program, shader1);
+	glAttachShader(program, shader2);
+	glLinkProgram(program);
+	GLint status;
+	glGetProgramiv(program, GL_LINK_STATUS, &status);
+	if (status == GL_FALSE)
+	{
+		GLint length;
+		glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
+		GLchar* info = new GLchar[length];
+		glGetProgramInfoLog(program, length, NULL, info);
+		info[length] = 0;
+		fprintf(stderr, "glLinkProgram failed: %s\n", info);
+		exit(1);
+	}
+	glDetachShader(program, shader1);
+	glDetachShader(program, shader2);
+	glDeleteShader(shader1);
+	glDeleteShader(shader2);
+	return program;
 }
 
-GLuint load_program(const char* path1, const char* path2)
+GLuint load_program(std::string path1, std::string path2)
 {
-    GLuint shader1 = load_shader(GL_VERTEX_SHADER, path1);
-    GLuint shader2 = load_shader(GL_FRAGMENT_SHADER, path2);
-    GLuint program = make_program(shader1, shader2);
-    return program;
+	GLuint shader1 = load_shader(GL_VERTEX_SHADER, path1);
+	GLuint shader2 = load_shader(GL_FRAGMENT_SHADER, path2);
+	return make_program(shader1, shader2);
 }
 
 // Render::Text
@@ -513,70 +519,70 @@ void text_init()
 
 void make_character(float* vertex, float* texture, float x, float y, float n, float m, char c)
 {
-    float* v = vertex;
-    *v++ = x - n; *v++ = y - m;
-    *v++ = x + n; *v++ = y - m;
-    *v++ = x + n; *v++ = y + m;
-    *v++ = x - n; *v++ = y - m;
-    *v++ = x + n; *v++ = y + m;
-    *v++ = x - n; *v++ = y + m;
-    
-    float a = 0.0625;
-    float b = a * 2;
-    int w = c - 32;
-    float du = (w % 16) * a;
-    float dv = 1 - (w / 16) * b - b;
-    float p = 0;
-    float* t = texture;
-    *t++ = du + 0; *t++ = dv + p;
-    *t++ = du + a; *t++ = dv + p;
-    *t++ = du + a; *t++ = dv + b - p;
-    *t++ = du + 0; *t++ = dv + p;
-    *t++ = du + a; *t++ = dv + b - p;
-    *t++ = du + 0; *t++ = dv + b - p;
-}        
+	float* v = vertex;
+	*v++ = x - n; *v++ = y - m;
+	*v++ = x + n; *v++ = y - m;
+	*v++ = x + n; *v++ = y + m;
+	*v++ = x - n; *v++ = y - m;
+	*v++ = x + n; *v++ = y + m;
+	*v++ = x - n; *v++ = y + m;
 
-void text_gen_buffers(GLuint* position_buffer, GLuint* uv_buffer, float x, float y, float n, char* text)
+	float a = 0.0625;
+	float b = a * 2;
+	int w = c - 32;
+	float du = (w % 16) * a;
+	float dv = 1 - (w / 16) * b - b;
+	float p = 0;
+	float* t = texture;
+	*t++ = du + 0; *t++ = dv + p;
+	*t++ = du + a; *t++ = dv + p;
+	*t++ = du + a; *t++ = dv + b - p;
+	*t++ = du + 0; *t++ = dv + p;
+	*t++ = du + a; *t++ = dv + b - p;
+	*t++ = du + 0; *t++ = dv + b - p;
+}
+
+void text_gen_buffers(GLuint* position_buffer, GLuint* uv_buffer, float x, float y, float n, std::string text)
 {
-    int length = strlen(text);
-    GLfloat* position_data;
-    GLfloat* uv_data;
-    malloc_buffers(2, length, &position_data, 0, &uv_data);
-    for (int i = 0; i < length; i++)
-    {
-        make_character(position_data + i * 12, uv_data + i * 12, x, y, n / 2, n, text[i]);
-        x += n;
-    }
-    gen_buffers(2, length, position_data, 0, uv_data, position_buffer, 0, uv_buffer);
+	int length = text.length();
+	GLfloat* position_data;
+	GLfloat* uv_data;
+	malloc_buffers(2, length, &position_data, 0, &uv_data);
+	for (int i = 0; i < length; i++)
+	{
+		make_character(position_data + i * 12, uv_data + i * 12, x, y, n / 2, n, text[i]);
+		x += n;
+	}
+	gen_buffers(2, length, position_data, 0, uv_data, position_buffer, 0, uv_buffer);
 }
 
 void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position_loc, GLuint uv_loc, int length)
 {
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnableVertexAttribArray(text_position_loc);
-    glEnableVertexAttribArray(text_uv_loc);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glEnableVertexAttribArray(text_position_loc);
+	glEnableVertexAttribArray(text_uv_loc);
 
-    glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
-    glVertexAttribPointer(position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
-    glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
-    glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glDrawArrays(GL_TRIANGLES, 0, length * 6);
+	glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
+	glVertexAttribPointer(position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
+	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
+	glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glDrawArrays(GL_TRIANGLES, 0, length * 6);
 
-    glDisableVertexAttribArray(position_loc);
-    glDisableVertexAttribArray(uv_loc);
-    glDisable(GL_BLEND);
+	glDisableVertexAttribArray(position_loc);
+	glDisableVertexAttribArray(uv_loc);
+	glDisable(GL_BLEND);
 }
 
-void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, char* text)
+void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, std::string text)
 {
-    GLuint position_buffer = 0;
-    GLuint uv_buffer = 0;
-    text_gen_buffers(&position_buffer, &uv_buffer, x, y, n, text);
-    text_draw_buffers(position_buffer, uv_buffer, position_loc, uv_loc, strlen(text));
-    glDeleteBuffers(1, &position_buffer);
-    glDeleteBuffers(1, &uv_buffer);
+	GLuint position_buffer = 0;
+	GLuint uv_buffer = 0;
+	text_gen_buffers(&position_buffer, &uv_buffer, x, y, n, text);
+	text_draw_buffers(position_buffer, uv_buffer, position_loc, uv_loc, text.length());
+	glDeleteBuffers(1, &position_buffer);
+	glDeleteBuffers(1, &uv_buffer);
 }
 
 // Map
@@ -587,8 +593,8 @@ typedef unsigned char block;
 #define CHUNK_SIZE 16
 
 #define MAP_SIZE 128 // >= (1 + RENDER_LIMIT * 2 + 4)
-block* map_cache;
-int* map_height_cache;
+std::vector<block> map_cache;
+std::vector<int> map_height_cache;
 
 long map_xmin = 1000000000, map_ymin = 1000000000, map_zmin = 1000000000;
 
@@ -653,8 +659,8 @@ void model_init(GLFWwindow* window)
 {
 	last_time = glfwGetTime();
 	glfwSetCursorPos(window, 0, 0);
-	map_cache = malloc(MAP_SIZE * MAP_SIZE * MAP_SIZE * sizeof(block));
-	map_height_cache = malloc(MAP_SIZE * MAP_SIZE * sizeof(int));
+	map_cache.resize(MAP_SIZE * MAP_SIZE * MAP_SIZE);
+	map_height_cache.resize(MAP_SIZE * MAP_SIZE);
 }
 
 // TODO non-sticking collision responce
@@ -885,7 +891,7 @@ void render_world_blocks()
 void render_world()
 {
 	float matrix[16];
-        matrix_3d_ab(matrix, player_position, player_yaw, player_pitch, width / (float)height, 65.0);
+		matrix_3d_ab(matrix, player_position, player_yaw, player_pitch, width / (float)height, 65.0);
 	glLoadMatrixf(matrix);
 	
 	glEnable(GL_DEPTH_TEST);
@@ -899,37 +905,37 @@ void render_world()
 void render_gui()
 {
 	float matrix[16];
-        matrix_2d(matrix, width, height);
+		matrix_2d(matrix, width, height);
 	
 	// Text test
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glUseProgram(text_program);
 	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
-        glUniform1i(text_sampler_loc, 0/*text_texture*/);
-        char text_buffer[1024];
-        float ts = height / 80;
-        float tx = ts / 2;
-        float ty = height - ts;
-        snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, blocks: %.0fms, map: %.0f", player_position[0], player_position[1], player_position[2], block_render_time_ms, map_refresh_time_ms);
-        text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
+		glUniform1i(text_sampler_loc, 0/*text_texture*/);
+		char text_buffer[1024];
+		float ts = height / 80;
+		float tx = ts / 2;
+		float ty = height - ts;
+		snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, blocks: %.0fms, map: %.0f", player_position[0], player_position[1], player_position[2], block_render_time_ms, map_refresh_time_ms);
+		text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
 	glUseProgram(0);
 
 	#ifdef NEVER
 	// Simple quad
 	glUseProgram(text_program);
 	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
-        glUniform1i(text_sampler_loc, 0/*text_texture*/);
+		glUniform1i(text_sampler_loc, 0/*text_texture*/);
 
 	GLuint vao_quad;
 	glGenVertexArrays(1, &vao_quad);
-        glBindVertexArray(vao_quad);
+		glBindVertexArray(vao_quad);
 
 	float vertices[] = { 0, 0, 100, 0, 0, 100 };
 	int v = gen_buffer(GL_ARRAY_BUFFER, sizeof(vertices), vertices);
 	float colors[] = { 0, 0, 100, 0, 0, 100 };
 	int c = gen_buffer(GL_ARRAY_BUFFER, sizeof(colors), colors);
 
-        glDrawArrays(GL_QUADS, 0, 4);
+		glDrawArrays(GL_QUADS, 0, 4);
 
 	glDeleteVertexArrays(1, &vao_quad);
 	#endif
