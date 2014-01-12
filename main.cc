@@ -385,15 +385,15 @@ void malloc_buffers(int components, int faces, GLfloat** position_data, GLfloat*
 {
 	if (position_data)
 	{
-	  *position_data = new GLfloat[faces * 6 * components];
+		*position_data = new GLfloat[faces * 6 * components];
 	}
 	if (normal_data)
 	{
-	  *normal_data = new GLfloat[faces * 6 * components];
+		*normal_data = new GLfloat[faces * 6 * components];
 	}
 	if (uv_data)
 	{
-	  *uv_data = new GLfloat[faces * 6 * 2];
+		*uv_data = new GLfloat[faces * 6 * 2];
 	}
 }
 
@@ -781,7 +781,7 @@ void render_init()
 	glBindTexture(GL_TEXTURE_2D, block_texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	load_png_texture("texture.png");
+	load_png_texture("noise.png");
 
 	normalize3(light_direction);
 }
@@ -796,64 +796,261 @@ float maxf(float a, float b)
 	return a > b ? a : b;
 }
 
-void light_color(float nx, float ny, float nz)
+void light_color(float nx, float ny, float nz, float red, float green, float blue)
 {
 	Vector3f normal = { nx, ny, nz };
 	float a = maxf(0, -dot(normal, light_direction));
-	float c = 0.2 + a * 0.8;
-	glColor3f(c, c, c);
+	float c = 0.3 + a * 0.7;
+	glColor3f(c * red, c * green, c * blue);
 }
 
-void render_block(long x, long y, long z, int tx, int ty)
+// Block types:
+
+// 0 empty
+// 1 cube
+// 2 prism (12 orientations)
+// 3 pyramid (8 orientations)
+// 4 anti-pyramid (8 orientations)
+
+int B(int a) { return a & 1; }
+int S(int a) { return 1 << a; }
+
+void draw_quad(long x, long y, long z, int va, int vb, int vc, int vd)
 {
-	float ax = tx / 16.0, ay = ty / 16.0, bx = (tx + 1) / 16.0, by = (ty + 1) / 16.0;
+	glTexCoord2f(0, 0); glVertex3f(x + B(va), y + B(va>>1), z + B(va>>2));
+	glTexCoord2f(0, 1); glVertex3f(x + B(vb), y + B(vb>>1), z + B(vb>>2));
+	glTexCoord2f(1, 1); glVertex3f(x + B(vc), y + B(vc>>1), z + B(vc>>2));
+
+	glTexCoord2f(0, 0); glVertex3f(x + B(va), y + B(va>>1), z + B(va>>2));
+	glTexCoord2f(1, 1); glVertex3f(x + B(vc), y + B(vc>>1), z + B(vc>>2));
+	glTexCoord2f(1, 0); glVertex3f(x + B(vd), y + B(vd>>1), z + B(vd>>2));
+}
+
+void draw_triangle(long x, long y, long z, int va, int vb, int vc)
+{
+	glTexCoord2f(0, 0); glVertex3f(x + B(va), y + B(va>>1), z + B(va>>2));
+	glTexCoord2f(0, 1); glVertex3f(x + B(vb), y + B(vb>>1), z + B(vb>>2));
+	glTexCoord2f(1, 1); glVertex3f(x + B(vc), y + B(vc>>1), z + B(vc>>2));
+}
+
+void draw_face(long x, long y, long z, int block, int va, int vb, int vc, int vd)
+{
+	int vertices = 0;
+	vertices += (block & (1 << va)) >> va;
+	vertices += (block & (1 << vb)) >> vb;
+	vertices += (block & (1 << vc)) >> vc;
+	vertices += (block & (1 << vd)) >> vd;
+
+	if (vertices == 4)
+	{
+		glTexCoord2f(0, 0); glVertex3f(x + B(va), y + B(va>>1), z + B(va>>2));
+		glTexCoord2f(0, 1); glVertex3f(x + B(vb), y + B(vb>>1), z + B(vb>>2));
+		glTexCoord2f(1, 1); glVertex3f(x + B(vc), y + B(vc>>1), z + B(vc>>2));
+
+		glTexCoord2f(0, 0); glVertex3f(x + B(va), y + B(va>>1), z + B(va>>2));
+		glTexCoord2f(1, 1); glVertex3f(x + B(vc), y + B(vc>>1), z + B(vc>>2));
+		glTexCoord2f(1, 0); glVertex3f(x + B(vd), y + B(vd>>1), z + B(vd>>2));
+	}
+	if (vertices == 3)
+	{
+		if (block & (1 << va)) { glTexCoord2f(0, 0); glVertex3f(x + B(va), y + B(va>>1), z + B(va>>2)); }
+		if (block & (1 << vb)) { glTexCoord2f(0, 1); glVertex3f(x + B(vb), y + B(vb>>1), z + B(vb>>2)); }
+		if (block & (1 << vc)) { glTexCoord2f(1, 1); glVertex3f(x + B(vc), y + B(vc>>1), z + B(vc>>2)); }
+		if (block & (1 << vd)) { glTexCoord2f(1, 0); glVertex3f(x + B(vd), y + B(vd>>1), z + B(vd>>2)); }
+	}
+}
+
+// every bit from 0 to 7 in block represents once vertex (can be off or on)
+// cube is 255, empty is 0, prisms / pyramids / anti-pyramids are in between
+void render_general(long x, long y, long z, int block, float red, float green, float blue)
+{
+	// common faces
+	if (map_get(x - 1, y, z) != 255)
+	{
+		light_color(-1, 0, 0, red, green, blue);
+		draw_face(x, y, z, block, 0, 4, 6, 2);
+	}
+	if (map_get(x + 1, y, z) != 255)
+	{
+		light_color(1, 0, 0, red, green, blue);
+		draw_face(x, y, z, block, 1, 3, 7, 5);
+	}
+	if (map_get(x, y - 1, z) != 255)
+	{
+		light_color(0, -1, 0, red, green, blue);
+		draw_face(x, y, z, block, 0, 1, 5, 4);
+	}
+	if (map_get(x, y + 1, z) != 255)
+	{
+		light_color(0, 1, 0, red, green, blue);
+		draw_face(x, y, z, block, 2, 6, 7, 3);
+	}
+	if (map_get(x, y, z - 1) != 255)
+	{
+		light_color(0, 0, -1, red, green, blue);
+		draw_face(x, y, z, block, 0, 2, 3, 1);
+	}
+	if (map_get(x, y, z + 1) != 255)
+	{
+		light_color(0, 0, 1, red, green, blue);
+		draw_face(x, y, z, block, 4, 5, 7, 6);
+	}
+
+	// prism faces
+	light_color(1, 1, 1, red, green, blue);
+	if (block == 255 - 128 - 64)
+	{
+		draw_quad(x, y, z, 2, 4, 5, 3);
+	}
+	if (block == 255 - 2 - 1)
+	{
+		draw_quad(x, y, z, 4, 2, 3, 5);
+	}
+	if (block == 255 - 32 - 16)
+	{
+		draw_quad(x, y, z, 1, 7, 6, 0);
+	}
+	if (block == 255 - 8 - 4)
+	{
+		draw_quad(x, y, z, 7, 1, 0, 6);
+	}
+	if (block == 255 - 64 - 16)
+	{
+		draw_quad(x, y, z, 0, 5, 7, 2);
+	}
+	if (block == 255 - 8 - 2)
+	{
+		draw_quad(x, y, z, 5, 0, 2, 7);
+	}
+	if (block == 255 - 128 - 32)
+	{
+		draw_quad(x, y, z, 3, 6, 4, 1);
+	}
+	if (block == 255 - 4 - 1)
+	{
+		draw_quad(x, y, z, 6, 3, 1, 4);
+	}
+	if (block == 255 - 32 - 2)
+	{
+		draw_quad(x, y, z, 0, 3, 7, 4);
+	}
+	if (block == 255 - 64 - 4)
+	{
+		draw_quad(x, y, z, 3, 0, 4, 7);
+	}
+	if (block == 255 - 16 - 1)
+	{
+		draw_quad(x, y, z, 5, 6, 2, 1);
+	}
+	if (block == 255 - 128 - 8)
+	{
+		draw_quad(x, y, z, 6, 5, 1, 2);
+	}
+
+	// pyramid faces
+	light_color(1, 1, 1, red, green, blue);
+	if (block == 23)
+	{
+		draw_triangle(x, y, z, 1, 2, 4);
+	}
+	if (block == 43)
+	{
+		draw_triangle(x, y, z, 0, 5, 3);
+	}
+	if (block == 13 + 64)
+	{
+		draw_triangle(x, y, z, 3, 6, 0);
+	}
+	if (block == 8 + 4 + 2 + 128)
+	{
+		draw_triangle(x, y, z, 2, 1, 7);
+	}
+	if (block == 16 + 32 + 64 + 1)
+	{
+		draw_triangle(x, y, z, 5, 0, 6);
+	}
+	if (block == 32 + 16 + 128 + 2)
+	{
+		draw_triangle(x, y, z, 4, 7, 1);
+	}
+	if (block == 64 + 128 + 16 + 4)
+	{
+		draw_triangle(x, y, z, 7, 4, 2);
+	}
+	if (block == 128 + 64 + 32 + 8)
+	{
+		draw_triangle(x, y, z, 6, 3, 5);
+	}
+
+	// anti-pyramid faces
+	light_color(1, 1, 1, red, green, blue);
+	if (block == 254)
+	{
+		draw_triangle(x, y, z, 1, 4, 2);
+	}
+	if (block == 253)
+	{
+		draw_triangle(x, y, z, 0, 3, 5);
+	}
+	if (block == 251)
+	{
+		draw_triangle(x, y, z, 3, 0, 6);
+	}
+	if (block == 247)
+	{
+		draw_triangle(x, y, z, 2, 7, 1);
+	}
+	if (block == 255 - 16)
+	{
+		draw_triangle(x, y, z, 5, 6, 0);
+	}
+	if (block == 255 - 32)
+	{
+		draw_triangle(x, y, z, 4, 1, 7);
+	}
+	if (block == 255 - 64)
+	{
+		draw_triangle(x, y, z, 7, 2, 4);
+	}
+	if (block == 255 - 128)
+	{
+		draw_triangle(x, y, z, 6, 5, 3);
+	}
+}
+
+void render_block(long x, long y, long z, float red, float green, float blue)
+{
+	float ax = 0, ay = 0;
+	float bx = 1, by = 1;
 	if (map_get(x - 1, y, z) == 0)
 	{
-		light_color(-1, 0, 0);
-		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+0);
-		glTexCoord2f(ax, by); glVertex3f(x+0, y+0, z+1);
-		glTexCoord2f(bx, by); glVertex3f(x+0, y+1, z+1);
-		glTexCoord2f(bx, ay); glVertex3f(x+0, y+1, z+0);
+		light_color(-1, 0, 0, red, green, blue);
+		draw_quad(x, y, z, 0, 4, 6, 2);
 	}
 	if (map_get(x + 1, y, z) == 0)
 	{
-		light_color(1, 0, 0);
-		glTexCoord2f(ax, ay); glVertex3f(x+1, y+0, z+0);
-		glTexCoord2f(ax, by); glVertex3f(x+1, y+1, z+0);
-		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+1);
-		glTexCoord2f(bx, ay); glVertex3f(x+1, y+0, z+1);
+		light_color(1, 0, 0, red, green, blue);
+		draw_quad(x, y, z, 1, 3, 7, 5);
 	}
 	if (map_get(x, y - 1, z) == 0)
 	{
-		light_color(0, -1, 0);
-		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+0);
-		glTexCoord2f(ax, by); glVertex3f(x+1, y+0, z+0);
-		glTexCoord2f(bx, by); glVertex3f(x+1, y+0, z+1);
-		glTexCoord2f(bx, ay); glVertex3f(x+0, y+0, z+1);
+		light_color(0, -1, 0, red, green, blue);
+		draw_quad(x, y, z, 0, 1, 5, 4);
 	}
 	if (map_get(x, y + 1, z) == 0)
 	{
-		light_color(0, 1, 0);
-		glTexCoord2f(ax, ay); glVertex3f(x+0, y+1, z+0);
-		glTexCoord2f(ax, by); glVertex3f(x+0, y+1, z+1);
-		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+1);
-		glTexCoord2f(bx, ay); glVertex3f(x+1, y+1, z+0);
+		light_color(0, 1, 0, red, green, blue);
+		draw_quad(x, y, z, 2, 6, 7, 3);
 	}
 	if (map_get(x, y, z - 1) == 0)
 	{
-		light_color(0, 0, -1);
-		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+0);
-		glTexCoord2f(ax, by); glVertex3f(x+0, y+1, z+0);
-		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+0);
-		glTexCoord2f(bx, ay); glVertex3f(x+1, y+0, z+0);
+		light_color(0, 0, -1, red, green, blue);
+		draw_quad(x, y, z, 0, 2, 3, 1);
 	}
 	if (map_get(x, y, z + 1) == 0)
 	{
-		light_color(0, 0, 1);
-		glTexCoord2f(ax, ay); glVertex3f(x+0, y+0, z+1);
-		glTexCoord2f(ax, by); glVertex3f(x+1, y+0, z+1);
-		glTexCoord2f(bx, by); glVertex3f(x+1, y+1, z+1);
-		glTexCoord2f(bx, ay); glVertex3f(x+0, y+1, z+1);
+		light_color(0, 0, 1, red, green, blue);
+		draw_quad(x, y, z, 4, 5, 7, 6);
 	}
 }
 
@@ -867,7 +1064,7 @@ void render_world_blocks()
 	long px = player_position[0];
 	long py = player_position[1];
 	long pz = player_position[2];
-	glBegin(GL_QUADS);
+	glBegin(GL_TRIANGLES);
 	for (long x = px - RENDER_LIMIT; x <= px + RENDER_LIMIT; x++)
 	{
 		// TODO lower bound on ymin and ymax here, sphere instead of cube
@@ -878,11 +1075,51 @@ void render_world_blocks()
 				block v = map_get(x, y, z);
 				if (v != 0)
 				{
-					render_block(x, y, z, v - 1, 0);
+				int color = v - 1;
+				render_block(x, y, z, (color % 4) * 0.33, (color / 4) % 4 * 0.33, (color / 16) % 4 * 0.33);
 				}
 			}
 		}
 	}
+
+	for (int a = 0; a < 16; a++)
+	{
+		render_block(-2, 0, 10+a*2, 1, 1, 0);
+	}
+
+	for (int a = 0; a < 8; a++)
+	{
+		render_general(0, 0, 10+a*2, 255 - S(a), 1, 0, 0);
+	}
+
+	for (int a = 0; a < 8; a++)
+	{
+		render_general(0, 0, 10+a*2 + 16, S(a) + S(a^1) + S(a^2) + S(a^4), 0, 0, 1);
+	}
+
+	int q = 0;
+	for (int a = 0; a < 8; a += 1)
+	{
+		for (int b = 0; b < a; b += 1)
+		{
+		if ((a ^ b) == 1)
+		{
+			render_general(-4, 0, 10+q, 255 - S(a ^ 6) - S(b ^ 6), 0, 1, 0);
+			q += 2;
+		}
+		if ((a ^ b) == 2)
+		{
+			render_general(-4, 0, 10+q, 255 - S(a ^ 5) - S(b ^ 5), .5, .5, 1);
+			q += 2;
+		}
+		if ((a ^ b) == 4)
+		{
+			render_general(-4, 0, 10+q, 255 - S(a ^ 3) - S(b ^ 3), 1, 0.5, 0);
+			q += 2;
+		}
+		}
+	}
+
 	glEnd();
 	glDisable(GL_TEXTURE_2D);
 	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
