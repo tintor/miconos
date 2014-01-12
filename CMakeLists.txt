@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8)
 
 project(arena)
 
-add_executable(arena main.cc noise.cc lodepng/lodepng.cc tinycthread/tinycthread.c)
+add_executable(arena main.cc lodepng/lodepng.cc tinycthread/tinycthread.c)
 
 add_definitions(-O3)
 

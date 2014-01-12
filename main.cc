@@ -4,11 +4,12 @@
 #include <fstream>
 #include <vector>
 
+#define GLM_SWIZZLE
 #include "glm/vec3.hpp"
 #include "glm/glm.hpp"
 #include "glm/gtc/type_ptr.hpp"
-
-#include "noise.hh"
+#include "glm/gtc/noise.hpp"
+#include "glm/gtx/fast_square_root.hpp"
 
 // Config
 
@@ -178,7 +179,7 @@ void matrix_translate(float matrix[16], Vector3f d)
 	matrix[15] = 1;
 }
 
-void matrix_translate_inverse(float matrix[16], Vector3f d)
+void matrix_translate_inverse(float matrix[16], glm::vec3 d)
 {
 	matrix[0] = 1;
 	matrix[1] = 0;
@@ -321,7 +322,7 @@ void matrix_2d(float matrix[16], int width, int height)
 	matrix_ortho(matrix, 0, width, 0, height, -1, 1);
 }
 
-void matrix_3d(float matrix[16], Vector3f position, Vector4f orientation, float aspect, float fov)
+void matrix_3d(float matrix[16], glm::vec3 position, Vector4f orientation, float aspect, float fov)
 {
 	float a[16];
 	float b[16];
@@ -333,7 +334,9 @@ void matrix_3d(float matrix[16], Vector3f position, Vector4f orientation, float 
 	matrix_multiply(matrix, b, a);
 }
 
-void matrix_3d_ab(float matrix[16], Vector3f position, float yaw, float pitch, float aspect, float fov)
+#define RENDER_LIMIT 125
+
+void matrix_3d_ab(float matrix[16], glm::vec3 position, float yaw, float pitch, float aspect, float fov)
 {
 	float a[16];
 	float b[16];
@@ -345,7 +348,7 @@ void matrix_3d_ab(float matrix[16], Vector3f position, float yaw, float pitch, f
 	matrix_multiply(a, b, a);
 	matrix_rotate(b, 1, 0, 0, -pitch);
 	matrix_multiply(a, b, a);
-	matrix_perspective(b, fov, aspect, 0.03, 100.0);
+	matrix_perspective(b, fov, aspect, 0.03, RENDER_LIMIT + 1);
 	matrix_multiply(matrix, b, a);
 }
 
@@ -593,10 +596,9 @@ void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, s
 
 typedef unsigned char block;
 
-#define RENDER_LIMIT 61
 #define CHUNK_SIZE 16
 
-#define MAP_SIZE 128 // >= (1 + RENDER_LIMIT * 2 + 4)
+#define MAP_SIZE 256 // >= (1 + RENDER_LIMIT * 2 + 4)
 std::vector<block> map_cache;
 std::vector<int> map_height_cache;
 
@@ -619,6 +621,25 @@ block map_get(long x, long y, long z)
 
 float map_refresh_time_ms = 0;
 
+float simplex(glm::vec2 p, int octaves, float persistence)
+{
+	float freq = 1.0f, amp = 1.0f, max = amp;
+	float total = glm::simplex(p);
+	for (int i = 1; i < octaves; i++)
+	{
+	    freq /= 2;
+	    amp *= persistence;
+	    max += amp;
+	    total += glm::simplex(p * freq) * amp;
+	}
+	return total / max;
+}
+
+int generate_color(glm::vec2 pos)
+{
+	return std::floorf((1 + simplex(pos * -0.044f, 3, 0.5f)) * 8);
+}
+
 // extend world if player moves
 void map_refresh(long player_x, long player_y, long player_z)
 {
@@ -628,7 +649,6 @@ void map_refresh(long player_x, long player_y, long player_z)
 	}
 
 	float time_start = glfwGetTime();
-	// TODO simplex2 is very slow!
 	long xmin = player_x - MAP_SIZE / 2;
 	long ymin = player_y - MAP_SIZE / 2;
 	long zmin = player_z - MAP_SIZE / 2;
@@ -636,18 +656,19 @@ void map_refresh(long player_x, long player_y, long player_z)
 	{
 		for (long y = ymin; y < ymin + MAP_SIZE; y++)
 		{
+			glm::vec2 pos(x, y);
 			long q = mod(x) * MAP_SIZE + mod(y);
 			if (mod(x) + map_xmin != x || mod(y) + map_ymin != y)			
 			{
-				map_height_cache[q] = (simplex2(x * 0.007, y * 0.007, 4, 1.0 / 2, 2) - 0.5) * 60;
+				map_height_cache[q] = simplex(pos * 0.02f, 10, 0.5f) * 20;
 			}
 			long i = map_height_cache[q];
+			float zzz = generate_color(pos);
 			for (long z = zmin; z < zmin + MAP_SIZE; z++)
 			{
 				if (mod(x) + map_xmin != x || mod(y) + map_ymin != y || mod(z) + map_zmin != z)
 				{
-					block b = (z > i) ? 0 : (1 + simplex2(x * -0.044, y * -0.044, 2, 1.0 / 2, 2) * 10);
-					map_cache[q * MAP_SIZE + mod(z)] = b;
+					map_cache[q * MAP_SIZE + mod(z)] = (z > i) ? 0 : (1 + zzz);
 				}
 			}
 		} 
@@ -660,7 +681,7 @@ void map_refresh(long player_x, long player_y, long player_z)
 
 // Model
 
-static Vector3f player_position = { 0, 0, 20 };
+static glm::vec3 player_position(0, 0, 20);
 static float player_yaw = 0, player_pitch = 0;
 float last_time;
 
@@ -698,14 +719,14 @@ int collision_with_blocks()
 	return 0;
 }
 
-void model_move_player(GLFWwindow* window, double dt)
+void model_move_player(GLFWwindow* window, float dt)
 {
 	Matrix4f ma, mb;
 	matrix_rotate(mb, 0, 0, 1, player_yaw);
 	matrix_rotate(ma, 1, 0, 0, player_pitch);
 	matrix_multiply(ma, mb, ma);
 
-	Vector3f dir = { 0, 0, 0 };
+	glm::vec3 dir(0, 0, 0);
  	if (glfwGetKey(window, 'A'))
 	{
 		for (int i = 0; i < 3; i++) dir[i] -= ma[i];
@@ -731,17 +752,16 @@ void model_move_player(GLFWwindow* window, double dt)
 		dir[2] -= 1;
 	}
 
-	if (dir[0] != 0 || dir[1] != 0 || dir[2] != 0)
+	if (dir.x != 0 || dir.y != 0 || dir.z != 0)
 	{
-		normalize3(dir);
+		dir = glm::normalize(dir);
 		float speed = 5;
 		for (int k = 0; k < 100; k++)
 		{
-			for (int i = 0; i < 3; i++) player_position[i] += dir[i] * speed * dt * 0.01;
-
+			player_position += dir * (speed * dt * 0.01f);
 			if (collision_with_blocks())
 			{
-				for (int i = 0; i < 3; i++) player_position[i] -= dir[i] * speed * dt * 0.01;
+				player_position -= dir * (speed * dt * 0.01f);
 				break;
 			}
 		}
@@ -754,7 +774,7 @@ void model_frame(GLFWwindow* window)
 	double dt = (time - last_time) < 0.5 ? (time - last_time) : 0.5;
 	last_time = time;
 
- 	if (glfwGetKey(window, GLFW_KEY_ESCAPE))
+	if (glfwGetKey(window, GLFW_KEY_ESCAPE))
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
 	}
@@ -839,8 +859,11 @@ void light_color(int a, int b, int c, glm::vec3 color)
 
 int S(int a) { return 1 << a; }
 
+int face_count = 0;
+
 void draw_quad(glm::ivec3 pos, int a, int b, int c, int d, glm::vec3 color)
 {
+	face_count += 2;
 	light_color(a, b, c, color);
 
 	glTexCoord2f(0, 0); glVertex(pos + corner[a]);
@@ -854,6 +877,7 @@ void draw_quad(glm::ivec3 pos, int a, int b, int c, int d, glm::vec3 color)
 
 void draw_triangle(glm::ivec3 pos, int a, int b, int c, glm::vec3 color)
 {
+	face_count += 1;
 	light_color(a, b, c, color);
 
 	glTexCoord2f(0, 0); glVertex(pos + corner[a]);
@@ -873,6 +897,7 @@ void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, glm::vec3 
 	}
 	else if (vertices == 3)
 	{
+		face_count += 1;
 		light_color(a, b, c, color);
 
 		if (block & (1 << a)) { glTexCoord2f(0, 0); glVertex(pos + corner[a]); }
@@ -1067,30 +1092,118 @@ void render_general(glm::ivec3 pos, int block, glm::vec3 color)
 	}
 }
 
-float block_render_time_ms = 0;
+#include <array>
+std::array<glm::vec4, 4> frustum;
 
-void render_world_blocks()
+float sqr(glm::vec3 a) { return glm::dot(a, a); }
+glm::vec3 vec3(glm::vec4 a) { return glm::vec3(a.x, a.y, a.z); }
+
+void InitFrustum(float clip[16])
+{
+	// left
+	frustum[0][0] = clip[ 3] - clip[ 0];
+	frustum[0][1] = clip[ 7] - clip[ 4];
+	frustum[0][2] = clip[11] - clip[ 8];
+	frustum[0][3] = clip[15] - clip[12];
+	// right
+	frustum[1][0] = clip[ 3] + clip[ 0];
+	frustum[1][1] = clip[ 7] + clip[ 4];
+	frustum[1][2] = clip[11] + clip[ 8];
+	frustum[1][3] = clip[15] + clip[12];
+	// bottom
+	frustum[2][0] = clip[ 3] + clip[ 1];
+	frustum[2][1] = clip[ 7] + clip[ 5];
+	frustum[2][2] = clip[11] + clip[ 9];
+	frustum[2][3] = clip[15] + clip[13];
+	// top
+	frustum[3][0] = clip[ 3] - clip[ 1];
+	frustum[3][1] = clip[ 7] - clip[ 5];
+	frustum[3][2] = clip[11] - clip[ 9];
+	frustum[3][3] = clip[15] - clip[13];
+	// far
+/*	frustum[4][0] = clip[ 3] - clip[ 2];
+	frustum[4][1] = clip[ 7] - clip[ 6];
+	frustum[4][2] = clip[11] - clip[10];
+	frustum[4][3] = clip[15] - clip[14];
+	// near
+	frustum[5][0] = clip[ 3] + clip[ 2];
+	frustum[5][1] = clip[ 7] + clip[ 6];
+	frustum[5][2] = clip[11] + clip[10];
+	frustum[5][3] = clip[15] + clip[14];*/
+
+	for (int i = 0; i < 4; i++)
+	{
+		frustum[i] *= glm::fastInverseSqrt(sqr(frustum[i].xyz()));
+	}
+}
+
+bool SphereInFrustum(glm::vec3 p, float radius)
+{
+	for (int i = 0; i < 4; i++)
+	{
+		if (glm::dot(p, frustum[i].xyz()) + frustum[i].w <= -radius)
+			return false;
+	}
+	return true;
+}
+
+float block_render_time_ms = 0;
+float block_render_time_ms_avg = 0;
+
+const float BlockRadius = sqrtf(3) / 2;
+
+void render_point(glm::ivec3 player, glm::ivec3 direction, glm::ivec3 delta)
+{
+	if (glm::dot(direction, delta) < 0)
+		return;
+	glm::ivec3 pos = player + delta;
+	block v = map_get(pos);
+	if (v == 0)
+		return;
+	if (!SphereInFrustum(glm::vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5), BlockRadius))
+		return;
+	int color = v - 1;
+	render_block(pos, glm::vec3(color % 4, (color / 4) % 4, (color / 16) % 4) / 3.0f);
+}
+
+void render_world_blocks(float matrix[16])
 {
 	float time_start = glfwGetTime();
 	glEnable(GL_TEXTURE_2D);
 	glBindTexture(GL_TEXTURE_2D, block_texture);
-	long px = player_position[0];
-	long py = player_position[1];
-	long pz = player_position[2];
+	glm::ivec3 player(player_position[0], player_position[1], player_position[2]);
+
+	InitFrustum(matrix);
+
+	Matrix4f ma, mb;
+	matrix_rotate(mb, 0, 0, 1, player_yaw);
+	matrix_rotate(ma, 1, 0, 0, player_pitch);
+	matrix_multiply(ma, mb, ma);
+	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
+
 	glBegin(GL_TRIANGLES);
-	for (long x = px - RENDER_LIMIT; x <= px + RENDER_LIMIT; x++)
+	for (int x = -RENDER_LIMIT; x <= RENDER_LIMIT; x++)
 	{
-		// TODO lower bound on ymin and ymax here, sphere instead of cube
-		for (long y = py - RENDER_LIMIT; y <= py + RENDER_LIMIT; y++)
+		render_point(player, direction, glm::ivec3(x, 0, 0));
+		int RX = RENDER_LIMIT * RENDER_LIMIT - x * x;
+		for (int z = 1; z * z <= RX; z++)
 		{
-			for (long z = pz - RENDER_LIMIT; z <= pz + RENDER_LIMIT; z++)
+			render_point(player, direction, glm::ivec3(x, 0, z));
+			render_point(player, direction, glm::ivec3(x, 0, -z));
+		}
+
+		for (int y = 1; y * y <= RX; y++)
+		{
+			render_point(player, direction, glm::ivec3(x, y, 0));
+			render_point(player, direction, glm::ivec3(x, -y, 0));
+
+			int RXY = RX - y * y;
+			for (int z = 1; z * z <= RXY; z++)
 			{
-				block v = map_get(x, y, z);
-				if (v != 0)
-				{
-					int color = v - 1;
-					render_block(glm::ivec3(x, y, z), glm::vec3(color % 4, (color / 4) % 4, (color / 16) % 4) / 3.0f);
-				}
+				render_point(player, direction, glm::ivec3(x, y, z));
+				render_point(player, direction, glm::ivec3(x, y, -z));
+				render_point(player, direction, glm::ivec3(x, -y, z));
+				render_point(player, direction, glm::ivec3(x, -y, -z));
 			}
 		}
 	}
@@ -1136,18 +1249,19 @@ void render_world_blocks()
 	glEnd();
 	glDisable(GL_TEXTURE_2D);
 	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
+	block_render_time_ms_avg = block_render_time_ms_avg * 0.8f + block_render_time_ms * 0.2f;
 }
 
 void render_world()
 {
 	float matrix[16];
-		matrix_3d_ab(matrix, player_position, player_yaw, player_pitch, width / (float)height, 65.0);
+	matrix_3d_ab(matrix, player_position, player_yaw, player_pitch, width / (float)height, 65.0);
 	glLoadMatrixf(matrix);
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	render_world_blocks();
+	render_world_blocks(matrix);
 	
 	glDisable(GL_DEPTH_TEST);
 }
@@ -1155,19 +1269,20 @@ void render_world()
 void render_gui()
 {
 	float matrix[16];
-		matrix_2d(matrix, width, height);
+	matrix_2d(matrix, width, height);
 	
 	// Text test
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glUseProgram(text_program);
 	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
-		glUniform1i(text_sampler_loc, 0/*text_texture*/);
-		char text_buffer[1024];
-		float ts = height / 80;
-		float tx = ts / 2;
-		float ty = height - ts;
-		snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, blocks: %.0fms, map: %.0f", player_position[0], player_position[1], player_position[2], block_render_time_ms, map_refresh_time_ms);
-		text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
+	glUniform1i(text_sampler_loc, 0/*text_texture*/);
+	char text_buffer[1024];
+	float ts = height / 80;
+	float tx = ts / 2;
+	float ty = height - ts;
+	snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f", player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
+	face_count = 0;
+	text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
 	glUseProgram(0);
 
 	#ifdef NEVER
