@@ -1,3 +1,30 @@
+// TODO:
+// block editing
+// chunking
+// sliding collisions
+// use OpenGL array buffers
+// walk / jump mode
+// persistence
+// client / server
+// multi-player
+// fog
+// sky with day/night cycle
+// permanent server
+// # level-of-detail rendering
+// # portals
+// # slope generation
+// # transparent water blocks
+// # real shadows from sun
+// # point lights with shadows (for caves)?
+// # occulsion culling (for caves / mountains)
+// # advanced voxel editing (flood fill, cut/copy/paste, move, drawing shapes)
+// # wiki / user change tracking
+// # real world elevation data
+// # spherical world / spherical gravity ?
+// # translating blocks ?
+// # psysics: water ?
+// # psysics: moving objects / vehicles ?
+
 #include <cmath>
 #include <string>
 #include <iostream>
@@ -5,10 +32,13 @@
 #include <vector>
 
 #define GLM_SWIZZLE
-#include "glm/vec3.hpp"
+#define GLM_FORCE_RADIANS
 #include "glm/glm.hpp"
+#include "glm/gtc/constants.hpp"
 #include "glm/gtc/type_ptr.hpp"
 #include "glm/gtc/noise.hpp"
+#include "glm/gtc/quaternion.hpp"
+#include "glm/gtc/matrix_transform.hpp"
 #include "glm/gtx/fast_square_root.hpp"
 
 // Config
@@ -25,332 +55,7 @@ const int VSYNC = 1;
 int width;
 int height;
 
-// Render::Matrix
-
-typedef float Vector3f[3];
-typedef float Vector4f[4];
-typedef float Matrix3f[9];
-typedef float Matrix4f[16];
-
-float dot(Vector3f a, Vector3f b)
-{
-	return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
-}
-
-void normalize(float* x, float* y, float* z)
-{
-	float d = sqrtf(*x**x + *y**y + *z**z);
-	*x /= d;
-	*y /= d;
-	*z /= d;
-}
-
-void normalize3(Vector3f a)
-{
-	float d = sqrtf(dot(a, a));
-	a[0] /= d;
-	a[1] /= d;
-	a[2] /= d;
-}
-
-void normalize4(Vector4f a)
-{
-	float d = sqrtf(a[0]*a[0] + a[1]*a[1] + a[2]*a[2] + a[3]*a[3]);
-	a[0] /= d;
-	a[1] /= d;
-	a[2] /= d;
-	a[3] /= d;
-}
-
-void quaternion_from_axis_angle(Vector4f quat, Vector3f axis, float angle)
-{
-	float d = sinf(angle / 2) / sqrt(dot(axis, axis));
-	quat[0] = axis[0] * d;
-	quat[1] = axis[1] * d;
-	quat[2] = axis[2] * d;
-	quat[3] = cosf(angle / 2);
-}
-
-void quaternion_multiply(Vector4f quat, Vector4f a, Vector4f b)
-{
-	float ix = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
-	float iy = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
-	float iz = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
-	float iw = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
-	quat[0] = ix;
-	quat[1] = iy;
-	quat[2] = iz;
-	quat[3] = iw;
-}
-
-void quaternion_to_matrix3(Vector4f quat, Matrix3f mat)
-{
-	float x = quat[0];
-	float y = quat[1];
-	float z = quat[2];
-	float w = quat[3];
-
-	float dx = x * 2, x2 = x * dx, wx = w * dx;
-	float dy = y * 2, xy = x * dy, y2 = y * dy, wy = w * dy;
-	float dz = z * 2, xz = x * dz, yz = y * dz, z2 = z * dz, wz = w * dz;
-
-	mat[0] = 1 - y2 - z2;
-	mat[1] = xy - wz;
-	mat[2] = xz + wy;
-
-	mat[3] = xy + wz;
-	mat[4] = 1 - x2 - z2;
-	mat[5] = yz - wx;
-
-	mat[6] = xz - wy;
-	mat[7] = yz + wx;
-	mat[8] = 1 - x2 - y2;
-}
-
-void quaternion_to_matrix4(Vector4f quat, Matrix4f mat, int inverse)
-{
-	float x = quat[0];
-	float y = quat[1];
-	float z = quat[2];
-	float w = quat[3];
-
-	float dx = x * 2, x2 = x * dx, wx = w * dx;
-	float dy = y * 2, xy = x * dy, y2 = y * dy, wy = w * dy;
-	float dz = z * 2, xz = x * dz, yz = y * dz, z2 = z * dz, wz = w * dz;
-
-	mat[0] = 1 - y2 - z2;
-	mat[1] = inverse ? xy + wz : xy - wz;
-	mat[2] = inverse ? xz - wy : xz + wy;
-	mat[3] = 0;
-
-	mat[4] = inverse ? xy - wz : xy + wz;
-	mat[5] = 1 - x2 - z2;
-	mat[6] = inverse ? yz + wx : yz - wx;
-	mat[7] = 0;
-
-	mat[8] = inverse ? xz + wy : xz - wy;
-	mat[9] = inverse ? yz - wx : yz + wx;
-	mat[10] = 1 - x2 - y2;
-	mat[11] = 0;
-
-	mat[12] = 0;
-	mat[13] = 0;
-	mat[14] = 0;
-	mat[15] = 1;
-}
-
-void matrix_identity(float matrix[16])
-{
-	matrix[0] = 1;
-	matrix[1] = 0;
-	matrix[2] = 0;
-	matrix[3] = 0;
-	matrix[4] = 0;
-	matrix[5] = 1;
-	matrix[6] = 0;
-	matrix[7] = 0;
-	matrix[8] = 0;
-	matrix[9] = 0;
-	matrix[10] = 1;
-	matrix[11] = 0;
-	matrix[12] = 0;
-	matrix[13] = 0;
-	matrix[14] = 0;
-	matrix[15] = 1;
-}
-
-void matrix_translate(float matrix[16], Vector3f d)
-{
-	matrix[0] = 1;
-	matrix[1] = 0;
-	matrix[2] = 0;
-	matrix[3] = 0;
-	matrix[4] = 0;
-	matrix[5] = 1;
-	matrix[6] = 0;
-	matrix[7] = 0;
-	matrix[8] = 0;
-	matrix[9] = 0;
-	matrix[10] = 1;
-	matrix[11] = 0;
-	matrix[12] = d[0];
-	matrix[13] = d[1];
-	matrix[14] = d[2];
-	matrix[15] = 1;
-}
-
-void matrix_translate_inverse(float matrix[16], glm::vec3 d)
-{
-	matrix[0] = 1;
-	matrix[1] = 0;
-	matrix[2] = 0;
-	matrix[3] = 0;
-	matrix[4] = 0;
-	matrix[5] = 1;
-	matrix[6] = 0;
-	matrix[7] = 0;
-	matrix[8] = 0;
-	matrix[9] = 0;
-	matrix[10] = 1;
-	matrix[11] = 0;
-	matrix[12] = -d[0];
-	matrix[13] = -d[1];
-	matrix[14] = -d[2];
-	matrix[15] = 1;
-}
-
-void matrix_rotate(float matrix[16], float x, float y, float z, float angle)
-{
-	normalize(&x, &y, &z);
-	float s = sinf(angle);
-	float c = cosf(angle);
-	float m = 1 - c;
-	matrix[0] = m * x * x + c;
-	matrix[1] = m * x * y - z * s;
-	matrix[2] = m * z * x + y * s;
-	matrix[3] = 0;
-	matrix[4] = m * x * y + z * s;
-	matrix[5] = m * y * y + c;
-	matrix[6] = m * y * z - x * s;
-	matrix[7] = 0;
-	matrix[8] = m * z * x - y * s;
-	matrix[9] = m * y * z + x * s;
-	matrix[10] = m * z * z + c;
-	matrix[11] = 0;
-	matrix[12] = 0;
-	matrix[13] = 0;
-	matrix[14] = 0;
-	matrix[15] = 1;
-}
-
-void matrix_vector_multiply(Vector4f vector, float a[16], float b[4])
-{
-	float result[4];
-	for (int i = 0; i < 4; i++)
-	{
-		float total = 0;
-		for (int j = 0; j < 4; j++)
-		{
-			int p = j * 4 + i;
-			int q = j;
-			total += a[p] * b[q];
-		}
-		vector[i] = total;
-	}
-	memcpy(vector, result, 4 * sizeof(float));
-}
-
-void matrix_multiply(float matrix[16], float a[16], float b[16])
-{
-	float result[16];
-	for (int c = 0; c < 4; c++)
-	{
-		for (int r = 0; r < 4; r++)
-		{
-			float total = 0;
-			for (int i = 0; i < 4; i++)
-			{
-				total += a[i * 4 + r] * b[c * 4 + i];
-			}
-			result[c * 4 + r] = total;
-		}
-	}
-	memcpy(matrix, result, 16 * sizeof(float));
-}
-
-void matrix_apply(float data[3], float matrix[16])
-{
-	float vec[4] = {0, 0, 0, 1};
-	memcpy(vec, data, sizeof(float) * 3);
-		matrix_vector_multiply(vec, matrix, vec);
-	memcpy(data, vec, sizeof(float) * 3);
-}
-
-void mat_frustum(float* matrix, float left, float right, float bottom, float top, float znear, float zfar)
-{
-	float temp = 2.0 * znear;
-	float temp2 = right - left;
-	float temp3 = top - bottom;
-	float temp4 = zfar - znear;
-	matrix[0] = temp / temp2;
-	matrix[1] = 0.0;
-	matrix[2] = 0.0;
-	matrix[3] = 0.0;
-	matrix[4] = 0.0;
-	matrix[5] = temp / temp3;
-	matrix[6] = 0.0;
-	matrix[7] = 0.0;
-	matrix[8] = (right + left) / temp2;
-	matrix[9] = (top + bottom) / temp3;
-	matrix[10] = (-zfar - znear) / temp4;
-	matrix[11] = -1.0;
-	matrix[12] = 0.0;
-	matrix[13] = 0.0;
-	matrix[14] = (-temp * zfar) / temp4;
-	matrix[15] = 0.0;
-}
-
-void matrix_perspective(float matrix[16], float fov, float aspect, float znear, float zfar)
-{
-	float ymax = znear * tanf(fov * M_PI / 360.0);
-	float xmax = ymax * aspect;
-	mat_frustum(matrix, -xmax, xmax, -ymax, ymax, znear, zfar);
-}
-
-void matrix_ortho(float matrix[16], float left, float right, float bottom, float top, float near, float far)
-{
-	matrix[0] = 2 / (right - left);
-	matrix[1] = 0;
-	matrix[2] = 0;
-	matrix[3] = 0;
-	matrix[4] = 0;
-	matrix[5] = 2 / (top - bottom);
-	matrix[6] = 0;
-	matrix[7] = 0;
-	matrix[8] = 0;
-	matrix[9] = 0;
-	matrix[10] = -2 / (far - near);
-	matrix[11] = 0;
-	matrix[12] = -(right + left) / (right - left);
-	matrix[13] = -(top + bottom) / (top - bottom);
-	matrix[14] = -(far + near) / (far - near);
-	matrix[15] = 1;
-}
-
-void matrix_2d(float matrix[16], int width, int height)
-{
-	matrix_ortho(matrix, 0, width, 0, height, -1, 1);
-}
-
-void matrix_3d(float matrix[16], glm::vec3 position, Vector4f orientation, float aspect, float fov)
-{
-	float a[16];
-	float b[16];
-	float c[16];
-	matrix_translate_inverse(a, position);
-	quaternion_to_matrix4(orientation, b, 1/*inverse*/);
-	matrix_multiply(a, b, a);
-	matrix_perspective(b, fov, aspect, 0.1, 100.0);
-	matrix_multiply(matrix, b, a);
-}
-
 #define RENDER_LIMIT 125
-
-void matrix_3d_ab(float matrix[16], glm::vec3 position, float yaw, float pitch, float aspect, float fov)
-{
-	float a[16];
-	float b[16];
-	float c[16];
-	matrix_translate_inverse(a, position);
-	matrix_rotate(b, 1, 0, 0, M_PI / 2);
-	matrix_multiply(a, b, a);
-	matrix_rotate(b, 0, 1, 0, -yaw);
-	matrix_multiply(a, b, a);
-	matrix_rotate(b, 1, 0, 0, -pitch);
-	matrix_multiply(a, b, a);
-	matrix_perspective(b, fov, aspect, 0.03, RENDER_LIMIT + 1);
-	matrix_multiply(matrix, b, a);
-}
 
 // Render::Buffers
 
@@ -721,27 +426,24 @@ int collision_with_blocks()
 
 void model_move_player(GLFWwindow* window, float dt)
 {
-	Matrix4f ma, mb;
-	matrix_rotate(mb, 0, 0, 1, player_yaw);
-	matrix_rotate(ma, 1, 0, 0, player_pitch);
-	matrix_multiply(ma, mb, ma);
+	glm::mat4 ma = glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)) * glm::rotate(glm::mat4(), -player_pitch, glm::vec3(1, 0, 0));
 
 	glm::vec3 dir(0, 0, 0);
  	if (glfwGetKey(window, 'A'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] -= ma[i];
+		for (int i = 0; i < 3; i++) dir[i] -= glm::value_ptr(ma)[i];
 	}
  	if (glfwGetKey(window, 'D'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] += ma[i];
+		for (int i = 0; i < 3; i++) dir[i] += glm::value_ptr(ma)[i];
 	}
  	if (glfwGetKey(window, 'W'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] += ma[i+4];
+		for (int i = 0; i < 3; i++) dir[i] += glm::value_ptr(ma)[i+4];
 	}
  	if (glfwGetKey(window, 'S'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] -= ma[i+4];
+		for (int i = 0; i < 3; i++) dir[i] -= glm::value_ptr(ma)[i+4];
 	}
  	if (glfwGetKey(window, 'Q'))
 	{
@@ -783,8 +485,8 @@ void model_frame(GLFWwindow* window)
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
 	if (cursor_x != 0 || cursor_y != 0)
 	{
-		player_yaw += cursor_x / 100;
-		player_pitch += cursor_y / 100;
+		player_yaw += (cursor_x) / 100;
+		player_pitch += (cursor_y) / 100;
 		if (player_pitch > M_PI / 2) player_pitch = M_PI / 2;
 		if (player_pitch < -M_PI / 2) player_pitch = -M_PI / 2;
 		glfwSetCursorPos(window, 0, 0);
@@ -1098,8 +800,9 @@ std::array<glm::vec4, 4> frustum;
 float sqr(glm::vec3 a) { return glm::dot(a, a); }
 glm::vec3 vec3(glm::vec4 a) { return glm::vec3(a.x, a.y, a.z); }
 
-void InitFrustum(float clip[16])
+void InitFrustum(const glm::mat4& matrix)
 {
+	const float* clip = glm::value_ptr(matrix);
 	// left
 	frustum[0][0] = clip[ 3] - clip[ 0];
 	frustum[0][1] = clip[ 7] - clip[ 4];
@@ -1160,13 +863,13 @@ void render_point(glm::ivec3 player, glm::ivec3 direction, glm::ivec3 delta)
 	block v = map_get(pos);
 	if (v == 0)
 		return;
-	if (!SphereInFrustum(glm::vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5), BlockRadius))
-		return;
+	/*if (!SphereInFrustum(glm::vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5), BlockRadius))
+		return;*/
 	int color = v - 1;
 	render_block(pos, glm::vec3(color % 4, (color / 4) % 4, (color / 16) % 4) / 3.0f);
 }
 
-void render_world_blocks(float matrix[16])
+void render_world_blocks(glm::mat4 matrix)
 {
 	float time_start = glfwGetTime();
 	glEnable(GL_TEXTURE_2D);
@@ -1175,10 +878,8 @@ void render_world_blocks(float matrix[16])
 
 	InitFrustum(matrix);
 
-	Matrix4f ma, mb;
-	matrix_rotate(mb, 0, 0, 1, player_yaw);
-	matrix_rotate(ma, 1, 0, 0, player_pitch);
-	matrix_multiply(ma, mb, ma);
+	glm::mat4 maa = glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)) * glm::rotate(glm::mat4(), -player_pitch, glm::vec3(1, 0, 0));
+	float* ma = glm::value_ptr(maa);
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
 
 	glBegin(GL_TRIANGLES);
@@ -1254,9 +955,12 @@ void render_world_blocks(float matrix[16])
 
 void render_world()
 {
-	float matrix[16];
-	matrix_3d_ab(matrix, player_position, player_yaw, player_pitch, width / (float)height, 65.0);
-	glLoadMatrixf(matrix);
+	glm::mat4 matrix = glm::perspective<float>(M_PI / 180 * 65, width / (float)height, 0.03, RENDER_LIMIT + 1);
+	matrix = glm::rotate(matrix, player_pitch, glm::vec3(1, 0, 0));
+	matrix = glm::rotate(matrix, player_yaw, glm::vec3(0, 1, 0));
+	matrix = glm::rotate(matrix, float(M_PI / 2), glm::vec3(-1, 0, 0));
+	matrix = glm::translate(matrix, -player_position);
+	glLoadMatrixf(glm::value_ptr(matrix));
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1268,13 +972,12 @@ void render_world()
 
 void render_gui()
 {
-	float matrix[16];
-	matrix_2d(matrix, width, height);
+	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
 	
 	// Text test
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glUseProgram(text_program);
-	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
+	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(text_sampler_loc, 0/*text_texture*/);
 	char text_buffer[1024];
 	float ts = height / 80;
