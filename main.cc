@@ -388,7 +388,11 @@ void map_refresh(long player_x, long player_y, long player_z)
 
 static glm::vec3 player_position(0, 0, 20);
 static float player_yaw = 0, player_pitch = 0;
+glm::mat4 player_orientation;
 float last_time;
+
+glm::mat4 perspective;
+glm::mat4 perspective_rotation;
 
 void model_init(GLFWwindow* window)
 {
@@ -426,24 +430,22 @@ int collision_with_blocks()
 
 void model_move_player(GLFWwindow* window, float dt)
 {
-	glm::mat4 ma = glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)) * glm::rotate(glm::mat4(), -player_pitch, glm::vec3(1, 0, 0));
-
 	glm::vec3 dir(0, 0, 0);
  	if (glfwGetKey(window, 'A'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] -= glm::value_ptr(ma)[i];
+		for (int i = 0; i < 3; i++) dir[i] -= glm::value_ptr(player_orientation)[i];
 	}
  	if (glfwGetKey(window, 'D'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] += glm::value_ptr(ma)[i];
+		for (int i = 0; i < 3; i++) dir[i] += glm::value_ptr(player_orientation)[i];
 	}
  	if (glfwGetKey(window, 'W'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] += glm::value_ptr(ma)[i+4];
+		for (int i = 0; i < 3; i++) dir[i] += glm::value_ptr(player_orientation)[i+4];
 	}
  	if (glfwGetKey(window, 'S'))
 	{
-		for (int i = 0; i < 3; i++) dir[i] -= glm::value_ptr(ma)[i+4];
+		for (int i = 0; i < 3; i++) dir[i] -= glm::value_ptr(player_orientation)[i+4];
 	}
  	if (glfwGetKey(window, 'Q'))
 	{
@@ -490,6 +492,11 @@ void model_frame(GLFWwindow* window)
 		if (player_pitch > M_PI / 2) player_pitch = M_PI / 2;
 		if (player_pitch < -M_PI / 2) player_pitch = -M_PI / 2;
 		glfwSetCursorPos(window, 0, 0);
+		player_orientation = glm::rotate(glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)), -player_pitch, glm::vec3(1, 0, 0));
+
+		perspective_rotation = glm::rotate(perspective, player_pitch, glm::vec3(1, 0, 0));
+		perspective_rotation = glm::rotate(perspective_rotation, player_yaw, glm::vec3(0, 1, 0));
+		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
 	}
 	
 	model_move_player(window, dt);
@@ -552,6 +559,8 @@ void render_init()
 
 	light_direction = glm::normalize(light_direction);
 	InitLightCache();
+
+	perspective = glm::perspective<float>(M_PI / 180 * 65, width / (float)height, 0.03, RENDER_LIMIT + 1);
 }
 
 void light_color(int a, int b, int c, glm::vec3 color)
@@ -869,17 +878,16 @@ void render_point(glm::ivec3 player, glm::ivec3 direction, glm::ivec3 delta)
 	render_block(pos, glm::vec3(color % 4, (color / 4) % 4, (color / 16) % 4) / 3.0f);
 }
 
-void render_world_blocks(glm::mat4 matrix)
+void render_world_blocks(const glm::mat4& matrix)
 {
 	float time_start = glfwGetTime();
 	glEnable(GL_TEXTURE_2D);
 	glBindTexture(GL_TEXTURE_2D, block_texture);
 	glm::ivec3 player(player_position[0], player_position[1], player_position[2]);
 
-	InitFrustum(matrix);
+	//InitFrustum(matrix);
 
-	glm::mat4 maa = glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)) * glm::rotate(glm::mat4(), -player_pitch, glm::vec3(1, 0, 0));
-	float* ma = glm::value_ptr(maa);
+	float* ma = glm::value_ptr(player_orientation);
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
 
 	glBegin(GL_TRIANGLES);
@@ -955,11 +963,7 @@ void render_world_blocks(glm::mat4 matrix)
 
 void render_world()
 {
-	glm::mat4 matrix = glm::perspective<float>(M_PI / 180 * 65, width / (float)height, 0.03, RENDER_LIMIT + 1);
-	matrix = glm::rotate(matrix, player_pitch, glm::vec3(1, 0, 0));
-	matrix = glm::rotate(matrix, player_yaw, glm::vec3(0, 1, 0));
-	matrix = glm::rotate(matrix, float(M_PI / 2), glm::vec3(-1, 0, 0));
-	matrix = glm::translate(matrix, -player_position);
+	glm::mat4 matrix = glm::translate(perspective_rotation, -player_position);
 	glLoadMatrixf(glm::value_ptr(matrix));
 	
 	glEnable(GL_DEPTH_TEST);
@@ -983,7 +987,8 @@ void render_gui()
 	float ts = height / 80;
 	float tx = ts / 2;
 	float ty = height - ts;
-	snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f", player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
+	snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f",
+		player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
 	face_count = 0;
 	text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
 	glUseProgram(0);
@@ -1037,6 +1042,7 @@ int main(int argc, char** argv)
 	glfwMakeContextCurrent(window);
 	glfwSwapInterval(VSYNC);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwGetFramebufferSize(window, &width, &height);
 
 	model_init(window);
 	render_init();
@@ -1044,8 +1050,6 @@ int main(int argc, char** argv)
 	
 	while (!glfwWindowShouldClose(window))
 	{
-		glfwGetFramebufferSize(window, &width, &height);
-
 		model_frame(window);
 		render_frame();
 
