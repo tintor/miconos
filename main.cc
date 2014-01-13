@@ -3,7 +3,6 @@
 // free mouse (but fixed camera) mode for editing
 // PERF async chunk loading
 // PERF use OpenGL array buffers
-// walk / jump mode
 // persistence
 // client / server
 // multi-player
@@ -487,11 +486,107 @@ static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
 
 bool flying = true;
 
+int slope_shapes[] = {
+	255 - 128 - 64,
+	255 - 2 - 1,
+	255 - 32 - 16,
+	255 - 8 - 4,
+	255 - 64 - 16,
+	255 - 8 - 2,
+	255 - 128 - 32,
+	255 - 4 - 1,
+	255 - 32 - 2,
+	255 - 64 - 4,
+	255 - 16 - 1,
+	255 - 128 - 8 };
+
+int pyramid_shapes[] = {
+	23,
+	43,
+	13 + 64,
+	8 + 4 + 2 + 128,
+	16 + 32 + 64 + 1,
+	32 + 16 + 128 + 2,
+	64 + 128 + 16 + 4,
+	128 + 64 + 32 + 8 };
+
+int anti_pyramid_shapes[] = {
+	254,
+	253,
+	251,
+	247,
+	255 - 16,
+	255 - 32,
+	255 - 64,
+	127 };
+
+int NextShape(int shape)
+{
+	if (shape == 255) return slope_shapes[0];
+	if (shape == slope_shapes[11]) return pyramid_shapes[0];
+	if (shape == pyramid_shapes[7]) return anti_pyramid_shapes[0];
+	if (shape == anti_pyramid_shapes[7]) return 255;
+	for (int i = 0; i < 11; i++) if (shape == slope_shapes[i]) return slope_shapes[i+1];
+	for (int i = 0; i < 7; i++) if (shape == pyramid_shapes[i]) return pyramid_shapes[i+1];
+	for (int i = 0; i < 7; i++) if (shape == anti_pyramid_shapes[i]) return anti_pyramid_shapes[i+1];
+	return 0;
+}
+
+int PrevShape(int shape)
+{
+	if (shape == 255) return anti_pyramid_shapes[7];
+	if (shape == slope_shapes[0]) return 255;
+	if (shape == pyramid_shapes[0]) return slope_shapes[11];
+	if (shape == anti_pyramid_shapes[0]) return pyramid_shapes[7];
+	for (int i = 1; i < 12; i++) if (shape == slope_shapes[i]) return slope_shapes[i-1];
+	for (int i = 1; i < 8; i++) if (shape == pyramid_shapes[i]) return pyramid_shapes[i-1];
+	for (int i = 1; i < 8; i++) if (shape == anti_pyramid_shapes[i]) return anti_pyramid_shapes[i-1];
+	return 0;
+}
+
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
 	{
 		flying = !flying;
+	}
+	if (action == GLFW_PRESS && selection)
+	{
+		unsigned char& color = map_get_block(sel_cube).color;
+		unsigned char& shape = map_get_block(sel_cube).shape;
+
+		int red = color % 4;
+		int green = (color / 4) % 4;
+		int blue = color / 16;
+
+		if (key == GLFW_KEY_Z)
+		{
+			red = (red + 1) % 4;
+			color = red + green * 4 + blue * 16;
+			map->Set(sel_cube, map_get_block(sel_cube));
+		}
+		if (key == GLFW_KEY_X)
+		{
+			green = (green + 1) % 4;
+			color = red + green * 4 + blue * 16;
+			map->Set(sel_cube, map_get_block(sel_cube));
+		}
+		if (key == GLFW_KEY_C)
+		{
+			blue = (blue + 1) % 4;
+			color = red + green * 4 + blue * 16;
+			map->Set(sel_cube, map_get_block(sel_cube));
+		}
+		if (key == GLFW_KEY_V)
+		{
+			shape = NextShape(shape);
+			map->Set(sel_cube, map_get_block(sel_cube));
+		}
+		if (key == GLFW_KEY_B)
+		{
+			shape = PrevShape(shape);
+			map->Set(sel_cube, map_get_block(sel_cube));
+		}
 	}
 }
 
