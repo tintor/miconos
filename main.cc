@@ -40,6 +40,7 @@
 #include "glm/gtc/quaternion.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 #include "glm/gtx/fast_square_root.hpp"
+#include "glm/gtx/intersect.hpp"
 
 // Config
 
@@ -469,6 +470,18 @@ struct Map
 		*mc = chunk;
 	}
 
+	void Set(glm::ivec3 pos, Block block)
+	{
+		MapChunk* mc = m_chunks[pos >> ChunkSizeBits];
+		if (!mc)
+		{
+			mc = new MapChunk;
+			GenerateTerrain(pos >> ChunkSizeBits, *mc);
+			m_chunks[pos >> ChunkSizeBits] = mc;
+		}
+		mc->block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask] = block;
+	}
+
 private:
 	struct KeyHash
 	{
@@ -482,14 +495,7 @@ private:
 		Block block;
 		block.shape = shape;
 		block.color = ColorToCode(color);
-		MapChunk* mc = m_chunks[pos >> ChunkSizeBits];
-		if (!mc)
-		{
-			mc = new MapChunk;
-			GenerateTerrain(pos >> ChunkSizeBits, *mc);
-			m_chunks[pos >> ChunkSizeBits] = mc;
-		}
-		mc->block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask] = block;
+		Set(pos, block);
 	}
 };
 
@@ -609,6 +615,11 @@ unsigned char map_get_color(glm::ivec3 pos)
 	return GetChunk(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask].color;
 }
 
+Block& map_get_block(glm::ivec3 pos)
+{
+	return GetChunk(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask];
+}
+
 float map_refresh_time_ms = 0;
 
 bool IsEmpty(Chunk& chunk)
@@ -708,8 +719,42 @@ float last_time;
 glm::mat4 perspective;
 glm::mat4 perspective_rotation;
 
+glm::ivec3 sel_cube;
+int sel_face;
+float sel_dist;
+bool selection = false;
+
+static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
+
+void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+
+}
+
+void OnMouseButton(GLFWwindow* window, int button, int action, int mods)
+{
+	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection)
+	{
+		map_get_block(sel_cube).shape = 0;
+		GetChunk(sel_cube).full = false;
+		map->Set(sel_cube, map_get_block(sel_cube));
+	}
+
+	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
+	{
+		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
+		map_get_block(sel_cube + dir[sel_face]) = map_get_block(sel_cube);
+		GetChunk(sel_cube + dir[sel_face]).empty = false;
+		GetChunk(sel_cube + dir[sel_face]).full = false;
+		map->Set(sel_cube, map_get_block(sel_cube + dir[sel_face]));
+	}
+}
+
 void model_init(GLFWwindow* window)
 {
+	glfwSetKeyCallback(window, OnKey);
+	glfwSetMouseButtonCallback(window, OnMouseButton);
+
 	last_time = glfwGetTime();
 
 	glfwSetCursorPos(window, 0, 0);
@@ -852,6 +897,75 @@ void model_move_player(GLFWwindow* window, float dt)
 	}
 }
 
+glm::ivec3 Corner(int c) { return glm::ivec3(c&1, (c>>1)&1, (c>>2)&1); }
+glm::ivec3 corner[8] = { Corner(0), Corner(1), Corner(2), Corner(3), Corner(4), Corner(5), Corner(6), Corner(7) };
+
+bool IntersectRayTriangle(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube, float& dist, int triangle[3])
+{
+	glm::vec3 a = glm::vec3(cube + corner[triangle[0]]);
+	glm::vec3 b = glm::vec3(cube + corner[triangle[1]]);
+	glm::vec3 c = glm::vec3(cube + corner[triangle[2]]);
+	glm::vec3 pos;
+	if (!glm::intersectRayTriangle(orig, dir, a, b, c, /*out*/pos)) return false;
+	return glm::intersectRayPlane(orig, dir, a, glm::cross(b - a, c - a), /*out*/dist);
+}
+
+bool IntersectRayCube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube, float& dist, int& face)
+{
+	int triangles[12][3] = { { 0, 4, 6 }, { 0, 6, 2 },
+					 { 1, 3, 7 }, { 1, 7, 5 },
+					 { 0, 1, 5 }, { 0, 5, 4 },
+					 { 2, 6, 7 }, { 2, 7, 3 },
+					 { 0, 2, 3 }, { 0, 3, 1 },
+					 { 4, 5, 7 }, { 4, 7, 6 } };
+	bool found = false;
+	for (int i = 0; i < 12; i++)
+	{
+		float q_dist;
+		if (IntersectRayTriangle(orig, dir, cube, q_dist, triangles[i]) && (!found || q_dist < dist))
+		{
+			dist = q_dist;
+			found = true;
+			face = i / 2;
+		}
+	}
+	return found;
+}
+
+bool SelectCube(glm::ivec3& sel_cube, float& sel_dist, int& sel_face)
+{
+	float* ma = glm::value_ptr(player_orientation);
+	glm::vec3 dir(ma[4], ma[5], ma[6]);
+
+	int px = roundf(player_position.x);
+	int py = roundf(player_position.y);
+	int pz = roundf(player_position.z);
+
+	bool found = false;
+	for (int x = px - 5; x <= px + 5; x++)
+	{
+		for (int y = py - 5; y <= py + 5; y++)
+		{
+			for (int z = pz - 5; z <= pz + 5; z++)
+			{
+				glm::ivec3 i(x, y, z);
+				if (map_get(i) != 0)
+				{
+					float dist; int face;
+					if (IntersectRayCube(player_position, dir, i, /*out*/dist, /*out*/face) && dist > 0 && dist <= 5 && (!found || dist < sel_dist))
+					{
+						found = true;
+						sel_cube = i;
+						sel_dist = dist;
+						sel_face = face;
+					}
+				}
+			}
+		}
+	}
+	return found;
+}
+
 void model_frame(GLFWwindow* window)
 {
 	double time = glfwGetTime();
@@ -882,6 +996,8 @@ void model_frame(GLFWwindow* window)
 	model_move_player(window, dt);
 	
 	map_refresh(glm::ivec3(player_position.x, player_position.y, player_position.z));
+
+	selection = SelectCube(/*out*/sel_cube, /*out*/sel_dist, /*out*/sel_face);
 }
 
 // Render
@@ -903,9 +1019,6 @@ void glColor(glm::vec3 v)
 {
 	glColor3fv(glm::value_ptr(v));
 }
-
-glm::ivec3 Corner(int c) { return glm::ivec3(c&1, (c>>1)&1, (c>>2)&1); }
-glm::ivec3 corner[8] = { Corner(0), Corner(1), Corner(2), Corner(3), Corner(4), Corner(5), Corner(6), Corner(7) };
 
 float light_cache[8][8][8];
 
@@ -1003,8 +1116,6 @@ void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, glm::vec3 
 		if (block & (1 << d)) { glTexCoord2f(1, 0); glVertex(pos + corner[d]); }
 	}
 }
-
-static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
 
 void render_block(glm::ivec3 pos, glm::vec3 color)
 {
@@ -1328,6 +1439,11 @@ void render_chunk(glm::ivec3 cplayer, glm::ivec3 direction, glm::ivec3 cdelta)
 	}
 }
 
+glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
+{
+	return (glm::vec3(a) - c) * 1.02f + c;
+}
+
 void render_world_blocks(const glm::mat4& matrix)
 {
 	float time_start = glfwGetTime();
@@ -1371,6 +1487,40 @@ void render_world_blocks(const glm::mat4& matrix)
 	glDisable(GL_TEXTURE_2D);
 	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
 	block_render_time_ms_avg = block_render_time_ms_avg * 0.8f + block_render_time_ms * 0.2f;
+
+	if (selection)
+	{
+		glLineWidth(2);
+		glLogicOp(GL_XOR);
+		glColor3f(1,1,1);
+
+		glEnable(GL_COLOR_LOGIC_OP);
+		glBegin(GL_LINES);
+		glm::vec3 c = glm::vec3(sel_cube) + 0.5f;
+		for (int i = 0; i <= 1; i++)
+		{
+			for (int j = 0; j <= 1; j++)
+			{
+				glm::ivec3 sel = sel_cube;
+				glVertex(Q(sel + i*iy + j*iz, c)); glVertex(Q(sel + ix + i*iy + j*iz, c));
+				glVertex(Q(sel + i*ix + j*iz, c)); glVertex(Q(sel + iy + i*ix + j*iz, c));
+				glVertex(Q(sel + i*ix + j*iy, c)); glVertex(Q(sel + iz + i*ix + j*iy, c));
+			}
+		}
+		glEnd();
+
+/*		int faces[6][4] = { { 0, 4, 6, 2 },
+					  { 1, 3, 7, 5 },
+					  { 0, 1, 5, 4 },
+					  { 2, 6, 7, 3 },
+					  { 0, 2, 3, 1 },
+					  { 4, 5, 7, 6 } };
+		int* face = faces[sel_face];
+		glBegin(GL_QUADS);
+		for(int i = 0; i< 4; i++) glVertex(Q(sel_cube + corner[face[i]], c));
+		glEnd();*/
+		glDisable(GL_COLOR_LOGIC_OP);
+	}
 }
 
 void render_world()
@@ -1405,7 +1555,30 @@ void render_gui()
 		player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
 	face_count = 0;
 	text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
+
+	if (selection)
+	{
+		ty -= ts * 2;
+		snprintf(text_buffer, sizeof(text_buffer), "selected: cube [%d %d %d], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, sel_face, sel_dist);
+		text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
+	}
 	glUseProgram(0);
+
+	glLineWidth(4);
+	glLogicOp(GL_INVERT);
+	glEnable(GL_COLOR_LOGIC_OP);
+	glLoadMatrixf(glm::value_ptr(matrix));
+	glBegin(GL_LINES);
+	glColor3f(1,1,1);
+
+	glVertex2f(width/2 - 20, height / 2);
+	glVertex2f(width/2 + 20, height / 2);
+
+	glVertex2f(width/2, height / 2 - 20);
+	glVertex2f(width/2, height / 2 + 20);
+	glEnd();
+	glDisable(GL_COLOR_LOGIC_OP);
+
 
 	#ifdef NEVER
 	// Simple quad
