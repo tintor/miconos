@@ -1,20 +1,22 @@
 // TODO:
 // block editing
 // sliding collisions
-// use OpenGL array buffers
+// PERF async chunk loading
+// PERF use OpenGL array buffers
 // walk / jump mode
 // persistence
 // client / server
 // multi-player
 // sky with day/night cycle
 // permanent server
-// # level-of-detail rendering
+// # texture mipmaps?
+// # PERF level-of-detail rendering
 // # portals
 // # slope generation
 // # transparent water blocks
 // # real shadows from sun
 // # point lights with shadows (for caves)?
-// # occulsion culling (for caves / mountains)
+// # PERF occulsion culling (for caves / mountains)
 // # advanced voxel editing (flood fill, cut/copy/paste, move, drawing shapes)
 // # wiki / user change tracking
 // # real world elevation data
@@ -308,7 +310,9 @@ const int ChunkSizeMask = ChunkSize - 1, MapSizeMask = MapSize - 1;
 struct Chunk
 {
 	block map[ChunkSize][ChunkSize][ChunkSize];
-	bool empty;
+	bool empty, full;
+	bool full0[3];
+	bool full1[3];
 };
 
 Chunk* map_cache[MapSize][MapSize][MapSize];
@@ -376,6 +380,24 @@ int GetColor(int x, int y)
 	return std::floorf((1 + simplex(glm::vec2(x, y) * -0.044f, 4, 0.5f)) * 8);
 }
 
+bool IsFull(Chunk& chunk, int xmin, int xmax, int ymin, int ymax, int zmin, int zmax)
+{
+	for (int x = xmin*(ChunkSize-1); x <= xmax*(ChunkSize-1); x++)
+	{
+		for (int y = ymin*(ChunkSize-1); y <= ymax*(ChunkSize-1); y++)
+		{
+			for (int z = zmin*(ChunkSize-1); z <= zmax*(ChunkSize-1); z++)
+			{
+				if (chunk.map[x][y][z] == EmptyBlock)
+				{
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
+
 void LoadChunk(Chunk& chunk, glm::ivec3 cpos)
 {
 	chunk.empty = true;
@@ -414,6 +436,17 @@ void LoadChunk(Chunk& chunk, glm::ivec3 cpos)
 			}
 		}
 	}
+
+	chunk.full0[0] = IsFull(chunk, 0,0, 0,1, 0,1);
+	chunk.full1[0] = IsFull(chunk, 1,1, 0,1, 0,1);
+
+	chunk.full0[1] = IsFull(chunk, 0,1, 0,0, 0,1);
+	chunk.full1[1] = IsFull(chunk, 0,1, 1,1, 0,1);
+
+	chunk.full0[2] = IsFull(chunk, 0,1, 0,1, 0,0);
+	chunk.full1[2] = IsFull(chunk, 0,1, 0,1, 1,1);
+
+	chunk.full = chunk.full0[0] && chunk.full0[1] && chunk.full0[2] && chunk.full1[0] && chunk.full1[1] && chunk.full1[2];
 }
 
 // extend world if player moves
@@ -634,11 +667,13 @@ void render_init()
 
 	GLfloat fogColor[4] = {0.2, 0.4, 1, 1.0};
 	glFogfv(GL_FOG_COLOR, fogColor);
-	glFogf(GL_FOG_DENSITY, 0.014);
-	glFogi(GL_FOG_MODE, GL_EXP2);
+	glFogf(GL_FOG_DENSITY, 1);
+	glFogf(GL_FOG_START, 100.0f);
+	glFogf(GL_FOG_END, 140.0f);
+	glFogi(GL_FOG_MODE, GL_LINEAR);
 	glHint(GL_FOG_HINT, GL_NICEST);
 
-	perspective = glm::perspective<float>(M_PI / 180 * 65, width / (float)height, 0.03, 1000);
+	perspective = glm::perspective<float>(M_PI / 180 * 75, width / (float)height, 0.03, 1000);
 }
 
 void light_color(int a, int b, int c, glm::vec3 color)
@@ -962,17 +997,27 @@ const float BlockRadius = sqrtf(3) / 2;
 
 void render_chunk(glm::ivec3 cplayer, glm::ivec3 direction, glm::ivec3 cdelta)
 {
-	Chunk& chunk = GetChunk(cplayer + cdelta);
+	glm::ivec3 c = cplayer + cdelta;
+	Chunk& chunk = GetChunk(c);
 	if (chunk.empty)
 		return;
 
+	// underground chunk culling!
+	if (chunk.full)
+		if (GetChunk(c - ix).full1[0] && GetChunk(c + ix).full0[0] && GetChunk(c - iy).full1[1] && GetChunk(c + iy).full0[1]  && GetChunk(c - iz).full1[2] && GetChunk(c + iz).full0[2])
+			return;
+
+	// TODO very cheap integer behind-the-camera check for chunk!
+	/*if (glm::dot(direction, delta) < 0)
+		return;*/
+
 	glm::ivec3 d = (cplayer + cdelta) * ChunkSize;
 	glm::ivec3 p = d + (ChunkSize / 2);
-	int c = ClassifySphereInFrustum(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius);
-	if (c == -1)
+	int cl = ClassifySphereInFrustum(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius);
+	if (cl == -1)
 		return;
 
-	if (c == 0)
+	if (cl == 0)
 	{
 		// do frustrum checks for each voxel
 		for (int x = 0; x < ChunkSize; x++)
@@ -995,7 +1040,7 @@ void render_chunk(glm::ivec3 cplayer, glm::ivec3 direction, glm::ivec3 cdelta)
 			}
 		}
 	}
-	if (c == 1)
+	if (cl == 1)
 	{
 		for (int x = 0; x < ChunkSize; x++)
 		{
@@ -1178,7 +1223,7 @@ int main(int argc, char** argv)
 	//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 	//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-	GLFWwindow* window = glfwCreateWindow(1024, 768, "Arena", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(1524, 1200, "Arena", NULL, NULL);
 	if (!window)
 	{
 		glfwTerminate();
