@@ -398,7 +398,7 @@ Simplex* heights = new Simplex;
 
 int GetColor(int x, int y)
 {
-	return std::floorf((1 + simplex(glm::vec2(x, y) * -0.044f, 4, 0.5f)) * 8);
+	return floorf((1 + simplex(glm::vec2(x, y) * -0.044f, 4, 0.5f)) * 8);
 }
 
 void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
@@ -1030,7 +1030,7 @@ void InitLightCache()
 		{
 			for (int c = 0; c < 8; c++)
 			{
-				glm::vec3 normal = glm::normalize((glm::vec3)glm::cross(corner[b] - corner[a], corner[c] - corner[a]));
+				glm::vec3 normal = glm::normalize((glm::vec3)glm::cross(glm::vec3(corner[b] - corner[a]), glm::vec3(corner[c] - corner[a])));
 				float cos_angle = std::max<float>(0, -glm::dot(normal, light_direction));
 				light_cache[a][b][c] = 0.3f + cos_angle * 0.7f;
 			}
