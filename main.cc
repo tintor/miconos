@@ -1099,7 +1099,49 @@ void render_world_blocks(const glm::mat4& matrix)
 		}
 	}
 
-/*	for (int a = 0; a < 16; a++)
+	// sphere test
+	for (int x = -1; x <= 1; x++)
+	{
+		for (int y = -1; y <= 1; y++)
+		{
+			for (int z = -1; z <= 1; z++)
+			{
+				int dx = (x == 1) ? 1 : 0;
+				int dy = (y == 1) ? 2 : 0;
+				int dz = (z == 1) ? 4 : 0;
+
+				block b = EmptyBlock;
+				if ((x == 0 && y == 0) || (y == 0 && z == 0) || (z == 0 && x == 0))
+				{
+					b = 255;
+				}
+				if (x == 0 && y != 0 && z != 0)
+				{
+					b = 255 - S(0 + dy + dz) - S(1 + dy + dz);
+				}
+				if (x != 0 && y == 0 && z != 0)
+				{
+					b = 255 - S(0 + dx + dz) - S(2 + dx + dz);
+				}
+				if (x != 0 && y != 0 && z == 0)
+				{
+					b = 255 - S(0 + dx + dy) - S(4 + dx + dy);
+				}
+				if (x != 0 && y != 0 && z != 0)
+				{
+					int f = 0;
+					if (x == -1) f ^= 1;
+					if (y == -1) f ^= 2;
+					if (z == -1) f ^= 4;
+					b = S(0^f) + S(1^f) + S(2^f) + S(4^f);
+				}
+				render_general(glm::ivec3(x+1, y-10, z+10), b, glm::vec3(1, 1, 0));
+			}
+		}
+	}
+
+	// all blocks test
+	for (int a = 0; a < 16; a++)
 	{
 		render_block(glm::ivec3(-2, 0, 10 + a * 2), glm::vec3(1, 1, 0));
 	}
@@ -1135,7 +1177,7 @@ void render_world_blocks(const glm::mat4& matrix)
 				q += 2;
 			}
 		}
-	}*/
+	}
 
 	glEnd();
 	glDisable(GL_TEXTURE_2D);
