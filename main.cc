@@ -485,9 +485,14 @@ bool selection = false;
 
 static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
 
+bool flying = true;
+
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-
+	if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
+	{
+		flying = !flying;
+	}
 }
 
 void OnMouseButton(GLFWwindow* window, int button, int action, int mods)
@@ -686,28 +691,31 @@ uint CubeNeighbors(glm::ivec3 cube)
 	return neighbors;
 }
 
+glm::vec3 player_velocity;
+
 void ResolveCollisionsWithBlocks()
 {
 	int px = roundf(player_position.x);
 	int py = roundf(player_position.y);
 	int pz = roundf(player_position.z);
 
-	for (int i = 0; i < 10; i++)
+	glm::vec3 start = player_position;
+	for (int i = 0; i < 100; i++)
 	{
 		// Resolve all collisions simultaneously
 		glm::vec3 sum(0, 0, 0);
 		int c = 0;
-		for (int x = px - 2; x <= px + 2; x++)
+		for (int x = px - 3; x <= px + 3; x++)
 		{
-			for (int y = py - 2; y <= py + 2; y++)
+			for (int y = py - 3; y <= py + 3; y++)
 			{
-				for (int z = pz - 2; z <= pz + 2; z++)
+				for (int z = pz - 3; z <= pz + 3; z++)
 				{
 					glm::ivec3 cube(x, y, z);
 					if (map_get(cube) != 0)
 					{
 						glm::vec3 p = player_position;
-						if (1 == SphereVsCube(p, 1, cube, CubeNeighbors(cube)))
+						if (1 == SphereVsCube(p, 0.9f, cube, CubeNeighbors(cube)))
 						{
 							sum += p;
 							c += 1;
@@ -718,8 +726,16 @@ void ResolveCollisionsWithBlocks()
 		}
 		if (c == 0)
 			break;
+		player_velocity.z = 0;
 		player_position = sum / (float)c;
 	}
+}
+
+void Simulate(float dt, glm::vec3 dir)
+{
+	if (!flying) player_velocity.z -= dt * 15;
+	player_position += dir * ((flying ? 10 : 4) * dt) + player_velocity * dt;
+	ResolveCollisionsWithBlocks();
 }
 
 void model_move_player(GLFWwindow* window, float dt)
@@ -730,6 +746,13 @@ void model_move_player(GLFWwindow* window, float dt)
 	glm::vec3 forward(m[4], m[5], m[6]);
 	glm::vec3 right(m[0], m[1], m[2]);
 
+	if (!flying)
+	{
+		forward.z = 0;
+		forward = glm::normalize(forward);
+		right.z = 0;
+		right = glm::normalize(right);
+	}
 	if (glfwGetKey(window, 'A')) dir -= right;
 	if (glfwGetKey(window, 'D')) dir += right;
 	if (glfwGetKey(window, 'W')) dir += forward;
@@ -737,17 +760,24 @@ void model_move_player(GLFWwindow* window, float dt)
 	if (glfwGetKey(window, 'Q')) dir[2] += 1;
 	if (glfwGetKey(window, 'E')) dir[2] -= 1;
 
+	if (!flying && glfwGetKey(window, GLFW_KEY_SPACE) && player_velocity.z == 0)
+	{
+		player_velocity.z = 10;
+	}
+
 	if (dir.x != 0 || dir.y != 0 || dir.z != 0)
 	{
 		dir = glm::normalize(dir);
-		float dp = 10 * dt; // how much to move this frame
-		while (dp > 0)
+	}
+	while (dt > 0)
+	{
+		if (dt <= 0.01)
 		{
-			float d = (dp > 0.1) ? 0.1 : dp;
-			player_position += dir * d;
-			ResolveCollisionsWithBlocks();
-			dp -= d;
+			Simulate(dt, dir);
+			break;
 		}
+		Simulate(0.01, dir);
+		dt -= 0.01;
 	}
 }
 
