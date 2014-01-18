@@ -1,5 +1,4 @@
 // TODO:
-// edge / vertex collision detection
 // color and shape pallete
 // free mouse (but fixed camera) mode for editing
 // PERF async chunk loading
@@ -535,9 +534,42 @@ void model_init(GLFWwindow* window)
 
 float sqr(float a) { return a * a; }
 
+uint NeighborBit(int dx, int dy, int dz)
+{
+	return 1u << ((dx + 1) + (dy + 1) * 3 + (dz + 1) * 9);
+}
+
+bool IsVertexFree(uint neighbors, int dx, int dy, int dz)
+{
+	assert(abs(dx) + abs(dy) + abs(dz) == 3);
+	uint mask = NeighborBit(dx, dy, dz);
+	mask |= NeighborBit(0, dy, dz) | NeighborBit(dx, 0, dz) | NeighborBit(dx, dy, 0);
+	mask |= NeighborBit(0, 0, dz) | NeighborBit(dx, 0, 0) | NeighborBit(0, dy, 0);
+	return (neighbors & mask) == 0;
+}
+
+bool IsEdgeFree(uint neighbors, int dx, int dy, int dz)
+{
+	assert(abs(dx) + abs(dy) + abs(dz) == 2);
+	uint mask = NeighborBit(dx, dy, dz);
+	mask |= NeighborBit(0, dy, dz) | NeighborBit(dx, 0, dz) | NeighborBit(dx, dy, 0);
+	return (neighbors & mask) == 0;
+}
+
+int Resolve(glm::vec3& center, float k, float x, float y, float z)
+{
+	glm::vec3 d(x, y, z);
+	float ds = sqr(d);
+	if (ds < 1e-6) return -1;
+	center += d * (k / sqrtf(ds) - 1);
+	return 1;
+}
+
 // Move sphere so that it is not coliding with cube
-// Note: doesn't handle vertex and edge case (returns false)
-int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube)
+//
+// Neighbors is 3x3x3 matrix of 27 bits representing nearby cubes.
+// Used to turn off vertices and edges that are not exposed.
+int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube, uint neighbors)
 {
 	float e = 0.5;
 	float x = center.x - cube.x - e;
@@ -555,29 +587,57 @@ int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube)
 	// if center outside cube
 	if (x > +e)
 	{
-		if (y > +e || y < -e) return -1;
-		if (z > +e || z < -e) return -1;
+		if (y > +e)
+		{
+			if (z > +e) return IsVertexFree(neighbors, 1, 1, +1) ? Resolve(center, radius, x - e, y - e, z - e) : -1;
+			if (z < -e) return IsVertexFree(neighbors, 1, 1, -1) ? Resolve(center, radius, x - e, y - e, z + e) : -1;
+			return IsEdgeFree(neighbors, 1, 1, 0) ? Resolve(center, radius, x - e, y - e, 0) : -1;
+		}
+		if (y < -e)
+		{
+			if (z > +e) return IsVertexFree(neighbors, 1, -1, +1) ? Resolve(center, radius, x - e, y + e, z - e) : -1;
+			if (z < -e) return IsVertexFree(neighbors, 1, -1, -1) ? Resolve(center, radius, x - e, y + e, z + e) : -1;
+			return IsEdgeFree(neighbors, 1, -1, 0) ? Resolve(center, radius, x - e, y + e, 0) : -1;
+		}
+
+		if (z > +e) return IsEdgeFree(neighbors, 1, 0, +1) ? Resolve(center, radius, x - e, 0, z - e) : -1;
+		if (z < -e) return IsEdgeFree(neighbors, 1, 0, -1) ? Resolve(center, radius, x - e, 0, z + e) : -1;
 		center.x += radius - x + e;
 		return 1;
 	}
 
 	if (x < -e)
 	{
-		if (y > +e || y < -e) return -1;
-		if (z > +e || z < -e) return -1;
+		if (y > +e)
+		{
+			if (z > +e) return IsVertexFree(neighbors, -1, 1, +1) ? Resolve(center, radius, x + e, y - e, z - e) : -1;
+			if (z < -e) return IsVertexFree(neighbors, -1, 1, -1) ? Resolve(center, radius, x + e, y - e, z + e) : -1;
+			return IsEdgeFree(neighbors, -1, 1, 0) ? Resolve(center, radius, x + e, y - e, 0) : -1;
+		}
+		if (y < -e)
+		{
+			if (z > +e) return IsVertexFree(neighbors, -1, -1, +1) ? Resolve(center, radius, x + e, y + e, z - e) : -1;
+			if (z < -e) return IsVertexFree(neighbors, -1, -1, -1) ? Resolve(center, radius, x + e, y + e, z + e) : -1;
+			return IsEdgeFree(neighbors, -1, -1, 0) ? Resolve(center, radius, x + e, y + e, 0) : -1;
+		}
+
+		if (z > +e) return IsEdgeFree(neighbors, -1, 0, +1) ? Resolve(center, radius, x + e, 0, z - e) : -1;
+		if (z < -e) return IsEdgeFree(neighbors, -1, 0, -1) ? Resolve(center, radius, x + e, 0, z + e) : -1;
 		center.x += -radius - x - e;
 		return 1;
 	}
 
 	if (y > +e)
 	{
-		if (z > +e || z < -e) return -1;
+		if (z > +e) return IsEdgeFree(neighbors, 0, 1, +1) ? Resolve(center, radius, 0, y - e, z - e) : -1;
+		if (z < -e) return IsEdgeFree(neighbors, 0, 1, -1) ? Resolve(center, radius, 0, y - e, z + e) : -1;
 		center.y += radius - y + e;
 		return 1;
 	}
 	if (y < -e)
 	{
-		if (z > +e || z < -e) return -1;
+		if (z > +e) return IsEdgeFree(neighbors, 0, -1, +1) ? Resolve(center, radius, 0, y + e, z - e) : -1;
+		if (z < -e) return IsEdgeFree(neighbors, 0, -1, -1) ? Resolve(center, radius, 0, y + e, z + e) : -1;
 		center.y += -radius - y - e;
 		return 1;
 	}
@@ -607,24 +667,58 @@ int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube)
 	return 1;
 }
 
+uint CubeNeighbors(glm::ivec3 cube)
+{
+	uint neighbors = 0;
+	for (int dx = -1; dx <= 1; dx++)
+	{
+		for (int dy = -1; dy <= 1; dy++)
+		{
+			for (int dz = -1; dz <= 1; dz++)
+			{
+				if (map_get(glm::ivec3(cube.x + dx, cube.y + dy, cube.z + dz)) != 0)
+				{
+					neighbors |= NeighborBit(dx, dy, dz);
+				}
+			}
+		}
+	}
+	return neighbors;
+}
+
 void ResolveCollisionsWithBlocks()
 {
 	int px = roundf(player_position.x);
 	int py = roundf(player_position.y);
 	int pz = roundf(player_position.z);
 
-	for (int x = px - 2; x <= px + 2; x++)
+	for (int i = 0; i < 10; i++)
 	{
-		for (int y = py - 2; y <= py + 2; y++)
+		// Resolve all collisions simultaneously
+		glm::vec3 sum(0, 0, 0);
+		int c = 0;
+		for (int x = px - 2; x <= px + 2; x++)
 		{
-			for (int z = pz - 2; z <= pz + 2; z++)
+			for (int y = py - 2; y <= py + 2; y++)
 			{
-				if (map_get(glm::ivec3(x, y, z)) != 0)
+				for (int z = pz - 2; z <= pz + 2; z++)
 				{
-					SphereVsCube(player_position, 1, glm::ivec3(x, y, z));
+					glm::ivec3 cube(x, y, z);
+					if (map_get(cube) != 0)
+					{
+						glm::vec3 p = player_position;
+						if (1 == SphereVsCube(p, 1, cube, CubeNeighbors(cube)))
+						{
+							sum += p;
+							c += 1;
+						}
+					}
 				}
 			}
 		}
+		if (c == 0)
+			break;
+		player_position = sum / (float)c;
 	}
 }
 
@@ -702,17 +796,18 @@ bool SelectCube(glm::ivec3& sel_cube, float& sel_dist, int& sel_face)
 	int pz = roundf(player_position.z);
 
 	bool found = false;
-	for (int x = px - 5; x <= px + 5; x++)
+	int Dist = 6;
+	for (int x = px - Dist; x <= px + Dist; x++)
 	{
-		for (int y = py - 5; y <= py + 5; y++)
+		for (int y = py - Dist; y <= py + Dist; y++)
 		{
-			for (int z = pz - 5; z <= pz + 5; z++)
+			for (int z = pz - Dist; z <= pz + Dist; z++)
 			{
 				glm::ivec3 i(x, y, z);
 				if (map_get(i) != 0)
 				{
 					float dist; int face;
-					if (IntersectRayCube(player_position, dir, i, /*out*/dist, /*out*/face) && dist > 0 && dist <= 5 && (!found || dist < sel_dist))
+					if (IntersectRayCube(player_position, dir, i, /*out*/dist, /*out*/face) && dist > 0 && dist <= Dist && (!found || dist < sel_dist))
 					{
 						found = true;
 						sel_cube = i;
@@ -725,6 +820,9 @@ bool SelectCube(glm::ivec3& sel_cube, float& sel_dist, int& sel_face)
 	}
 	return found;
 }
+
+double last_cursor_x = 0;
+double last_cursor_y = 0;
 
 void model_frame(GLFWwindow* window)
 {
@@ -739,13 +837,15 @@ void model_frame(GLFWwindow* window)
 
 	double cursor_x, cursor_y;
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
-	if (cursor_x != 0 || cursor_y != 0)
+	if (cursor_x != last_cursor_x || cursor_y != last_cursor_y)
 	{
-		player_yaw += (cursor_x) / 100;
-		player_pitch += (cursor_y) / 100;
+		player_yaw += (cursor_x - last_cursor_x) / 150;
+		player_pitch += (cursor_y - last_cursor_y) / 150;
 		if (player_pitch > M_PI / 2) player_pitch = M_PI / 2;
 		if (player_pitch < -M_PI / 2) player_pitch = -M_PI / 2;
-		glfwSetCursorPos(window, 0, 0);
+		//glfwSetCursorPos(window, 0, 0);
+		last_cursor_x = cursor_x;
+		last_cursor_y = cursor_y;
 		player_orientation = glm::rotate(glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)), -player_pitch, glm::vec3(1, 0, 0));
 
 		perspective_rotation = glm::rotate(perspective, player_pitch, glm::vec3(1, 0, 0));
@@ -798,6 +898,8 @@ void InitLightCache()
 	}
 }
 
+Text* text = nullptr;
+
 void render_init()
 {
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
@@ -822,6 +924,7 @@ void render_init()
 	glHint(GL_FOG_HINT, GL_NICEST);
 
 	perspective = glm::perspective<float>(M_PI / 180 * 75, width / (float)height, 0.03, 1000);
+	text = new Text;
 }
 
 void light_color(int a, int b, int c, glm::vec3 color)
@@ -1298,8 +1401,6 @@ void render_world()
 	glDisable(GL_DEPTH_TEST);
 }
 
-Text* text = nullptr;
-
 void render_gui()
 {
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
@@ -1309,6 +1410,7 @@ void render_gui()
 	text->Printf("position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f",
 			 player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
 	face_count = 0;
+	text->Printf("%d x %d", width, height);
 
 	if (selection)
 	{
@@ -1379,7 +1481,8 @@ int main(int argc, char** argv)
 	//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 	//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-	GLFWwindow* window = glfwCreateWindow(1524, 1200, "Arena", NULL, NULL);
+	const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+	GLFWwindow* window = glfwCreateWindow(mode->width*2, mode->height*2, "Arena", glfwGetPrimaryMonitor(), NULL);
 	if (!window)
 	{
 		glfwTerminate();
@@ -1392,7 +1495,6 @@ int main(int argc, char** argv)
 
 	model_init(window);
 	render_init();
-	text = new Text;
 	
 	while (!glfwWindowShouldClose(window))
 	{
