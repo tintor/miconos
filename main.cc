@@ -1025,6 +1025,14 @@ void InitLightCache()
 
 Text* text = nullptr;
 
+int block_program;
+
+GLuint block_matrix_loc;
+GLuint block_sampler_loc;
+GLuint block_position_loc;
+GLuint block_color_loc;
+GLuint block_uv_loc;
+
 void render_init()
 {
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
@@ -1050,6 +1058,13 @@ void render_init()
 
 	perspective = glm::perspective<float>(M_PI / 180 * 75, width / (float)height, 0.03, 1000);
 	text = new Text;
+
+	block_program = load_program("shaders/block.vert", "shaders/block.frag");
+	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
+	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
+	block_position_loc = glGetAttribLocation(block_program, "position");
+	block_color_loc = glGetAttribLocation(block_program, "color");
+	block_uv_loc = glGetAttribLocation(block_program, "uv");
 }
 
 void light_color(int a, int b, int c, glm::vec3 color)
@@ -1472,6 +1487,67 @@ void render_world_blocks(const glm::mat4& matrix)
 	}
 
 	glEnd();
+
+	// Sample VertexArray cube!
+	// =========
+	glUseProgram(block_program);
+	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
+	glUniform1i(block_sampler_loc, 0/*block_texture*/);
+
+	struct Vertex
+	{
+		glm::vec3 color;
+		glm::vec2 uv;
+		glm::vec3 pos;
+	};
+
+	Vertex* vertex_data = new Vertex[6 * 4];
+
+	glm::vec3 color(0.5, 0.5, 1);
+	glm::ivec3 pos(15, 15, 15);
+	int faces[6][4] = { { 0, 4, 6, 2 },
+				  { 1, 3, 7, 5 },
+				  { 0, 1, 5, 4 },
+				  { 2, 6, 7, 3 },
+				  { 0, 2, 3, 1 },
+				  { 4, 5, 7, 6 } };
+	glm::vec2 uv[4] = { glm::vec2(0, 0), glm::vec2(0, 1), glm::vec2(1, 1), glm::vec2(1, 0) };
+	Vertex* v = vertex_data;
+	for (int* face : faces)
+	{
+		glm::vec3 c = color * light_cache[face[0]][face[1]][face[2]];
+		for (int i = 0; i < 4; i++)
+		{
+			v->color = c;
+			v->uv = uv[i];
+			v->pos = pos + corner[face[i]];
+			v += 1;
+		}
+	}
+
+	GLuint buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(Vertex) * 6 * 4, vertex_data);
+	delete[] vertex_data;
+
+	glEnableVertexAttribArray(block_position_loc);
+	glEnableVertexAttribArray(block_color_loc);
+	glEnableVertexAttribArray(block_uv_loc);
+
+	glBindBuffer(GL_ARRAY_BUFFER, buffer);
+	glVertexAttribPointer(block_position_loc, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), &((Vertex*)0)->pos);
+	glVertexAttribPointer(block_color_loc, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), &((Vertex*)0)->color);
+	glVertexAttribPointer(block_uv_loc, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), &((Vertex*)0)->uv);
+
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glDrawArrays(GL_QUADS, 0, 6 * 4);
+
+	glDisableVertexAttribArray(block_position_loc);
+	glDisableVertexAttribArray(block_color_loc);
+	glDisableVertexAttribArray(block_uv_loc);
+
+	glDeleteBuffers(1, &buffer);
+	glUseProgram(0);
+	// =========
+
 	glDisable(GL_TEXTURE_2D);
 	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
 	block_render_time_ms_avg = block_render_time_ms_avg * 0.8f + block_render_time_ms * 0.2f;
@@ -1535,7 +1611,6 @@ void render_gui()
 	text->Printf("position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f",
 			 player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
 	face_count = 0;
-	text->Printf("%d x %d", width, height);
 
 	if (selection)
 	{
