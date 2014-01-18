@@ -1,5 +1,7 @@
 // TODO:
-// block editing
+// edge / vertex collision detection
+// color and shape pallete
+// free mouse (but fixed camera) mode for editing
 // PERF async chunk loading
 // PERF use OpenGL array buffers
 // walk / jump mode
@@ -21,6 +23,7 @@
 // # real world elevation data
 // # spherical world / spherical gravity ?
 // # translating blocks ?
+// # simple water (minecraft) with darker light in depth
 // # psysics: water ?
 // # psysics: moving objects / vehicles ?
 
@@ -42,261 +45,18 @@
 #include "glm/gtx/fast_square_root.hpp"
 #include "glm/gtx/intersect.hpp"
 
+#include "rendering.hh"
+
 // Config
 
 const int VSYNC = 1;
 
 // GUI
-//#define GLFW_INCLUDE_GLCOREARB
-#ifndef __APPLE_CC__
-	#include <GL/glew.h>
-#endif
-#include <GLFW/glfw3.h>
 
 int width;
 int height;
 
 #define RENDER_LIMIT 13
-
-// Render::Buffers
-
-int gen_buffer(GLenum target, GLsizei size, const void* data)
-{
-	GLuint buffer;
-	glGenBuffers(1, &buffer);
-	glBindBuffer(target, buffer);
-	glBufferData(target, size, data, GL_STATIC_DRAW);
-	glBindBuffer(target, 0);
-	return buffer;
-}
-
-void gen_buffers(int components, int faces,
-	GLfloat* position_data,  GLfloat* normal_data,  GLfloat* uv_data,
-	GLuint*  position_buffer, GLuint* normal_buffer, GLuint* uv_buffer)
-{
-	if (position_buffer)
-	{
-		glDeleteBuffers(1, position_buffer);
-		*position_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, position_data);
-		delete[] position_data;
-	}
-	if (normal_buffer)
-	{
-		glDeleteBuffers(1, normal_buffer);
-		*normal_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, normal_data);
-		delete[] normal_data;
-	}
-	if (uv_buffer)
-	{
-		glDeleteBuffers(1, uv_buffer);
-		*uv_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * 2, uv_data);
-		delete[] uv_data;
-	}
-}
-
-void malloc_buffers(int components, int faces, GLfloat** position_data, GLfloat** normal_data, GLfloat** uv_data)
-{
-	if (position_data)
-	{
-		*position_data = new GLfloat[faces * 6 * components];
-	}
-	if (normal_data)
-	{
-		*normal_data = new GLfloat[faces * 6 * components];
-	}
-	if (uv_data)
-	{
-		*uv_data = new GLfloat[faces * 6 * 2];
-	}
-}
-
-// Render::Texture
-
-#define LODEPNG_COMPILE_CPP
-#include "lodepng/lodepng.h"
-
-void load_png_texture(std::string filename)
-{
-	unsigned char* image;
-	unsigned width, height;
-	unsigned error = lodepng_decode32_file(&image, &width, &height, filename.c_str());
-	if (error)
-	{
-		fprintf(stderr, "lodepgn_decode32_file error %u: %s\n", error, lodepng_error_text(error));
-		exit(1);
-	}
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
-	free(image);
-}
-
-// Render::Shader
-
-std::string read_file(std::string filename)
-{
-	std::ifstream in(filename, std::ios::in | std::ios::binary);
-	if (in)
-	{
-		std::string contents;
-		in.seekg(0, std::ios::end);
-		contents.resize(in.tellg());
-		in.seekg(0, std::ios::beg);
-		in.read(&contents[0], contents.size());
-		in.close();
-		return contents;
-	}
-	throw errno;
-}
-
-GLuint make_shader(GLenum type, std::string source)
-{
-	GLuint shader = glCreateShader(type);
-	const GLchar* c = source.c_str();
-	glShaderSource(shader, 1, &c, NULL);
-	glCompileShader(shader);
-	GLint status;
-	glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-	if (status == GL_FALSE)
-	{
-		GLint length;
-		glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
-		GLchar* info = new GLchar[length];
-		glGetShaderInfoLog(shader, length, NULL, info);
-		info[length] = 0;
-		std::cerr << "glCompileShader failed on [" << source << "]:\n" << info << std::endl;
-		exit(1);
-	}
-	return shader;
-}
-
-GLuint load_shader(GLenum type, std::string path)
-{
-	return make_shader(type, read_file(path));
-}
-
-GLuint make_program(GLuint shader1, GLuint shader2)
-{
-	GLuint program = glCreateProgram();
-	glAttachShader(program, shader1);
-	glAttachShader(program, shader2);
-	glLinkProgram(program);
-	GLint status;
-	glGetProgramiv(program, GL_LINK_STATUS, &status);
-	if (status == GL_FALSE)
-	{
-		GLint length;
-		glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
-		GLchar* info = new GLchar[length];
-		glGetProgramInfoLog(program, length, NULL, info);
-		info[length] = 0;
-		fprintf(stderr, "glLinkProgram failed: %s\n", info);
-		exit(1);
-	}
-	glDetachShader(program, shader1);
-	glDetachShader(program, shader2);
-	glDeleteShader(shader1);
-	glDeleteShader(shader2);
-	return program;
-}
-
-GLuint load_program(std::string path1, std::string path2)
-{
-	GLuint shader1 = load_shader(GL_VERTEX_SHADER, path1);
-	GLuint shader2 = load_shader(GL_FRAGMENT_SHADER, path2);
-	return make_program(shader1, shader2);
-}
-
-// Render::Text
-
-GLuint text_texture;
-GLuint text_program;
-GLuint text_matrix_loc;
-GLuint text_sampler_loc;
-GLuint text_position_loc;
-GLuint text_uv_loc;
-
-void text_init()
-{
-	text_program = load_program("shaders/text_vertex.glsl", "shaders/text_fragment.glsl");
-	text_matrix_loc = glGetUniformLocation(text_program, "matrix");
-	text_sampler_loc = glGetUniformLocation(text_program, "sampler");
-	text_position_loc = glGetAttribLocation(text_program, "position");
-	text_uv_loc = glGetAttribLocation(text_program, "uv");
-	//glBindFragDataLocation(text_program, 0, "color");
-
-	glGenTextures(1, &text_texture);
-	glBindTexture(GL_TEXTURE_2D, text_texture);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	load_png_texture("font.png");
-}
-
-void make_character(float* vertex, float* texture, float x, float y, float n, float m, char c)
-{
-	float* v = vertex;
-	*v++ = x - n; *v++ = y - m;
-	*v++ = x + n; *v++ = y - m;
-	*v++ = x + n; *v++ = y + m;
-	*v++ = x - n; *v++ = y - m;
-	*v++ = x + n; *v++ = y + m;
-	*v++ = x - n; *v++ = y + m;
-
-	float a = 0.0625;
-	float b = a * 2;
-	int w = c - 32;
-	float du = (w % 16) * a;
-	float dv = 1 - (w / 16) * b - b;
-	float p = 0;
-	float* t = texture;
-	*t++ = du + 0; *t++ = dv + p;
-	*t++ = du + a; *t++ = dv + p;
-	*t++ = du + a; *t++ = dv + b - p;
-	*t++ = du + 0; *t++ = dv + p;
-	*t++ = du + a; *t++ = dv + b - p;
-	*t++ = du + 0; *t++ = dv + b - p;
-}
-
-void text_gen_buffers(GLuint* position_buffer, GLuint* uv_buffer, float x, float y, float n, std::string text)
-{
-	int length = text.length();
-	GLfloat* position_data;
-	GLfloat* uv_data;
-	malloc_buffers(2, length, &position_data, 0, &uv_data);
-	for (int i = 0; i < length; i++)
-	{
-		make_character(position_data + i * 12, uv_data + i * 12, x, y, n / 2, n, text[i]);
-		x += n;
-	}
-	gen_buffers(2, length, position_data, 0, uv_data, position_buffer, 0, uv_buffer);
-}
-
-void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position_loc, GLuint uv_loc, int length)
-{
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glEnableVertexAttribArray(text_position_loc);
-	glEnableVertexAttribArray(text_uv_loc);
-
-	glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
-	glVertexAttribPointer(position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
-	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
-	glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glDrawArrays(GL_TRIANGLES, 0, length * 6);
-
-	glDisableVertexAttribArray(position_loc);
-	glDisableVertexAttribArray(uv_loc);
-	glDisable(GL_BLEND);
-}
-
-void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, std::string text)
-{
-	GLuint position_buffer = 0;
-	GLuint uv_buffer = 0;
-	text_gen_buffers(&position_buffer, &uv_buffer, x, y, n, text);
-	text_draw_buffers(position_buffer, uv_buffer, position_loc, uv_loc, text.length());
-	glDeleteBuffers(1, &position_buffer);
-	glDeleteBuffers(1, &uv_buffer);
-}
 
 // Util
 
@@ -1538,29 +1298,21 @@ void render_world()
 	glDisable(GL_DEPTH_TEST);
 }
 
+Text* text = nullptr;
+
 void render_gui()
 {
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
 	
 	// Text test
-	glBindTexture(GL_TEXTURE_2D, text_texture);
-	glUseProgram(text_program);
-	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
-	glUniform1i(text_sampler_loc, 0/*text_texture*/);
-	char text_buffer[1024];
-	float ts = height / 80;
-	float tx = ts / 2;
-	float ty = height - ts;
-	snprintf(text_buffer, sizeof(text_buffer), "position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f",
-		player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
+	text->Reset(height, matrix);
+	text->Printf("position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f",
+			 player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
 	face_count = 0;
-	text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
 
 	if (selection)
 	{
-		ty -= ts * 2;
-		snprintf(text_buffer, sizeof(text_buffer), "selected: cube [%d %d %d], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, sel_face, sel_dist);
-		text_print(text_position_loc, text_uv_loc, tx, ty, ts, text_buffer);
+		text->Printf("selected: cube [%d %d %d], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, sel_face, sel_dist);
 	}
 	glUseProgram(0);
 
@@ -1639,7 +1391,7 @@ int main(int argc, char** argv)
 
 	model_init(window);
 	render_init();
-	text_init();
+	text = new Text;
 	
 	while (!glfwWindowShouldClose(window))
 	{
