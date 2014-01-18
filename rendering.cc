@@ -20,52 +20,12 @@ int gen_buffer(GLenum target, GLsizei size, const void* data)
 	return buffer;
 }
 
-void gen_buffers(int components, int faces,
-	GLfloat* position_data,  GLfloat* normal_data,  GLfloat* uv_data,
-	GLuint*  position_buffer, GLuint* normal_buffer, GLuint* uv_buffer)
-{
-	if (position_buffer)
-	{
-		glDeleteBuffers(1, position_buffer);
-		*position_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, position_data);
-		delete[] position_data;
-	}
-	if (normal_buffer)
-	{
-		glDeleteBuffers(1, normal_buffer);
-		*normal_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * components, normal_data);
-		delete[] normal_data;
-	}
-	if (uv_buffer)
-	{
-		glDeleteBuffers(1, uv_buffer);
-		*uv_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * faces * 6 * 2, uv_data);
-		delete[] uv_data;
-	}
-}
-
-void malloc_buffers(int components, int faces, GLfloat** position_data, GLfloat** normal_data, GLfloat** uv_data)
-{
-	if (position_data)
-	{
-		*position_data = new GLfloat[faces * 6 * components];
-	}
-	if (normal_data)
-	{
-		*normal_data = new GLfloat[faces * 6 * components];
-	}
-	if (uv_data)
-	{
-		*uv_data = new GLfloat[faces * 6 * 2];
-	}
-}
-
 // Render::Texture
 
 #define LODEPNG_COMPILE_CPP
 #include "lodepng/lodepng.h"
 
-void load_png_texture(const std::string& filename)
+void load_png_texture(std::string filename)
 {
 	unsigned char* image;
 	unsigned width, height;
@@ -170,8 +130,6 @@ void make_character(float* vertex, float* texture, float x, float y, float n, fl
 	*v++ = x - n; *v++ = y - m;
 	*v++ = x + n; *v++ = y - m;
 	*v++ = x + n; *v++ = y + m;
-	*v++ = x - n; *v++ = y - m;
-	*v++ = x + n; *v++ = y + m;
 	*v++ = x - n; *v++ = y + m;
 
 	float a = 0.0625;
@@ -181,26 +139,30 @@ void make_character(float* vertex, float* texture, float x, float y, float n, fl
 	float dv = 1 - (w / 16) * b - b;
 	float p = 0;
 	float* t = texture;
+
 	*t++ = du + 0; *t++ = dv + p;
 	*t++ = du + a; *t++ = dv + p;
-	*t++ = du + a; *t++ = dv + b - p;
-	*t++ = du + 0; *t++ = dv + p;
 	*t++ = du + a; *t++ = dv + b - p;
 	*t++ = du + 0; *t++ = dv + b - p;
 }
 
-void text_gen_buffers(GLuint* position_buffer, GLuint* uv_buffer, float x, float y, float n, const std::string& text)
+void text_gen_buffers(GLuint* position_buffer, GLuint* uv_buffer, float x, float y, float n, const char* text)
 {
-	int length = text.length();
-	GLfloat* position_data;
-	GLfloat* uv_data;
-	malloc_buffers(2, length, &position_data, 0, &uv_data);
+	int length = strlen(text);
+	GLfloat* position_data = new GLfloat[length * 4 * 2];
+	GLfloat* uv_data = new GLfloat[length * 4 * 2];
+
 	for (int i = 0; i < length; i++)
 	{
-		make_character(position_data + i * 12, uv_data + i * 12, x, y, n / 2, n, text[i]);
+		make_character(position_data + i * 8, uv_data + i * 8, x, y, n / 2, n, text[i]);
 		x += n;
 	}
-	gen_buffers(2, length, position_data, 0, uv_data, position_buffer, 0, uv_buffer);
+
+	*position_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 4 * 2, position_data);
+	*uv_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 4 * 2, uv_data);
+
+	delete[] position_data;
+	delete[] uv_data;
 }
 
 void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position_loc, GLuint uv_loc, int length)
@@ -215,21 +177,11 @@ void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position
 	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
 	glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glDrawArrays(GL_TRIANGLES, 0, length * 6);
+	glDrawArrays(GL_QUADS, 0, length * 4);
 
 	glDisableVertexAttribArray(position_loc);
 	glDisableVertexAttribArray(uv_loc);
 	glDisable(GL_BLEND);
-}
-
-void text_print(GLuint position_loc, GLuint uv_loc, float x, float y, float n, std::string text)
-{
-	GLuint position_buffer = 0;
-	GLuint uv_buffer = 0;
-	text_gen_buffers(&position_buffer, &uv_buffer, x, y, n, text);
-	text_draw_buffers(position_buffer, uv_buffer, position_loc, uv_loc, text.length());
-	glDeleteBuffers(1, &position_buffer);
-	glDeleteBuffers(1, &uv_buffer);
 }
 
 Text::Text()
@@ -267,6 +219,16 @@ void Text::Printf(const char* format, ...)
 	vsnprintf(buffer, sizeof(buffer), format, va);
 	va_end(va);
 
-	text_print(text_position_loc, text_uv_loc, m_tx, m_ty, m_ts, buffer);
+	PrintAt(m_tx, m_ty, m_ts, buffer);
 	m_ty -= m_ts * 2;
+}
+
+void Text::PrintAt(float x, float y, float n, const char* text)
+{
+	GLuint position_buffer = 0;
+	GLuint uv_buffer = 0;
+	text_gen_buffers(&position_buffer, &uv_buffer, x, y, n, text);
+	text_draw_buffers(position_buffer, uv_buffer, text_position_loc, text_uv_loc, strlen(text));
+	glDeleteBuffers(1, &position_buffer);
+	glDeleteBuffers(1, &uv_buffer);
 }

@@ -20,6 +20,7 @@ public:
 	Text();
 	void Reset(int height, glm::mat4& matrix);
 	void Printf(const char* format, ...);
+	void PrintAt(float x, float y, float n, const char* text);
 private:
 	float m_tx;
 	float m_ty;

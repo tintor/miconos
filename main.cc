@@ -1316,6 +1316,7 @@ void render_gui()
 	}
 	glUseProgram(0);
 
+	// Crosshairs
 	glLineWidth(4);
 	glLogicOp(GL_INVERT);
 	glEnable(GL_COLOR_LOGIC_OP);
