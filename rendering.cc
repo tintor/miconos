@@ -8,15 +8,30 @@
 
 #include "glm/gtc/type_ptr.hpp"
 
+void Error(const char* name)
+{
+	int error = glGetError();
+	if (error != GL_NO_ERROR)
+	{
+		fprintf(stderr, "Error %d: %s\n", error, name);
+		exit(1);
+	}
+}
+
 // Render::Buffers
 
 int gen_buffer(GLenum target, GLsizei size, const void* data)
 {
 	GLuint buffer;
+	fprintf(stderr, "Marko\n");
 	glGenBuffers(1, &buffer);
+	Error("Ren1a");
 	glBindBuffer(target, buffer);
+	Error("Ren1b");
 	glBufferData(target, size, data, GL_STATIC_DRAW);
+	Error("Ren1c");
 	glBindBuffer(target, 0);
+	Error("Ren1d");
 	return buffer;
 }
 
@@ -130,6 +145,9 @@ void make_character(float* vertex, float* texture, float x, float y, float n, fl
 	*v++ = x - n; *v++ = y - m;
 	*v++ = x + n; *v++ = y - m;
 	*v++ = x + n; *v++ = y + m;
+
+	*v++ = x - n; *v++ = y - m;
+	*v++ = x + n; *v++ = y + m;
 	*v++ = x - n; *v++ = y + m;
 
 	float a = 0.0625;
@@ -143,23 +161,35 @@ void make_character(float* vertex, float* texture, float x, float y, float n, fl
 	*t++ = du + 0; *t++ = dv + p;
 	*t++ = du + a; *t++ = dv + p;
 	*t++ = du + a; *t++ = dv + b - p;
+
+	*t++ = du + 0; *t++ = dv + p;
+	*t++ = du + a; *t++ = dv + b - p;
 	*t++ = du + 0; *t++ = dv + b - p;
 }
 
-void text_gen_buffers(GLuint* position_buffer, GLuint* uv_buffer, float x, float y, float n, const char* text)
+void text_gen_buffers(GLuint position_buffer, GLuint uv_buffer, float x, float y, float n, const char* text)
 {
 	int length = strlen(text);
-	GLfloat* position_data = new GLfloat[length * 4 * 2];
-	GLfloat* uv_data = new GLfloat[length * 4 * 2];
+	GLfloat* position_data = new GLfloat[length * 6 * 2];
+	GLfloat* uv_data = new GLfloat[length * 6 * 2];
 
 	for (int i = 0; i < length; i++)
 	{
-		make_character(position_data + i * 8, uv_data + i * 8, x, y, n / 2, n, text[i]);
+		make_character(position_data + i * 12, uv_data + i * 12, x, y, n / 2, n, text[i]);
 		x += n;
 	}
 
-	*position_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 4 * 2, position_data);
-	*uv_buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 4 * 2, uv_data);
+	Error("gena0");
+	glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
+	Error("gena1");
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, position_data, GL_STATIC_DRAW);
+	Error("gena2");
+	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
+	Error("gena3");
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, uv_data, GL_STATIC_DRAW);
+	Error("gena4");
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	Error("gena5");
 
 	delete[] position_data;
 	delete[] uv_data;
@@ -169,19 +199,24 @@ void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position
 {
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	Error("RenA");
 	glEnableVertexAttribArray(text_position_loc);
 	glEnableVertexAttribArray(text_uv_loc);
+	Error("RenB");
 
 	glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
 	glVertexAttribPointer(position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
 	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
+	Error("RenC");
 	glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glDrawArrays(GL_QUADS, 0, length * 4);
+	glDrawArrays(GL_TRIANGLES, 0, length * 6);
+	Error("RenD");
 
 	glDisableVertexAttribArray(position_loc);
 	glDisableVertexAttribArray(uv_loc);
 	glDisable(GL_BLEND);
+	Error("RenE");
 }
 
 Text::Text()
@@ -190,8 +225,13 @@ Text::Text()
 	text_matrix_loc = glGetUniformLocation(text_program, "matrix");
 	text_sampler_loc = glGetUniformLocation(text_program, "sampler");
 	text_position_loc = glGetAttribLocation(text_program, "position");
+	fprintf(stderr, "pos_loc=%d\n", text_position_loc);
 	text_uv_loc = glGetAttribLocation(text_program, "uv");
-	//glBindFragDataLocation(text_program, 0, "color");
+	glBindFragDataLocation(text_program, 0, "color");
+	Error("Text::Text");
+
+	glGenBuffers(1, &m_positionBuffer);
+	glGenBuffers(1, &m_uvBuffer);
 
 	glGenTextures(1, &text_texture);
 	glBindTexture(GL_TEXTURE_2D, text_texture);
@@ -204,7 +244,7 @@ void Text::Reset(int height, glm::mat4& matrix)
 {
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glUseProgram(text_program);
-	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, glm	::value_ptr(matrix));
+	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(text_sampler_loc, 0/*text_texture*/);
 	m_ts = height / 80;
 	m_tx = m_ts / 2;
@@ -225,10 +265,11 @@ void Text::Printf(const char* format, ...)
 
 void Text::PrintAt(float x, float y, float n, const char* text)
 {
-	GLuint position_buffer = 0;
-	GLuint uv_buffer = 0;
-	text_gen_buffers(&position_buffer, &uv_buffer, x, y, n, text);
-	text_draw_buffers(position_buffer, uv_buffer, text_position_loc, text_uv_loc, strlen(text));
-	glDeleteBuffers(1, &position_buffer);
-	glDeleteBuffers(1, &uv_buffer);
+	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, n, text);
+	Error("Ren1");
+	text_draw_buffers(m_positionBuffer, m_uvBuffer, text_position_loc, text_uv_loc, strlen(text));
+	Error("Ren2");
+	//glDeleteBuffers(1, &position_buffer);
+	//glDeleteBuffers(1, &uv_buffer);
+	Error("Ren3");
 }

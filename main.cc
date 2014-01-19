@@ -54,7 +54,7 @@ const int VSYNC = 1;
 int width;
 int height;
 
-#define RENDER_LIMIT 13
+#define RENDER_LIMIT 14
 
 // Util
 
@@ -550,6 +550,10 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		flying = !flying;
 	}
+	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
+	{
+		glfwSetWindowShouldClose(window, GL_TRUE);
+	}
 	if (action == GLFW_PRESS && selection)
 	{
 		unsigned char& color = map_get_block(sel_cube).color;
@@ -810,7 +814,7 @@ void ResolveCollisionsWithBlocks()
 					if (map_get(cube) != 0)
 					{
 						glm::vec3 p = player_position;
-						if (1 == SphereVsCube(p, 0.9f, cube, CubeNeighbors(cube)))
+						if (1 == SphereVsCube(p, 0.8f, cube, CubeNeighbors(cube)))
 						{
 							sum += p;
 							c += 1;
@@ -955,11 +959,6 @@ void model_frame(GLFWwindow* window)
 	double dt = (time - last_time) < 0.5 ? (time - last_time) : 0.5;
 	last_time = time;
 
-	if (glfwGetKey(window, GLFW_KEY_ESCAPE))
-	{
-		glfwSetWindowShouldClose(window, GL_TRUE);
-	}
-
 	double cursor_x, cursor_y;
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
 	if (cursor_x != last_cursor_x || cursor_y != last_cursor_y)
@@ -990,22 +989,14 @@ void model_frame(GLFWwindow* window)
 GLuint block_texture;
 glm::vec3 light_direction(0.5, 1, -1);
 
-void glVertex(glm::ivec3 v)
-{
-	glVertex3iv(glm::value_ptr(v));
-}
+GLubyte light_cache[8][8][8];
 
-void glVertex(glm::vec3 v)
+float clampf(float a, float min, float max)
 {
-	glVertex3fv(glm::value_ptr(v));
+	if (a > max) return max;
+	if (a < min) return min;
+	return a;
 }
-
-void glColor(glm::vec3 v)
-{
-	glColor3fv(glm::value_ptr(v));
-}
-
-float light_cache[8][8][8];
 
 void InitLightCache()
 {
@@ -1017,7 +1008,8 @@ void InitLightCache()
 			{
 				glm::vec3 normal = glm::normalize((glm::vec3)glm::cross(glm::vec3(corner[b] - corner[a]), glm::vec3(corner[c] - corner[a])));
 				float cos_angle = std::max<float>(0, -glm::dot(normal, light_direction));
-				light_cache[a][b][c] = 0.3f + cos_angle * 0.7f;
+				float light = clampf(0.3f + cos_angle * 0.7f, 0.0f, 1.0f);
+				light_cache[a][b][c] = (uint) floorf(clampf(light * 256.f, 0.0f, 255.0f));
 			}
 		}
 	}
@@ -1025,12 +1017,18 @@ void InitLightCache()
 
 Text* text = nullptr;
 
-int block_program;
+int line_program;
+GLuint line_matrix_loc;
+GLuint line_position_loc;
 
+int block_program;
 GLuint block_matrix_loc;
 GLuint block_sampler_loc;
+GLuint block_pos_loc;
+GLuint block_eye_loc;
 GLuint block_position_loc;
 GLuint block_color_loc;
+GLuint block_light_loc;
 GLuint block_uv_loc;
 
 void render_init()
@@ -1048,59 +1046,85 @@ void render_init()
 	light_direction = glm::normalize(light_direction);
 	InitLightCache();
 
-	GLfloat fogColor[4] = {0.2, 0.4, 1, 1.0};
-	glFogfv(GL_FOG_COLOR, fogColor);
-	glFogf(GL_FOG_DENSITY, 1);
-	glFogf(GL_FOG_START, 110.0f);
-	glFogf(GL_FOG_END, 150.0f);
-	glFogi(GL_FOG_MODE, GL_LINEAR);
-	glHint(GL_FOG_HINT, GL_NICEST);
-
 	perspective = glm::perspective<float>(M_PI / 180 * 75, width / (float)height, 0.03, 1000);
 	text = new Text;
 
+	line_program = load_program("shaders/line.vert", "shaders/line.frag");
+	line_matrix_loc = glGetUniformLocation(line_program, "matrix");
+	line_position_loc = glGetAttribLocation(line_program, "position");
+
 	block_program = load_program("shaders/block.vert", "shaders/block.frag");
+
 	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
 	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
+	block_pos_loc = glGetUniformLocation(block_program, "pos");
+	block_eye_loc = glGetUniformLocation(block_program, "eye");
+
+	Error("inita2");
 	block_position_loc = glGetAttribLocation(block_program, "position");
 	block_color_loc = glGetAttribLocation(block_program, "color");
+	block_light_loc = glGetAttribLocation(block_program, "light");
 	block_uv_loc = glGetAttribLocation(block_program, "uv");
+	Error("inita");
 }
 
-void light_color(int a, int b, int c, glm::vec3 color)
+int triangle_count = 0;
+
+GLuint block_buffer;
+GLuint line_buffer;
+struct Vertex
 {
-	glColor(color * light_cache[a][b][c]);
+	GLubyte color;
+	GLubyte light;
+	GLubyte uv;
+	GLubyte pos[3];
+};
+
+Vertex* vertex_data = new Vertex[75000];
+GLfloat* line_data = new GLfloat[24 * 3];
+
+Vertex vertex(glm::ivec3 pos, GLubyte color, GLubyte light, GLubyte uv, int c)
+{
+	Vertex v;
+	v.color = color;
+	v.light = light;
+	v.uv = uv;
+	v.pos[0] = (pos.x & ChunkSizeMask) + corner[c].x;
+	v.pos[1] = (pos.y & ChunkSizeMask) + corner[c].y;
+	v.pos[2] = (pos.z & ChunkSizeMask) + corner[c].z;
+	return v;
 }
 
-int face_count = 0;
-
-void draw_quad(glm::ivec3 pos, int a, int b, int c, int d, glm::vec3 color)
+void render_general_init()
 {
-	face_count += 2;
-	light_color(a, b, c, color);
-
-	glTexCoord2f(0, 0); glVertex(pos + corner[a]);
-	glTexCoord2f(0, 1); glVertex(pos + corner[b]);
-	glTexCoord2f(1, 1); glVertex(pos + corner[c]);
-
-	glTexCoord2f(0, 0); glVertex(pos + corner[a]);
-	glTexCoord2f(1, 1); glVertex(pos + corner[c]);
-	glTexCoord2f(1, 0); glVertex(pos + corner[d]);
+	glGenBuffers(1, &block_buffer);
+	glGenBuffers(1, &line_buffer);
 }
 
-void draw_triangle(glm::ivec3 pos, int a, int b, int c, glm::vec3 color)
-{
-	face_count += 1;
-	light_color(a, b, c, color);
+Vertex* v;
 
-	glTexCoord2f(0, 0); glVertex(pos + corner[a]);
-	glTexCoord2f(0, 1); glVertex(pos + corner[b]);
-	glTexCoord2f(1, 1); glVertex(pos + corner[c]);
+void draw_quad(glm::ivec3 pos, int a, int b, int c, int d, GLubyte color)
+{
+	GLubyte light = light_cache[a][b][c];
+	*v++ = vertex(pos, color, light, 0, a);
+	*v++ = vertex(pos, color, light, 1, b);
+	*v++ = vertex(pos, color, light, 3, c);
+	*v++ = vertex(pos, color, light, 0, a);
+	*v++ = vertex(pos, color, light, 3, c);
+	*v++ = vertex(pos, color, light, 2, d);
+}
+
+void draw_triangle(glm::ivec3 pos, int a, int b, int c, GLubyte color)
+{
+	GLubyte light = light_cache[a][b][c];
+	*v++ = vertex(pos, color, light, 0, a);
+	*v++ = vertex(pos, color, light, 1, b);
+	*v++ = vertex(pos, color, light, 3, c);
 }
 
 int B(int a, int i) { return (a & (1 << i)) >> i; }
 
-void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, glm::vec3 color)
+void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, GLubyte color)
 {
 	int vertices = B(block, a) + B(block, b) + B(block, c) + B(block, d);
 
@@ -1110,17 +1134,15 @@ void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, glm::vec3 
 	}
 	else if (vertices == 3)
 	{
-		face_count += 1;
-		light_color(a, b, c, color);
-
-		if (block & (1 << a)) { glTexCoord2f(0, 0); glVertex(pos + corner[a]); }
-		if (block & (1 << b)) { glTexCoord2f(0, 1); glVertex(pos + corner[b]); }
-		if (block & (1 << c)) { glTexCoord2f(1, 1); glVertex(pos + corner[c]); }
-		if (block & (1 << d)) { glTexCoord2f(1, 0); glVertex(pos + corner[d]); }
+		GLubyte light = light_cache[a][b][c];
+		if (block & (1 << a)) *v++ = vertex(pos, color, light, 0, a);
+		if (block & (1 << b)) *v++ = vertex(pos, color, light, 1, b);
+		if (block & (1 << c)) *v++ = vertex(pos, color, light, 3, c);
+		if (block & (1 << d)) *v++ = vertex(pos, color, light, 2, d);
 	}
 }
 
-void render_block(glm::ivec3 pos, glm::vec3 color)
+void render_block(glm::ivec3 pos, GLubyte color)
 {
 	if (map_get(pos - ix) == 0)
 	{
@@ -1150,7 +1172,7 @@ void render_block(glm::ivec3 pos, glm::vec3 color)
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
 // cube is 255, empty is 0, prisms / pyramids / anti-pyramids are in between
-void render_general(glm::ivec3 pos, int block, glm::vec3 color)
+void render_general(glm::ivec3 pos, int block, GLubyte color)
 {
 	if (block == 255)
 	{
@@ -1401,6 +1423,7 @@ void render_chunk(glm::ivec3 cplayer, glm::ivec3 direction, glm::ivec3 cdelta)
 	if (cl == -1)
 		return;
 
+	v = vertex_data;
 	if (cl == 0)
 	{
 		// do frustrum checks for each voxel
@@ -1418,7 +1441,7 @@ void render_chunk(glm::ivec3 cplayer, glm::ivec3 direction, glm::ivec3 cdelta)
 					glm::ivec3 pos = d + glm::ivec3(x, y, z);
 					if (!SphereInFrustum(glm::vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5), BlockRadius))
 						continue;
-					render_general(pos, block.shape, color_codes[block.color]);
+					render_general(pos, block.shape, block.color);
 				}
 			}
 		}
@@ -1435,10 +1458,18 @@ void render_chunk(glm::ivec3 cplayer, glm::ivec3 direction, glm::ivec3 cdelta)
 					if (block.shape == 0)
 						continue;
 					glm::ivec3 pos = d + glm::ivec3(x, y, z);
-					render_general(pos, block.shape, color_codes[block.color]);
+					render_general(pos, block.shape, block.color);
 				}
 			}
 		}
+	}
+
+	if (v > vertex_data)
+	{
+		triangle_count += (v - vertex_data) / 3;
+		glUniform3iv(block_pos_loc, 1, glm::value_ptr(d));
+		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * (v - vertex_data), vertex_data, GL_STREAM_DRAW);
+		glDrawArrays(GL_TRIANGLES, 0, v - vertex_data);
 	}
 }
 
@@ -1450,7 +1481,6 @@ glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
 void render_world_blocks(const glm::mat4& matrix)
 {
 	float time_start = glfwGetTime();
-	glEnable(GL_TEXTURE_2D);
 	glBindTexture(GL_TEXTURE_2D, block_texture);
 	glm::ivec3 cplayer = glm::ivec3(player_position) >> ChunkSizeBits;
 
@@ -1459,7 +1489,22 @@ void render_world_blocks(const glm::mat4& matrix)
 	float* ma = glm::value_ptr(player_orientation);
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
 
-	glBegin(GL_TRIANGLES);
+	glUseProgram(block_program);
+	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
+	glUniform1i(block_sampler_loc, 0/*block_texture*/);
+	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player_position));
+
+	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
+	glEnableVertexAttribArray(block_position_loc);
+	glEnableVertexAttribArray(block_color_loc);
+	glEnableVertexAttribArray(block_light_loc);
+	glEnableVertexAttribArray(block_uv_loc);
+
+	glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->pos);
+	glVertexAttribIPointer(block_color_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->color);
+	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
+	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
+
 	for (int cx = -RENDER_LIMIT; cx <= RENDER_LIMIT; cx++)
 	{
 		render_chunk(cplayer, direction, glm::ivec3(cx, 0, 0));
@@ -1486,118 +1531,53 @@ void render_world_blocks(const glm::mat4& matrix)
 		}
 	}
 
-	glEnd();
-
-	// Sample VertexArray cube!
-	// =========
-	glUseProgram(block_program);
-	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
-	glUniform1i(block_sampler_loc, 0/*block_texture*/);
-
-	struct Vertex
-	{
-		glm::vec3 color;
-		glm::vec2 uv;
-		glm::vec3 pos;
-	};
-
-	Vertex* vertex_data = new Vertex[6 * 4];
-
-	glm::vec3 color(0.5, 0.5, 1);
-	glm::ivec3 pos(15, 15, 15);
-	int faces[6][4] = { { 0, 4, 6, 2 },
-				  { 1, 3, 7, 5 },
-				  { 0, 1, 5, 4 },
-				  { 2, 6, 7, 3 },
-				  { 0, 2, 3, 1 },
-				  { 4, 5, 7, 6 } };
-	glm::vec2 uv[4] = { glm::vec2(0, 0), glm::vec2(0, 1), glm::vec2(1, 1), glm::vec2(1, 0) };
-	Vertex* v = vertex_data;
-	for (int* face : faces)
-	{
-		glm::vec3 c = color * light_cache[face[0]][face[1]][face[2]];
-		for (int i = 0; i < 4; i++)
-		{
-			v->color = c;
-			v->uv = uv[i];
-			v->pos = pos + corner[face[i]];
-			v += 1;
-		}
-	}
-
-	GLuint buffer = gen_buffer(GL_ARRAY_BUFFER, sizeof(Vertex) * 6 * 4, vertex_data);
-	delete[] vertex_data;
-
-	glEnableVertexAttribArray(block_position_loc);
-	glEnableVertexAttribArray(block_color_loc);
-	glEnableVertexAttribArray(block_uv_loc);
-
-	glBindBuffer(GL_ARRAY_BUFFER, buffer);
-	glVertexAttribPointer(block_position_loc, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), &((Vertex*)0)->pos);
-	glVertexAttribPointer(block_color_loc, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), &((Vertex*)0)->color);
-	glVertexAttribPointer(block_uv_loc, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), &((Vertex*)0)->uv);
-
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glDrawArrays(GL_QUADS, 0, 6 * 4);
-
 	glDisableVertexAttribArray(block_position_loc);
 	glDisableVertexAttribArray(block_color_loc);
+	glDisableVertexAttribArray(block_light_loc);
 	glDisableVertexAttribArray(block_uv_loc);
-
-	glDeleteBuffers(1, &buffer);
 	glUseProgram(0);
-	// =========
 
-	glDisable(GL_TEXTURE_2D);
 	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
 	block_render_time_ms_avg = block_render_time_ms_avg * 0.8f + block_render_time_ms * 0.2f;
 
 	if (selection)
 	{
-		glLineWidth(2);
-		glLogicOp(GL_XOR);
-		glColor3f(1,1,1);
+		glUseProgram(line_program);
+		glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 
-		glEnable(GL_COLOR_LOGIC_OP);
-		glBegin(GL_LINES);
+		glBindBuffer(GL_ARRAY_BUFFER, line_buffer);
+		glEnableVertexAttribArray(line_position_loc);
+
+		glVertexAttribPointer(line_position_loc, 3, GL_FLOAT, GL_FALSE, 0, 0);
+
+		glm::vec3* vline = reinterpret_cast<glm::vec3*>(line_data);
 		glm::vec3 c = glm::vec3(sel_cube) + 0.5f;
 		for (int i = 0; i <= 1; i++)
 		{
 			for (int j = 0; j <= 1; j++)
 			{
 				glm::ivec3 sel = sel_cube;
-				glVertex(Q(sel + i*iy + j*iz, c)); glVertex(Q(sel + ix + i*iy + j*iz, c));
-				glVertex(Q(sel + i*ix + j*iz, c)); glVertex(Q(sel + iy + i*ix + j*iz, c));
-				glVertex(Q(sel + i*ix + j*iy, c)); glVertex(Q(sel + iz + i*ix + j*iy, c));
+				*vline++ = Q(sel + i*iy + j*iz, c); *vline++ = Q(sel + ix + i*iy + j*iz, c);
+				*vline++ = Q(sel + i*ix + j*iz, c); *vline++ = Q(sel + iy + i*ix + j*iz, c);
+				*vline++ = Q(sel + i*ix + j*iy, c); *vline++ = Q(sel + iz + i*ix + j*iy, c);
 			}
 		}
-		glEnd();
 
-/*		int faces[6][4] = { { 0, 4, 6, 2 },
-					  { 1, 3, 7, 5 },
-					  { 0, 1, 5, 4 },
-					  { 2, 6, 7, 3 },
-					  { 0, 2, 3, 1 },
-					  { 4, 5, 7, 6 } };
-		int* face = faces[sel_face];
-		glBegin(GL_QUADS);
-		for(int i = 0; i< 4; i++) glVertex(Q(sel_cube + corner[face[i]], c));
-		glEnd();*/
-		glDisable(GL_COLOR_LOGIC_OP);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 3 * 24, line_data, GL_STREAM_DRAW);
+		glDrawArrays(GL_LINES, 0, 24);
+
+		glDisableVertexAttribArray(line_position_loc);
 	}
 }
 
 void render_world()
 {
 	glm::mat4 matrix = glm::translate(perspective_rotation, -player_position);
-	glLoadMatrixf(glm::value_ptr(matrix));
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	glEnable(GL_FOG);
 	render_world_blocks(matrix);
-	glDisable(GL_FOG);
 
 	glDisable(GL_DEPTH_TEST);
 }
@@ -1607,10 +1587,13 @@ void render_gui()
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
 	
 	// Text test
+	Error("gui0");
 	text->Reset(height, matrix);
-	text->Printf("position: %.1f %.1f %.1f, face_count: %d, blocks: %.0fms, map: %.0f",
-			 player_position[0], player_position[1], player_position[2], face_count, block_render_time_ms_avg, map_refresh_time_ms);
-	face_count = 0;
+	Error("gui1");
+	text->Printf("position: %.1f %.1f %.1f, triangle_count: %d, blocks: %.0fms, map: %.0f",
+			 player_position[0], player_position[1], player_position[2], triangle_count, block_render_time_ms_avg, map_refresh_time_ms);
+	Error("gui2");
+	triangle_count = 0;
 
 	if (selection)
 	{
@@ -1618,42 +1601,32 @@ void render_gui()
 	}
 	glUseProgram(0);
 
-	// Crosshairs
-	glLineWidth(4);
-	glLogicOp(GL_INVERT);
-	glEnable(GL_COLOR_LOGIC_OP);
-	glLoadMatrixf(glm::value_ptr(matrix));
-	glBegin(GL_LINES);
-	glColor3f(1,1,1);
+	if (selection)
+	{
+		//glLogicOp(GL_INVERT);
+		//glEnable(GL_COLOR_LOGIC_OP);
 
-	glVertex2f(width/2 - 20, height / 2);
-	glVertex2f(width/2 + 20, height / 2);
+		glUseProgram(line_program);
+		glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 
-	glVertex2f(width/2, height / 2 - 20);
-	glVertex2f(width/2, height / 2 + 20);
-	glEnd();
-	glDisable(GL_COLOR_LOGIC_OP);
+		glBindBuffer(GL_ARRAY_BUFFER, line_buffer);
+		glEnableVertexAttribArray(line_position_loc);
 
+		glVertexAttribPointer(line_position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
-	#ifdef NEVER
-	// Simple quad
-	glUseProgram(text_program);
-	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, matrix);
-		glUniform1i(text_sampler_loc, 0/*text_texture*/);
+		glm::vec2* vline = reinterpret_cast<glm::vec2*>(line_data);
+		*vline++ = glm::vec2(width/2 - 15, height / 2);
+		*vline++ = glm::vec2(width/2 + 15, height / 2);
+		*vline++ = glm::vec2(width/2, height / 2 - 15);
+		*vline++ = glm::vec2(width/2, height / 2 + 15);
 
-	GLuint vao_quad;
-	glGenVertexArrays(1, &vao_quad);
-		glBindVertexArray(vao_quad);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 2 * 4, line_data, GL_STREAM_DRAW);
+		glDrawArrays(GL_LINES, 0, 4);
 
-	float vertices[] = { 0, 0, 100, 0, 0, 100 };
-	int v = gen_buffer(GL_ARRAY_BUFFER, sizeof(vertices), vertices);
-	float colors[] = { 0, 0, 100, 0, 0, 100 };
-	int c = gen_buffer(GL_ARRAY_BUFFER, sizeof(colors), colors);
+		glDisableVertexAttribArray(line_position_loc);
 
-		glDrawArrays(GL_QUADS, 0, 4);
-
-	glDeleteVertexArrays(1, &vao_quad);
-	#endif
+		//glDisable(GL_COLOR_LOGIC_OP);
+	}
 }
 
 void render_frame()
@@ -1661,6 +1634,11 @@ void render_frame()
 	glViewport(0, 0, width, height);
 	render_world();
 	render_gui();
+}
+
+void OnError(int error, const char* message)
+{
+	fprintf(stderr, "GLFW error %d: %s\n", error, message);
 }
 
 int main(int argc, char** argv)
@@ -1676,10 +1654,11 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
-	//glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-	//glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-	//glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-	//glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	glfwSetErrorCallback(OnError);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
 	const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
 	GLFWwindow* window = glfwCreateWindow(mode->width*2, mode->height*2, "Arena", glfwGetPrimaryMonitor(), NULL);
@@ -1692,15 +1671,22 @@ int main(int argc, char** argv)
 	glfwSwapInterval(VSYNC);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwGetFramebufferSize(window, &width, &height);
+	glViewport(0, 0, width, height);
 
 	model_init(window);
 	render_init();
-	
+	render_general_init();
+
+	GLuint vao;
+	glGenVertexArrays(1, &vao);
+	glBindVertexArray(vao);
+
+	Error("main_init");
+
 	while (!glfwWindowShouldClose(window))
 	{
 		model_frame(window);
 		render_frame();
-
 		glfwSwapBuffers(window);
 		glfwPollEvents();
 	}

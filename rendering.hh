@@ -2,7 +2,7 @@
 
 #include <string>
 
-//#define GLFW_INCLUDE_GLCOREARB
+#define GLFW_INCLUDE_GLCOREARB
 #ifndef __APPLE_CC__
 	#include <GL/glew.h>
 #endif
@@ -11,6 +11,8 @@
 #define GLM_SWIZZLE
 #define GLM_FORCE_RADIANS
 #include "glm/glm.hpp"
+
+void Error(const char* name);
 
 int gen_buffer(GLenum target, GLsizei size, const void* data);
 GLuint load_program(std::string path1, std::string path2);
@@ -27,4 +29,7 @@ private:
 	float m_tx;
 	float m_ty;
 	float m_ts;
+
+	GLuint m_positionBuffer;
+	GLuint m_uvBuffer;
 };
