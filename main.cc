@@ -1,13 +1,14 @@
 // TODO:
-// color and shape pallete
-// free mouse (but fixed camera) mode for editing
 // PERF async chunk loading
-// PERF use OpenGL array buffers
+// PERF cache array buffers in chunks
 // persistence
 // client / server
 // multi-player
 // sky with day/night cycle
 // permanent server
+// # integrate original marching cubes algo
+// # color and shape pallete
+// # free mouse (but fixed camera) mode for editing
 // # texture mipmaps?
 // # PERF level-of-detail rendering
 // # portals
@@ -124,7 +125,7 @@ float simplex(glm::vec2 p, int octaves, float persistence)
 	    freq /= 2;
 	    amp *= persistence;
 	    max += amp;
-	    total += glm::simplex(p * freq) * amp;
+	    total += fabs(glm::simplex(p * freq)) * amp;
 	}
 	return total / max;
 }
@@ -169,7 +170,7 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 		{
 			for (int y = 0; y < ChunkSize; y++)
 			{
-				heights->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) = simplex(glm::vec2(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) * 0.02f, 4, 0.5f) * 20;
+				heights->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) = simplex(glm::vec2(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) * 0.007f, 4, 0.5f) * 50;
 			}
 		}
 		heights->LastX(cpos.x, cpos.y) = cpos.x;
@@ -351,6 +352,7 @@ struct Chunk
 	bool empty, full;
 	bool full0[3];
 	bool full1[3];
+	GLuint arrayBuffer;
 };
 
 Chunk* map_cache[MapSize][MapSize][MapSize];
@@ -1031,6 +1033,61 @@ GLuint block_color_loc;
 GLuint block_light_loc;
 GLuint block_uv_loc;
 
+float simplex2(glm::vec2 p, int octaves, float persistence)
+{
+	float freq = 1.0f, amp = 1.0f, max = amp;
+	float total = glm::simplex(p);
+	for (int i = 1; i < octaves; i++)
+	{
+	    freq /= sqrt(2);
+	    amp *= persistence;
+	    max += amp;
+	    total += glm::simplex(p * freq) * amp;
+	}
+	return total / max;
+}
+
+void load_noise_texture(int size)
+{
+	GLubyte* image = new GLubyte[size * size * 3];
+	for (int x = 0; x < size; x++)
+	{
+		for (int y = 0; y < size; y++)
+		{
+			glm::vec2 p = glm::vec2(x+32131, y+908012) * (1.0f / size);
+			float f = simplex2(p * 32.f, 10, 1) * 3;
+			f = fabs(f);
+			f = std::min<float>(f, 1);
+			f = std::max<float>(f, -1);
+			//f = (f + 1) / 2;
+			GLubyte a = (int) std::min<float>(255, floorf(f * 256));
+			image[(x + y * size) * 3] = a;
+
+
+			p = glm::vec2(x+9420234, y+9808312) * (1.0f / size);
+			f = simplex2(p * 32.f, 10, 1) * 3;
+			f = fabs(f);
+			f = std::min<float>(f, 1);
+			f = std::max<float>(f, -1);
+			//f = (f + 1) / 2;
+			a = (int) std::min<float>(255, floorf(f * 256));
+			image[(x + y * size) * 3 + 1] = a;
+
+
+			p = glm::vec2(x+983322, y+1309329) * (1.0f / size);
+			f = simplex2(p * 32.f, 10, 1) * 3;
+			f = fabs(f);
+			f = std::min<float>(f, 1);
+			f = std::max<float>(f, -1);
+			//f = (f + 1) / 2;
+			a = (int) std::min<float>(255, floorf(f * 256));
+			image[(x + y * size) * 3 + 2] = a;
+		}
+	}
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, size, size, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+	delete[] image;
+}
+
 void render_init()
 {
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
@@ -1041,6 +1098,7 @@ void render_init()
 	glBindTexture(GL_TEXTURE_2D, block_texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	//load_noise_texture(512);
 	load_png_texture("noise.png");
 
 	light_direction = glm::normalize(light_direction);
@@ -1049,12 +1107,11 @@ void render_init()
 	perspective = glm::perspective<float>(M_PI / 180 * 75, width / (float)height, 0.03, 1000);
 	text = new Text;
 
-	line_program = load_program("shaders/line.vert", "shaders/line.frag");
+	line_program = load_program("line");
 	line_matrix_loc = glGetUniformLocation(line_program, "matrix");
 	line_position_loc = glGetAttribLocation(line_program, "position");
 
-	block_program = load_program("shaders/block.vert", "shaders/block.frag");
-
+	block_program = load_program("block");
 	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
 	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
 	block_pos_loc = glGetUniformLocation(block_program, "pos");

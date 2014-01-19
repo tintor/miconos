@@ -56,20 +56,20 @@ void load_png_texture(std::string filename)
 
 // Render::Shader
 
-std::string read_file(std::string filename)
+std::string read_file(const char* filename)
 {
 	std::ifstream in(filename, std::ios::in | std::ios::binary);
-	if (in)
+	if (!in)
 	{
-		std::string contents;
-		in.seekg(0, std::ios::end);
-		contents.resize(in.tellg());
-		in.seekg(0, std::ios::beg);
-		in.read(&contents[0], contents.size());
-		in.close();
-		return contents;
+		fprintf(stderr, "File '%s' not found\n", filename);
 	}
-	throw errno;
+	std::string contents;
+	in.seekg(0, std::ios::end);
+	contents.resize(in.tellg());
+	in.seekg(0, std::ios::beg);
+	in.read(&contents[0], contents.size());
+	in.close();
+	return contents;
 }
 
 GLuint make_shader(GLenum type, std::string source)
@@ -93,9 +93,9 @@ GLuint make_shader(GLenum type, std::string source)
 	return shader;
 }
 
-GLuint load_shader(GLenum type, std::string path)
+GLuint load_shader(GLenum type, const char* filename)
 {
-	return make_shader(type, read_file(path));
+	return make_shader(type, read_file(filename));
 }
 
 GLuint make_program(GLuint shader1, GLuint shader2)
@@ -123,10 +123,16 @@ GLuint make_program(GLuint shader1, GLuint shader2)
 	return program;
 }
 
-GLuint load_program(std::string path1, std::string path2)
+GLuint load_program(const char* name)
 {
+	char* path1;
+	char* path2;
+	asprintf(&path1, "shaders/%s.vert", name);
+	asprintf(&path2, "shaders/%s.frag", name);
 	GLuint shader1 = load_shader(GL_VERTEX_SHADER, path1);
 	GLuint shader2 = load_shader(GL_FRAGMENT_SHADER, path2);
+	free(path1);
+	free(path2);
 	return make_program(shader1, shader2);
 }
 
@@ -221,7 +227,7 @@ void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position
 
 Text::Text()
 {
-	text_program = load_program("shaders/text_vertex.glsl", "shaders/text_fragment.glsl");
+	text_program = load_program("text");
 	text_matrix_loc = glGetUniformLocation(text_program, "matrix");
 	text_sampler_loc = glGetUniformLocation(text_program, "sampler");
 	text_position_loc = glGetAttribLocation(text_program, "position");

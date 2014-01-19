@@ -15,7 +15,7 @@
 void Error(const char* name);
 
 int gen_buffer(GLenum target, GLsizei size, const void* data);
-GLuint load_program(std::string path1, std::string path2);
+GLuint load_program(const char* name);
 void load_png_texture(std::string filename);
 
 class Text
