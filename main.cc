@@ -366,6 +366,7 @@ Map* map = new Map;
 struct Chunk
 {
 	Block block[ChunkSize][ChunkSize][ChunkSize];
+	glm::ivec3 cpos;
 	bool empty, full;
 	bool full0[3];
 	bool full1[3];
@@ -440,6 +441,7 @@ void LoadChunk(Chunk& chunk, glm::ivec3 cpos)
 	MapChunk mc = map->Read(cpos);
 	memcpy(chunk.block, mc.block, sizeof(mc.block));
 
+	chunk.cpos = cpos;
 	chunk.empty = IsEmpty(chunk);
 
 	chunk.full0[0] = IsFull(chunk, 0,0, 0,1, 0,1);
@@ -473,9 +475,10 @@ void map_refresh(glm::ivec3 player)
 		{
 			for (int z = zmin; z < zmin + MapSize; z++)
 			{
-				if ((x & MapSizeMask) + map_xmin != x || (y & MapSizeMask) + map_ymin != y || (z & MapSizeMask) + map_zmin != z)
+				Chunk*& chunk = map_cache[x & MapSizeMask][y & MapSizeMask][z & MapSizeMask];
+				if (chunk->cpos != glm::ivec3(x, y, z))
 				{
-					LoadChunk(*map_cache[x & MapSizeMask][y & MapSizeMask][z & MapSizeMask], glm::ivec3(x, y, z));
+					LoadChunk(*chunk, glm::ivec3(x, y, z));
 				}
 			}
 		} 
@@ -646,6 +649,7 @@ void model_init(GLFWwindow* window)
 			for (int z = 0; z < MapSize; z++)
 			{
 				map_cache[x][y][z] = new Chunk;
+				map_cache[x][y][z]->cpos.x = 0x80000000;
 			}
 		}
 	}
