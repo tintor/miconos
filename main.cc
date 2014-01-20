@@ -1,5 +1,4 @@
 // TODO:
-// PERF cache array buffers in chunks
 // persistence
 // client / server
 // multi-player
@@ -172,35 +171,47 @@ struct MapChunk
 	Block block[ChunkSize][ChunkSize][ChunkSize];
 };
 
-struct Simplex
+struct Heightmap
 {
 	int height[ChunkSize * MapSize][ChunkSize * MapSize];
-	int last_cx[MapSize][MapSize];
-	int last_cy[MapSize][MapSize];
+	glm::ivec2 last[MapSize][MapSize];
 
-	Simplex()
+	Heightmap()
 	{
 		for (int x = 0; x < ChunkSize; x++)
 		{
 			for (int y = 0; y < ChunkSize; y++)
 			{
-				last_cx[x][y] = 1000000;
-				last_cy[x][y] = 1000000;
+				last[x][y] = glm::ivec2(1000000, 1000000);
 			}
 		}
 	}
 
-	int& LastX(int cx, int cy) { return last_cx[cx & MapSizeMask][cy & MapSizeMask]; }
-	int& LastY(int cx, int cy) { return last_cy[cx & MapSizeMask][cy & MapSizeMask]; }
+	void Populate(int cx, int cy);
 	int& Height(int x, int y) { return height[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
 };
-
-Simplex* heights = new Simplex;
 
 int GetHeight(int x, int y)
 {
 	return SimplexNoise(glm::vec2(x, y) * 0.007f, 4, 0.5f, 0.5f, true) * 50;
 }
+
+void Heightmap::Populate(int cx, int cy)
+{
+	if (last[cx & MapSizeMask][cy & MapSizeMask] != glm::ivec2(cx, cy))
+	{
+		for (int x = 0; x < ChunkSize; x++)
+		{
+			for (int y = 0; y < ChunkSize; y++)
+			{
+				Height(x + cx * ChunkSize, y + cy * ChunkSize) = GetHeight(x + cx * ChunkSize, y + cy * ChunkSize);
+			}
+		}
+		last[cx & MapSizeMask][cy & MapSizeMask] = glm::ivec2(cx, cy);
+	}
+}
+
+Heightmap* heightmap = new Heightmap;
 
 int GetColor(int x, int y)
 {
@@ -211,24 +222,12 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 {
 	memset(chunk.block, 0, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
 
-	if (heights->LastX(cpos.x, cpos.y) != cpos.x || heights->LastY(cpos.x, cpos.y) != cpos.y)
-	{
-		for (int x = 0; x < ChunkSize; x++)
-		{
-			for (int y = 0; y < ChunkSize; y++)
-			{
-				heights->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) = GetHeight(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize);
-			}
-		}
-		heights->LastX(cpos.x, cpos.y) = cpos.x;
-		heights->LastY(cpos.x, cpos.y) = cpos.y;
-	}
-
+	heightmap->Populate(cpos.x, cpos.y);
 	for (int x = 0; x < ChunkSize; x++)
 	{
 		for (int y = 0; y < ChunkSize; y++)
 		{
-			int height = heights->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize);
+			int height = heightmap->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize);
 			if (height >= cpos.z * ChunkSize)
 			{
 				for (int z = 0; z < ChunkSize; z++)
@@ -1515,7 +1514,7 @@ void render_world_blocks(const glm::mat4& matrix)
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
-	int buffer_budget = 10000;
+	int buffer_budget = 5000;
 	for (glm::ivec3 d : render_sphere)
 	{
 		Chunk& chunk = GetChunk(cplayer + d);
