@@ -61,6 +61,32 @@ int height;
 
 float sqr(glm::vec3 a) { return glm::dot(a, a); }
 
+static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
+
+struct IVec2Hash
+{
+	size_t operator()(glm::ivec2 a) const { return a.x * 7919 + a.y * 7537; }
+};
+
+struct IVec3Hash
+{
+	size_t operator()(glm::ivec3 a) const { return a.x * 7919 + a.y * 7537 + a.z * 7687; }
+};
+
+float SimplexNoise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbulent)
+{
+	float freq = 1.0f, amp = 1.0f, max = amp;
+	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
+	for (int i = 1; i < octaves; i++)
+	{
+		freq *= freqf;
+		amp *= ampf;
+		max += amp;
+		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
+	}
+	return total / max;
+}
+
 // Map
 
 // ===========================
@@ -116,20 +142,6 @@ struct MapChunk
 	Block block[ChunkSize][ChunkSize][ChunkSize];
 };
 
-float simplex(glm::vec2 p, int octaves, float persistence)
-{
-	float freq = 1.0f, amp = 1.0f, max = amp;
-	float total = glm::simplex(p);
-	for (int i = 1; i < octaves; i++)
-	{
-	    freq /= 2;
-	    amp *= persistence;
-	    max += amp;
-	    total += fabs(glm::simplex(p * freq)) * amp;
-	}
-	return total / max;
-}
-
 struct Simplex
 {
 	int height[ChunkSize * MapSize][ChunkSize * MapSize];
@@ -155,9 +167,14 @@ struct Simplex
 
 Simplex* heights = new Simplex;
 
+int GetHeight(int x, int y)
+{
+	return SimplexNoise(glm::vec2(x, y) * 0.007f, 4, 0.5f, 0.5f, true) * 50;
+}
+
 int GetColor(int x, int y)
 {
-	return floorf((1 + simplex(glm::vec2(x, y) * -0.044f, 4, 0.5f)) * 8);
+	return floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.044f, 4, 0.5f, 0.5f, false)) * 8);
 }
 
 void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
@@ -170,7 +187,7 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 		{
 			for (int y = 0; y < ChunkSize; y++)
 			{
-				heights->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) = simplex(glm::vec2(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) * 0.007f, 4, 0.5f) * 50;
+				heights->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize) = GetHeight(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize);
 			}
 		}
 		heights->LastX(cpos.x, cpos.y) = cpos.x;
@@ -483,8 +500,6 @@ glm::ivec3 sel_cube;
 int sel_face;
 float sel_dist;
 bool selection = false;
-
-static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
 
 bool flying = true;
 
