@@ -54,7 +54,7 @@ const int VSYNC = 1;
 int width;
 int height;
 
-#define RENDER_LIMIT 14
+#define RENDER_LIMIT 31
 
 // Util
 
@@ -130,7 +130,7 @@ struct Block
 
 // ============================
 
-const int ChunkSizeBits = 4, MapSizeBits = 5;
+const int ChunkSizeBits = 4, MapSizeBits = 6;
 const int ChunkSize = 1 << ChunkSizeBits, MapSize = 1 << MapSizeBits;
 const int ChunkSizeMask = ChunkSize - 1, MapSizeMask = MapSize - 1;
 
@@ -222,7 +222,7 @@ struct Map
 {
 	Map();
 
-	MapChunk Read(glm::ivec3 cpos)
+	const MapChunk& Read(glm::ivec3 cpos)
 	{
 		MapChunk* mc = m_chunks[cpos];
 		if (!mc)
@@ -362,16 +362,29 @@ Map* map = new Map;
 
 // ============================
 
+struct Vertex
+{
+	GLubyte color;
+	GLubyte light;
+	GLubyte uv;
+	GLubyte pos[3];
+};
+
 struct Chunk
 {
 	Block block[ChunkSize][ChunkSize][ChunkSize];
 	glm::ivec3 cpos;
-	bool empty, full;
-	bool full0[3];
-	bool full1[3];
+	bool buffered;
+	std::vector<Vertex> vertices;
 
-	int vertices;
-	Chunk() : vertices(-1) { }
+	void ClearBuffer()
+	{
+		buffered = false;
+		std::vector<Vertex> a;
+		std::swap(vertices, a);
+	}
+
+	Chunk() : buffered(false) { }
 };
 
 Chunk* map_cache[MapSize][MapSize][MapSize];
@@ -383,84 +396,22 @@ Chunk& GetChunk(glm::ivec3 cpos)
 	return *map_cache[cpos.x & MapSizeMask][cpos.y & MapSizeMask][cpos.z & MapSizeMask];
 }
 
-// Used for rendering and collision detection
-unsigned char map_get(glm::ivec3 pos)
-{
-	return GetChunk(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask].shape;
-}
-
-unsigned char map_get_color(glm::ivec3 pos)
-{
-	return GetChunk(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask].color;
-}
-
 Block& map_get_block(glm::ivec3 pos)
 {
 	return GetChunk(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask];
 }
 
+unsigned char map_get(glm::ivec3 pos)
+{
+	return map_get_block(pos).shape;
+}
+
+unsigned char map_get_color(glm::ivec3 pos)
+{
+	return map_get_block(pos).color;
+}
+
 float map_refresh_time_ms = 0;
-
-bool IsEmpty(Chunk& chunk)
-{
-	for (int x = 0; x < ChunkSize; x++)
-	{
-		for (int y = 0; y < ChunkSize; y++)
-		{
-			for (int z = 0; z < ChunkSize; z++)
-			{
-				if (chunk.block[x][y][z].shape != 0)
-				{
-					return false;
-				}
-			}
-		}
-	}
-	return true;
-}
-
-bool IsFull(Chunk& chunk, int xmin, int xmax, int ymin, int ymax, int zmin, int zmax)
-{
-	for (int x = xmin*(ChunkSize-1); x <= xmax*(ChunkSize-1); x++)
-	{
-		for (int y = ymin*(ChunkSize-1); y <= ymax*(ChunkSize-1); y++)
-		{
-			for (int z = zmin*(ChunkSize-1); z <= zmax*(ChunkSize-1); z++)
-			{
-				if (chunk.block[x][y][z].shape == 0)
-				{
-					return false;
-				}
-			}
-		}
-	}
-	return true;
-}
-
-void LoadChunk(Chunk& chunk, glm::ivec3 cpos)
-{
-	MapChunk mc = map->Read(cpos);
-	memcpy(chunk.block, mc.block, sizeof(mc.block));
-
-	if (chunk.vertices > 0)
-	{
-		chunk.vertices = -1;
-	}
-
-	chunk.cpos = cpos;
-	chunk.empty = IsEmpty(chunk);
-
-	chunk.full0[0] = IsFull(chunk, 0,0, 0,1, 0,1);
-	chunk.full1[0] = IsFull(chunk, 1,1, 0,1, 0,1);
-
-	chunk.full0[1] = IsFull(chunk, 0,1, 0,0, 0,1);
-	chunk.full1[1] = IsFull(chunk, 0,1, 1,1, 0,1);
-
-	chunk.full0[2] = IsFull(chunk, 0,1, 0,1, 0,0);
-	chunk.full1[2] = IsFull(chunk, 0,1, 0,1, 1,1);
-
-	chunk.full = chunk.full0[0] && chunk.full0[1] && chunk.full0[2] && chunk.full1[0] && chunk.full1[1] && chunk.full1[2];
-}
 
 // extend world if player moves
 void map_refresh(glm::ivec3 player)
@@ -482,9 +433,13 @@ void map_refresh(glm::ivec3 player)
 			for (int z = zmin; z < zmin + MapSize; z++)
 			{
 				Chunk*& chunk = map_cache[x & MapSizeMask][y & MapSizeMask][z & MapSizeMask];
-				if (chunk->cpos != glm::ivec3(x, y, z))
+				glm::ivec3 cpos(x, y, z);
+				if (chunk->cpos != cpos)
 				{
-					LoadChunk(*chunk, glm::ivec3(x, y, z));
+					const MapChunk& mc = map->Read(cpos);
+					memcpy(chunk->block, mc.block, sizeof(mc.block));
+					chunk->ClearBuffer();
+					chunk->cpos = cpos;
 				}
 			}
 		} 
@@ -570,7 +525,22 @@ int PrevShape(int shape)
 	return 0;
 }
 
-bool fff = true;
+void EditBlock(glm::ivec3 pos, Block block)
+{
+	glm::ivec3 cpos = pos >> ChunkSizeBits;
+	glm::ivec3 p(pos.x & ChunkSizeMask, pos.y & ChunkSizeMask, pos.z & ChunkSizeMask);
+
+	map->Set(pos, block);
+	map_get_block(pos) = block;
+	GetChunk(cpos).ClearBuffer();
+
+	if (p.x == 0) GetChunk(cpos - ix).ClearBuffer();
+	if (p.y == 0) GetChunk(cpos - iy).ClearBuffer();
+	if (p.z == 0) GetChunk(cpos - iz).ClearBuffer();
+	if (p.x == ChunkSizeMask) GetChunk(cpos + ix).ClearBuffer();
+	if (p.y == ChunkSizeMask) GetChunk(cpos + iy).ClearBuffer();
+	if (p.z == ChunkSizeMask) GetChunk(cpos + iz).ClearBuffer();
+}
 
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
@@ -578,50 +548,41 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		flying = !flying;
 	}
-	if (action == GLFW_PRESS && key == GLFW_KEY_F1)
-	{
-		fff = !fff;
-	}
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
 	}
 	if (action == GLFW_PRESS && selection)
 	{
-		unsigned char& color = map_get_block(sel_cube).color;
-		unsigned char& shape = map_get_block(sel_cube).shape;
-
-		int red = color % 4;
-		int green = (color / 4) % 4;
-		int blue = color / 16;
+		Block block = map_get_block(sel_cube);
+		int red = block.color % 4;
+		int green = (block.color / 4) % 4;
+		int blue = block.color / 16;
 
 		if (key == GLFW_KEY_Z)
 		{
-			red = (red + 1) % 4;
-			color = red + green * 4 + blue * 16;
-			map->Set(sel_cube, map_get_block(sel_cube));
+			block.color = ((red + 1) % 4) + green * 4 + blue * 16;
+			EditBlock(sel_cube, block);
 		}
 		if (key == GLFW_KEY_X)
 		{
-			green = (green + 1) % 4;
-			color = red + green * 4 + blue * 16;
-			map->Set(sel_cube, map_get_block(sel_cube));
+			block.color = red + ((green + 1) % 4) * 4 + blue * 16;
+			EditBlock(sel_cube, block);
 		}
 		if (key == GLFW_KEY_C)
 		{
-			blue = (blue + 1) % 4;
-			color = red + green * 4 + blue * 16;
-			map->Set(sel_cube, map_get_block(sel_cube));
+			block.color = red + green * 4 + ((blue + 1) % 4) * 16;
+			EditBlock(sel_cube, block);
 		}
 		if (key == GLFW_KEY_V)
 		{
-			shape = NextShape(shape);
-			map->Set(sel_cube, map_get_block(sel_cube));
+			block.shape = NextShape(block.shape);
+			EditBlock(sel_cube, block);
 		}
 		if (key == GLFW_KEY_B)
 		{
-			shape = PrevShape(shape);
-			map->Set(sel_cube, map_get_block(sel_cube));
+			block.shape = PrevShape(block.shape);
+			EditBlock(sel_cube, block);
 		}
 	}
 }
@@ -630,18 +591,16 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int mods)
 {
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection)
 	{
-		map_get_block(sel_cube).shape = 0;
-		GetChunk(sel_cube).full = false;
-		map->Set(sel_cube, map_get_block(sel_cube));
+		Block block;
+		block.shape = 0;
+		block.color = 0;
+		EditBlock(sel_cube, block);
 	}
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
 	{
 		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
-		map_get_block(sel_cube + dir[sel_face]) = map_get_block(sel_cube);
-		GetChunk(sel_cube + dir[sel_face]).empty = false;
-		GetChunk(sel_cube + dir[sel_face]).full = false;
-		map->Set(sel_cube, map_get_block(sel_cube + dir[sel_face]));
+		EditBlock(sel_cube + dir[sel_face], map_get_block(sel_cube));
 	}
 }
 
@@ -1160,18 +1119,18 @@ int triangle_count = 0;
 
 GLuint block_buffer;
 GLuint line_buffer;
-struct Vertex
-{
-	GLubyte color;
-	GLubyte light;
-	GLubyte uv;
-	GLubyte pos[3];
-};
 
-Vertex* vertex_data = new Vertex[75000];
 GLfloat* line_data = new GLfloat[24 * 3];
 
-Vertex vertex(glm::ivec3 pos, GLubyte color, GLubyte light, GLubyte uv, int c)
+void render_general_init()
+{
+	glGenBuffers(1, &block_buffer);
+	glGenBuffers(1, &line_buffer);
+}
+
+std::vector<Vertex>* vertex_data;
+
+void vertex(glm::ivec3 pos, GLubyte color, GLubyte light, GLubyte uv, int c)
 {
 	Vertex v;
 	v.color = color;
@@ -1180,34 +1139,26 @@ Vertex vertex(glm::ivec3 pos, GLubyte color, GLubyte light, GLubyte uv, int c)
 	v.pos[0] = (pos.x & ChunkSizeMask) + corner[c].x;
 	v.pos[1] = (pos.y & ChunkSizeMask) + corner[c].y;
 	v.pos[2] = (pos.z & ChunkSizeMask) + corner[c].z;
-	return v;
+	vertex_data->push_back(v);
 }
-
-void render_general_init()
-{
-	glGenBuffers(1, &block_buffer);
-	glGenBuffers(1, &line_buffer);
-}
-
-Vertex* v;
 
 void draw_quad(glm::ivec3 pos, int a, int b, int c, int d, GLubyte color)
 {
 	GLubyte light = light_cache[a][b][c];
-	*v++ = vertex(pos, color, light, 0, a);
-	*v++ = vertex(pos, color, light, 1, b);
-	*v++ = vertex(pos, color, light, 3, c);
-	*v++ = vertex(pos, color, light, 0, a);
-	*v++ = vertex(pos, color, light, 3, c);
-	*v++ = vertex(pos, color, light, 2, d);
+	vertex(pos, color, light, 0, a);
+	vertex(pos, color, light, 1, b);
+	vertex(pos, color, light, 3, c);
+	vertex(pos, color, light, 0, a);
+	vertex(pos, color, light, 3, c);
+	vertex(pos, color, light, 2, d);
 }
 
 void draw_triangle(glm::ivec3 pos, int a, int b, int c, GLubyte color)
 {
 	GLubyte light = light_cache[a][b][c];
-	*v++ = vertex(pos, color, light, 0, a);
-	*v++ = vertex(pos, color, light, 1, b);
-	*v++ = vertex(pos, color, light, 3, c);
+	vertex(pos, color, light, 0, a);
+	vertex(pos, color, light, 1, b);
+	vertex(pos, color, light, 3, c);
 }
 
 int B(int a, int i) { return (a & (1 << i)) >> i; }
@@ -1223,10 +1174,10 @@ void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, GLubyte co
 	else if (vertices == 3)
 	{
 		GLubyte light = light_cache[a][b][c];
-		if (block & (1 << a)) *v++ = vertex(pos, color, light, 0, a);
-		if (block & (1 << b)) *v++ = vertex(pos, color, light, 1, b);
-		if (block & (1 << c)) *v++ = vertex(pos, color, light, 3, c);
-		if (block & (1 << d)) *v++ = vertex(pos, color, light, 2, d);
+		if (block & (1 << a)) vertex(pos, color, light, 0, a);
+		if (block & (1 << b)) vertex(pos, color, light, 1, b);
+		if (block & (1 << c)) vertex(pos, color, light, 3, c);
+		if (block & (1 << d)) vertex(pos, color, light, 2, d);
 	}
 }
 
@@ -1262,6 +1213,10 @@ void render_block(glm::ivec3 pos, GLubyte color)
 // cube is 255, empty is 0, prisms / pyramids / anti-pyramids are in between
 void render_general(glm::ivec3 pos, int block, GLubyte color)
 {
+	if (block == 0)
+	{
+		return;
+	}
 	if (block == 255)
 	{
 		render_block(pos, color);
@@ -1439,16 +1394,6 @@ void InitFrustum(const glm::mat4& matrix)
 	frustum[3][1] = clip[ 7] - clip[ 5];
 	frustum[3][2] = clip[11] - clip[ 9];
 	frustum[3][3] = clip[15] - clip[13];
-	// far
-/*	frustum[4][0] = clip[ 3] - clip[ 2];
-	frustum[4][1] = clip[ 7] - clip[ 6];
-	frustum[4][2] = clip[11] - clip[10];
-	frustum[4][3] = clip[15] - clip[14];
-	// near
-	frustum[5][0] = clip[ 3] + clip[ 2];
-	frustum[5][1] = clip[ 7] + clip[ 6];
-	frustum[5][2] = clip[11] + clip[10];
-	frustum[5][3] = clip[15] + clip[14];*/
 
 	for (int i = 0; i < 4; i++)
 	{
@@ -1456,32 +1401,14 @@ void InitFrustum(const glm::mat4& matrix)
 	}
 }
 
-bool SphereInFrustum(glm::vec3 p, float radius)
+bool SphereCompletelyOutsideFrustum(glm::vec3 p, float radius)
 {
 	for (int i = 0; i < 4; i++)
 	{
-		if (glm::dot(p, frustum[i].xyz()) + frustum[i].w <= -radius)
-			return false;
+		if (glm::dot(p, frustum[i].xyz()) + frustum[i].w < -radius)
+			return true;
 	}
-	return true;
-}
-
-int ClassifySphereInFrustum(glm::vec3 p, float radius)
-{
-	int c = 1; // completely inside
-	for (int i = 0; i < 4; i++)
-	{
-		float d = glm::dot(p, frustum[i].xyz()) + frustum[i].w;
-		if (d < -radius)
-		{
-			return -1; // completely outside
-		}
-		if (d <= radius)
-		{
-			c = 0; // intersecting the border
-		}
-	}
-	return c;
+	return false;
 }
 
 float block_render_time_ms = 0;
@@ -1489,18 +1416,37 @@ float block_render_time_ms_avg = 0;
 
 const float BlockRadius = sqrtf(3) / 2;
 
-int chunks_a = 0, chunks_b = 0;
+int buffer_budget = 0;
 
-void render_chunk(glm::ivec3 cpos)
+void buffer_chunk(Chunk& chunk)
+{
+	vertex_data = &chunk.vertices;
+	for (int x = 0; x < ChunkSize; x++)
+	{
+		for (int y = 0; y < ChunkSize; y++)
+		{
+			for (int z = 0; z < ChunkSize; z++)
+			{
+				Block block = chunk.block[x][y][z];
+				render_general(chunk.cpos * ChunkSize + glm::ivec3(x, y, z), block.shape, block.color);
+			}
+		}
+	}
+	vertex_data = nullptr;
+
+	chunk.buffered = true;
+	if (chunk.vertices.capacity() > chunk.vertices.size())
+	{
+		std::vector<Vertex> vertices(chunk.vertices);
+		std::swap(vertices, chunk.vertices);
+	}
+}
+
+bool render_chunk(glm::ivec3 cpos)
 {
 	Chunk& chunk = GetChunk(cpos);
-	if (chunk.empty)
-		return;
-
-	// underground chunk culling!
-	if (chunk.full)
-		if (GetChunk(cpos - ix).full1[0] && GetChunk(cpos + ix).full0[0] && GetChunk(cpos - iy).full1[1] && GetChunk(cpos + iy).full0[1] && GetChunk(cpos - iz).full1[2] && GetChunk(cpos + iz).full0[2])
-			return;
+	if (chunk.buffered && chunk.vertices.size() == 0)
+		return false;
 
 	// TODO very cheap integer behind-the-camera check for chunk!
 	/*if (glm::dot(direction, delta) < 0)
@@ -1508,63 +1454,20 @@ void render_chunk(glm::ivec3 cpos)
 
 	glm::ivec3 d = cpos * ChunkSize;
 	glm::ivec3 p = d + (ChunkSize / 2);
-	int cl = ClassifySphereInFrustum(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius);
-	if (cl == -1)
-		return;
+	if (SphereCompletelyOutsideFrustum(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius))
+		return false;
 
-	if (chunk.vertices == -1)
+	if (!chunk.buffered)
 	{
-		v = vertex_data;
-		if (cl == 0)
-		{
-			chunks_a += 1;
-			// do frustrum checks for each voxel
-			for (int x = 0; x < ChunkSize; x++)
-			{
-				for (int y = 0; y < ChunkSize; y++)
-				{
-					for (int z = 0; z < ChunkSize; z++)
-					{
-						Block block = chunk.block[x][y][z];
-						if (block.shape == 0)
-							continue;
-						/*if (glm::dot(direction, delta) < 0)
-							return;*/
-						glm::ivec3 pos = d + glm::ivec3(x, y, z);
-						if (fff && !SphereInFrustum(glm::vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5), BlockRadius))
-							continue;
-						render_general(pos, block.shape, block.color);
-					}
-				}
-			}
-		}
-		if (cl == 1)
-		{
-			chunks_b += 1;
-			for (int x = 0; x < ChunkSize; x++)
-			{
-				for (int y = 0; y < ChunkSize; y++)
-				{
-					for (int z = 0; z < ChunkSize; z++)
-					{
-						Block block = chunk.block[x][y][z];
-						if (block.shape == 0)
-							continue;
-						glm::ivec3 pos = d + glm::ivec3(x, y, z);
-						render_general(pos, block.shape, block.color);
-					}
-				}
-			}
-		}
+		buffer_chunk(chunk);
+		if (chunk.vertices.size() == 0) return false;
 	}
 
-	if (v > vertex_data)
-	{
-		triangle_count += (v - vertex_data) / 3;
-		glUniform3iv(block_pos_loc, 1, glm::value_ptr(d));
-		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * (v - vertex_data), vertex_data, GL_STREAM_DRAW);
-		glDrawArrays(GL_TRIANGLES, 0, v - vertex_data);
-	}
+	triangle_count += chunk.vertices.size() / 3;
+	glUniform3iv(block_pos_loc, 1, glm::value_ptr(d));
+	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * chunk.vertices.size(), &chunk.vertices[0], GL_STREAM_DRAW);
+	glDrawArrays(GL_TRIANGLES, 0, chunk.vertices.size());
+	return true;
 }
 
 glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
@@ -1585,11 +1488,9 @@ void render_world_blocks(const glm::mat4& matrix)
 
 	glUseProgram(block_program);
 
-	Error("a");
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(block_sampler_loc, 0/*block_texture*/);
 	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player_position));
-	Error("b");
 
 	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
 	glEnableVertexAttribArray(block_position_loc);
@@ -1685,12 +1586,10 @@ void render_gui()
 	Error("gui0");
 	text->Reset(height, matrix);
 	Error("gui1");
-	text->Printf("position: %.1f %.1f %.1f, triangle_count: %d, blocks: %.0fms, map: %.0f [border:%d inside:%d] %s",
-			 player_position[0], player_position[1], player_position[2], triangle_count, block_render_time_ms_avg, map_refresh_time_ms, chunks_a, chunks_b, fff ? "PerBlockFrustrum" : "");
+	text->Printf("position: %.1f %.1f %.1f, triangles: %d, blocks: %.0fms, map: %.0fms",
+			 player_position[0], player_position[1], player_position[2], triangle_count, block_render_time_ms_avg, map_refresh_time_ms);
 	Error("gui2");
 	triangle_count = 0;
-	chunks_a = 0;
-	chunks_b = 0;
 
 	if (selection)
 	{
@@ -1700,9 +1599,6 @@ void render_gui()
 
 	if (selection)
 	{
-		//glLogicOp(GL_INVERT);
-		//glEnable(GL_COLOR_LOGIC_OP);
-
 		glUseProgram(line_program);
 		glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 
@@ -1721,8 +1617,6 @@ void render_gui()
 		glDrawArrays(GL_LINES, 0, 4);
 
 		glDisableVertexAttribArray(line_position_loc);
-
-		//glDisable(GL_COLOR_LOGIC_OP);
 	}
 }
 

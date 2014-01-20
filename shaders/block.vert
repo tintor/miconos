@@ -13,7 +13,7 @@ out float fog_factor;
 out vec3 fragment_color;
 out vec2 fragment_uv;
 
-const float FogLimit = 14 * 16;
+const float FogLimit = 30 * 16;
 vec2[4] uv_table = vec2[](vec2(0,0), vec2(0,1), vec2(1,0), vec2(1,1));
 
 void main() {
