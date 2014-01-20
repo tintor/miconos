@@ -54,8 +54,6 @@ const int VSYNC = 1;
 int width;
 int height;
 
-#define RENDER_LIMIT 31
-
 // Util
 
 float sqr(glm::vec3 a) { return glm::dot(a, a); }
@@ -85,6 +83,39 @@ float SimplexNoise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbu
 	}
 	return total / max;
 }
+
+class Sphere
+{
+public:
+	Sphere(int size);
+	std::vector<glm::ivec3>::iterator begin() { return m_list.begin(); }
+	std::vector<glm::ivec3>::iterator end() { return m_list.end(); }
+private:
+	std::vector<glm::ivec3> m_list;
+};
+
+bool Closer(glm::ivec3 a, glm::ivec3 b) { return glm::dot(a, a) < glm::dot(b, b); }
+
+Sphere::Sphere(int size)
+{
+	glm::ivec3 d;
+	for (d.x = -size; d.x <= size; d.x++)
+	{
+		for (d.y = -size; d.y <= size; d.y++)
+		{
+			for (d.z = -size; d.z < size; d.z++)
+			{
+				if (glm::dot(d, d) <= size * size)
+				{
+					m_list.push_back(d);
+				}
+			}
+		}
+	}
+	std::sort(m_list.begin(), m_list.end(), Closer);
+}
+
+Sphere render_sphere(31); // render limit
 
 // Map
 
@@ -389,8 +420,6 @@ struct Chunk
 
 Chunk* map_cache[MapSize][MapSize][MapSize];
 
-int map_xmin = 1000000000, map_ymin = 1000000000, map_zmin = 1000000000;
-
 Chunk& GetChunk(glm::ivec3 cpos)
 {
 	return *map_cache[cpos.x & MapSizeMask][cpos.y & MapSizeMask][cpos.z & MapSizeMask];
@@ -413,40 +442,29 @@ unsigned char map_get_color(glm::ivec3 pos)
 
 float map_refresh_time_ms = 0;
 
+glm::ivec3 last_cplayer(0x80000000, 0, 0);
+
 // extend world if player moves
 void map_refresh(glm::ivec3 player)
 {
 	glm::ivec3 cplayer = player / ChunkSize;
-	if (cplayer.x == map_xmin + MapSize / 2 && cplayer.y == map_ymin + MapSize / 2 && cplayer.z == map_zmin + MapSize / 2)
-	{
+	if (cplayer == last_cplayer)
 		return;
-	}
+	last_cplayer = cplayer;
 
 	float time_start = glfwGetTime();
-	int xmin = cplayer.x - MapSize / 2;
-	int ymin = cplayer.y - MapSize / 2;
-	int zmin = cplayer.z - MapSize / 2;
-	for (int x = xmin; x < xmin + MapSize; x++)
+	for (glm::ivec3 d : render_sphere)
 	{
-		for (int y = ymin; y < ymin + MapSize; y++)
+		glm::ivec3 cpos = cplayer + d;
+		Chunk& chunk = GetChunk(cpos);
+		if (chunk.cpos != cpos)
 		{
-			for (int z = zmin; z < zmin + MapSize; z++)
-			{
-				Chunk*& chunk = map_cache[x & MapSizeMask][y & MapSizeMask][z & MapSizeMask];
-				glm::ivec3 cpos(x, y, z);
-				if (chunk->cpos != cpos)
-				{
-					const MapChunk& mc = map->Read(cpos);
-					memcpy(chunk->block, mc.block, sizeof(mc.block));
-					chunk->ClearBuffer();
-					chunk->cpos = cpos;
-				}
-			}
-		} 
+			const MapChunk& mc = map->Read(cpos);
+			memcpy(chunk.block, mc.block, sizeof(mc.block));
+			chunk.ClearBuffer();
+			chunk.cpos = cpos;
+		}
 	}
-	map_xmin = xmin;
-	map_ymin = ymin;
-	map_zmin = zmin;
 	map_refresh_time_ms = (glfwGetTime() - time_start) * 1000;
 }
 
@@ -1442,29 +1460,23 @@ void buffer_chunk(Chunk& chunk)
 	}
 }
 
-bool render_chunk(glm::ivec3 cpos)
+bool render_buffered_chunk(Chunk& chunk)
 {
-	Chunk& chunk = GetChunk(cpos);
-	if (chunk.buffered && chunk.vertices.size() == 0)
+	// Empty and underground chunks have no triangles to render
+	if (chunk.vertices.size() == 0)
 		return false;
 
 	// TODO very cheap integer behind-the-camera check for chunk!
 	/*if (glm::dot(direction, delta) < 0)
 		return;*/
 
-	glm::ivec3 d = cpos * ChunkSize;
-	glm::ivec3 p = d + (ChunkSize / 2);
+	glm::ivec3 pos = chunk.cpos * ChunkSize;
+	glm::ivec3 p = pos + (ChunkSize / 2);
 	if (SphereCompletelyOutsideFrustum(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius))
 		return false;
 
-	if (!chunk.buffered)
-	{
-		buffer_chunk(chunk);
-		if (chunk.vertices.size() == 0) return false;
-	}
-
 	triangle_count += chunk.vertices.size() / 3;
-	glUniform3iv(block_pos_loc, 1, glm::value_ptr(d));
+	glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * chunk.vertices.size(), &chunk.vertices[0], GL_STREAM_DRAW);
 	glDrawArrays(GL_TRIANGLES, 0, chunk.vertices.size());
 	return true;
@@ -1503,33 +1515,26 @@ void render_world_blocks(const glm::mat4& matrix)
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
-	for (int cx = -RENDER_LIMIT; cx <= RENDER_LIMIT; cx++)
+	int buffer_budget = 10000;
+	for (glm::ivec3 d : render_sphere)
 	{
-		render_chunk(cplayer + glm::ivec3(cx, 0, 0));
-		int RX = RENDER_LIMIT * RENDER_LIMIT - cx * cx;
-		for (int cz = 1; cz * cz <= RX; cz++)
+		Chunk& chunk = GetChunk(cplayer + d);
+		if (!chunk.buffered)
 		{
-			render_chunk(cplayer + glm::ivec3(cx, 0, cz));
-			render_chunk(cplayer + glm::ivec3(cx, 0, -cz));
-		}
-
-		for (int cy = 1; cy * cy <= RX; cy++)
-		{
-			render_chunk(cplayer + glm::ivec3(cx, cy, 0));
-			render_chunk(cplayer + glm::ivec3(cx, -cy, 0));
-
-			int RXY = RX - cy * cy;
-			for (int cz = 1; cz * cz <= RXY; cz++)
-			{
-				render_chunk(cplayer + glm::ivec3(cx, cy, cz));
-				render_chunk(cplayer + glm::ivec3(cx, cy, -cz));
-				render_chunk(cplayer + glm::ivec3(cx, -cy, cz));
-				render_chunk(cplayer + glm::ivec3(cx, -cy, -cz));
-			}
+			buffer_chunk(chunk);
+			if (--buffer_budget == 0) break;
 		}
 	}
-
-	Error("c");
+	for (glm::ivec3 d : render_sphere)
+	{
+		Chunk& chunk = GetChunk(cplayer + d);
+		if (chunk.buffered)
+		{
+			if (render_buffered_chunk(chunk))
+				if (triangle_count > 4000000)
+					break;
+		}
+	}
 
 	glUseProgram(0);
 
@@ -1583,17 +1588,18 @@ void render_gui()
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
 	
 	// Text test
-	Error("gui0");
 	text->Reset(height, matrix);
-	Error("gui1");
 	text->Printf("position: %.1f %.1f %.1f, triangles: %d, blocks: %.0fms, map: %.0fms",
 			 player_position[0], player_position[1], player_position[2], triangle_count, block_render_time_ms_avg, map_refresh_time_ms);
-	Error("gui2");
 	triangle_count = 0;
 
 	if (selection)
 	{
-		text->Printf("selected: cube [%d %d %d], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, sel_face, sel_dist);
+		Block block = map_get_block(sel_cube);
+		int red = block.color % 4;
+		int green = (block.color / 4) % 4;
+		int blue = block.color / 16;
+		text->Printf("selected: cube [%d %d %d], shape %u, color [%u %u %u], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, (uint)block.shape, red, green, blue, sel_face, sel_dist);
 	}
 	glUseProgram(0);
 
