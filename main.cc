@@ -1,5 +1,4 @@
 // TODO:
-// PERF async chunk loading
 // PERF cache array buffers in chunks
 // persistence
 // client / server
@@ -370,7 +369,9 @@ struct Chunk
 	bool empty, full;
 	bool full0[3];
 	bool full1[3];
-	GLuint arrayBuffer;
+
+	int vertices;
+	Chunk() : vertices(-1) { }
 };
 
 Chunk* map_cache[MapSize][MapSize][MapSize];
@@ -440,6 +441,11 @@ void LoadChunk(Chunk& chunk, glm::ivec3 cpos)
 {
 	MapChunk mc = map->Read(cpos);
 	memcpy(chunk.block, mc.block, sizeof(mc.block));
+
+	if (chunk.vertices > 0)
+	{
+		chunk.vertices = -1;
+	}
 
 	chunk.cpos = cpos;
 	chunk.empty = IsEmpty(chunk);
@@ -564,11 +570,17 @@ int PrevShape(int shape)
 	return 0;
 }
 
+bool fff = true;
+
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
 	{
 		flying = !flying;
+	}
+	if (action == GLFW_PRESS && key == GLFW_KEY_F1)
+	{
+		fff = !fff;
 	}
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
@@ -1477,64 +1489,70 @@ float block_render_time_ms_avg = 0;
 
 const float BlockRadius = sqrtf(3) / 2;
 
-void render_chunk(glm::ivec3 cplayer, glm::ivec3 direction, glm::ivec3 cdelta)
+int chunks_a = 0, chunks_b = 0;
+
+void render_chunk(glm::ivec3 cpos)
 {
-	glm::ivec3 c = cplayer + cdelta;
-	Chunk& chunk = GetChunk(c);
+	Chunk& chunk = GetChunk(cpos);
 	if (chunk.empty)
 		return;
 
 	// underground chunk culling!
 	if (chunk.full)
-		if (GetChunk(c - ix).full1[0] && GetChunk(c + ix).full0[0] && GetChunk(c - iy).full1[1] && GetChunk(c + iy).full0[1]  && GetChunk(c - iz).full1[2] && GetChunk(c + iz).full0[2])
+		if (GetChunk(cpos - ix).full1[0] && GetChunk(cpos + ix).full0[0] && GetChunk(cpos - iy).full1[1] && GetChunk(cpos + iy).full0[1] && GetChunk(cpos - iz).full1[2] && GetChunk(cpos + iz).full0[2])
 			return;
 
 	// TODO very cheap integer behind-the-camera check for chunk!
 	/*if (glm::dot(direction, delta) < 0)
 		return;*/
 
-	glm::ivec3 d = (cplayer + cdelta) * ChunkSize;
+	glm::ivec3 d = cpos * ChunkSize;
 	glm::ivec3 p = d + (ChunkSize / 2);
 	int cl = ClassifySphereInFrustum(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius);
 	if (cl == -1)
 		return;
 
-	v = vertex_data;
-	if (cl == 0)
+	if (chunk.vertices == -1)
 	{
-		// do frustrum checks for each voxel
-		for (int x = 0; x < ChunkSize; x++)
+		v = vertex_data;
+		if (cl == 0)
 		{
-			for (int y = 0; y < ChunkSize; y++)
+			chunks_a += 1;
+			// do frustrum checks for each voxel
+			for (int x = 0; x < ChunkSize; x++)
 			{
-				for (int z = 0; z < ChunkSize; z++)
+				for (int y = 0; y < ChunkSize; y++)
 				{
-					Block block = chunk.block[x][y][z];
-					if (block.shape == 0)
-						continue;
-					/*if (glm::dot(direction, delta) < 0)
-						return;*/
-					glm::ivec3 pos = d + glm::ivec3(x, y, z);
-					if (!SphereInFrustum(glm::vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5), BlockRadius))
-						continue;
-					render_general(pos, block.shape, block.color);
+					for (int z = 0; z < ChunkSize; z++)
+					{
+						Block block = chunk.block[x][y][z];
+						if (block.shape == 0)
+							continue;
+						/*if (glm::dot(direction, delta) < 0)
+							return;*/
+						glm::ivec3 pos = d + glm::ivec3(x, y, z);
+						if (fff && !SphereInFrustum(glm::vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5), BlockRadius))
+							continue;
+						render_general(pos, block.shape, block.color);
+					}
 				}
 			}
 		}
-	}
-	if (cl == 1)
-	{
-		for (int x = 0; x < ChunkSize; x++)
+		if (cl == 1)
 		{
-			for (int y = 0; y < ChunkSize; y++)
+			chunks_b += 1;
+			for (int x = 0; x < ChunkSize; x++)
 			{
-				for (int z = 0; z < ChunkSize; z++)
+				for (int y = 0; y < ChunkSize; y++)
 				{
-					Block block = chunk.block[x][y][z];
-					if (block.shape == 0)
-						continue;
-					glm::ivec3 pos = d + glm::ivec3(x, y, z);
-					render_general(pos, block.shape, block.color);
+					for (int z = 0; z < ChunkSize; z++)
+					{
+						Block block = chunk.block[x][y][z];
+						if (block.shape == 0)
+							continue;
+						glm::ivec3 pos = d + glm::ivec3(x, y, z);
+						render_general(pos, block.shape, block.color);
+					}
 				}
 			}
 		}
@@ -1566,9 +1584,12 @@ void render_world_blocks(const glm::mat4& matrix)
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
 
 	glUseProgram(block_program);
+
+	Error("a");
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(block_sampler_loc, 0/*block_texture*/);
 	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player_position));
+	Error("b");
 
 	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
 	glEnableVertexAttribArray(block_position_loc);
@@ -1583,34 +1604,32 @@ void render_world_blocks(const glm::mat4& matrix)
 
 	for (int cx = -RENDER_LIMIT; cx <= RENDER_LIMIT; cx++)
 	{
-		render_chunk(cplayer, direction, glm::ivec3(cx, 0, 0));
+		render_chunk(cplayer + glm::ivec3(cx, 0, 0));
 		int RX = RENDER_LIMIT * RENDER_LIMIT - cx * cx;
 		for (int cz = 1; cz * cz <= RX; cz++)
 		{
-			render_chunk(cplayer, direction, glm::ivec3(cx, 0, cz));
-			render_chunk(cplayer, direction, glm::ivec3(cx, 0, -cz));
+			render_chunk(cplayer + glm::ivec3(cx, 0, cz));
+			render_chunk(cplayer + glm::ivec3(cx, 0, -cz));
 		}
 
 		for (int cy = 1; cy * cy <= RX; cy++)
 		{
-			render_chunk(cplayer, direction, glm::ivec3(cx, cy, 0));
-			render_chunk(cplayer, direction, glm::ivec3(cx, -cy, 0));
+			render_chunk(cplayer + glm::ivec3(cx, cy, 0));
+			render_chunk(cplayer + glm::ivec3(cx, -cy, 0));
 
 			int RXY = RX - cy * cy;
 			for (int cz = 1; cz * cz <= RXY; cz++)
 			{
-				render_chunk(cplayer, direction, glm::ivec3(cx, cy, cz));
-				render_chunk(cplayer, direction, glm::ivec3(cx, cy, -cz));
-				render_chunk(cplayer, direction, glm::ivec3(cx, -cy, cz));
-				render_chunk(cplayer, direction, glm::ivec3(cx, -cy, -cz));
+				render_chunk(cplayer + glm::ivec3(cx, cy, cz));
+				render_chunk(cplayer + glm::ivec3(cx, cy, -cz));
+				render_chunk(cplayer + glm::ivec3(cx, -cy, cz));
+				render_chunk(cplayer + glm::ivec3(cx, -cy, -cz));
 			}
 		}
 	}
 
-	glDisableVertexAttribArray(block_position_loc);
-	glDisableVertexAttribArray(block_color_loc);
-	glDisableVertexAttribArray(block_light_loc);
-	glDisableVertexAttribArray(block_uv_loc);
+	Error("c");
+
 	glUseProgram(0);
 
 	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
@@ -1666,10 +1685,12 @@ void render_gui()
 	Error("gui0");
 	text->Reset(height, matrix);
 	Error("gui1");
-	text->Printf("position: %.1f %.1f %.1f, triangle_count: %d, blocks: %.0fms, map: %.0f",
-			 player_position[0], player_position[1], player_position[2], triangle_count, block_render_time_ms_avg, map_refresh_time_ms);
+	text->Printf("position: %.1f %.1f %.1f, triangle_count: %d, blocks: %.0fms, map: %.0f [border:%d inside:%d] %s",
+			 player_position[0], player_position[1], player_position[2], triangle_count, block_render_time_ms_avg, map_refresh_time_ms, chunks_a, chunks_b, fff ? "PerBlockFrustrum" : "");
 	Error("gui2");
 	triangle_count = 0;
+	chunks_a = 0;
+	chunks_b = 0;
 
 	if (selection)
 	{
