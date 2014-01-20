@@ -1,27 +1,39 @@
 // TODO:
-// persistence
+// disk persistence
 // client / server
 // multi-player
 // sky with day/night cycle
 // permanent server
+// textures with transparent pixels
+// static cloud voxels
+// text console / user chat
 // # integrate original marching cubes algo
-// # color and shape pallete
+// # [partial] color and shape pallete
+// # semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
 // # free mouse (but fixed camera) mode for editing
 // # texture mipmaps?
 // # PERF level-of-detail rendering
 // # portals
-// # slope generation
+// # procedural textures
+// # [partial] hidden triangle elimination between two slopes
+// # [partial] slope generation
+// # collision detection with slopes
 // # transparent water blocks
 // # real shadows from sun
+// # nice sun with lens flare
 // # point lights with shadows (for caves)?
-// # PERF occulsion culling (for caves / mountains)
+// # PERF multi-threaded terrain generation
+// # PERF multi-threaded chunk array buffer construction
+// # PERF manual occulsion culling (for caves / mountains)
+// # PERF OpenGL occulsion culling (for caves / mountains)
 // # advanced voxel editing (flood fill, cut/copy/paste, move, drawing shapes)
 // # wiki / user change tracking
 // # real world elevation data
 // # spherical world / spherical gravity ?
+// # zero-g - use quaternions for orientation
 // # translating blocks ?
-// # simple water (minecraft) with darker light in depth
-// # psysics: water ?
+// # simple water (minecraft) with darker light in depth (flood fill ocean!)
+// # psysics: flowing water ?
 // # psysics: moving objects / vehicles ?
 
 #include <cmath>
@@ -169,11 +181,21 @@ const int ChunkSizeMask = ChunkSize - 1, MapSizeMask = MapSize - 1;
 struct MapChunk
 {
 	Block block[ChunkSize][ChunkSize][ChunkSize];
+
+	void Set(int x, int y, int z, unsigned char shape, unsigned char color)
+	{
+		if (x >= 0 && x < ChunkSize && y >= 0 && y < ChunkSize && y >= 0 && y < ChunkSize)
+		{
+			block[x][y][z].shape = shape;
+			block[x][y][z].color = color;
+		}
+	}
 };
 
 struct Heightmap
 {
 	int height[ChunkSize * MapSize][ChunkSize * MapSize];
+	bool hasTree[ChunkSize * MapSize][ChunkSize * MapSize];
 	glm::ivec2 last[MapSize][MapSize];
 
 	Heightmap()
@@ -189,11 +211,36 @@ struct Heightmap
 
 	void Populate(int cx, int cy);
 	int& Height(int x, int y) { return height[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
+	bool& HasTree(int x, int y) { return hasTree[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
 };
 
 int GetHeight(int x, int y)
 {
 	return SimplexNoise(glm::vec2(x, y) * 0.007f, 4, 0.5f, 0.5f, true) * 50;
+}
+
+int GetColor(int x, int y)
+{
+	return floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.044f, 4, 0.5f, 0.5f, false)) * 8);
+}
+
+float Tree(int x, int y)
+{
+	return SimplexNoise(glm::vec2(x+321398, y+8901) * 0.005f, 4, 2.0f, 0.5f, true);
+}
+
+bool GetHasTree(int x, int y)
+{
+	float a = Tree(x, y);
+	for (int xx = -1; xx <= 1; xx++)
+	{
+		for (int yy = -1; yy <= 1; yy++)
+		{
+			if ((xx != 0 || yy != 0) && a <= Tree(x + xx, y + yy))
+				return false;
+		}
+	}
+	return true;
 }
 
 void Heightmap::Populate(int cx, int cy)
@@ -205,6 +252,7 @@ void Heightmap::Populate(int cx, int cy)
 			for (int y = 0; y < ChunkSize; y++)
 			{
 				Height(x + cx * ChunkSize, y + cy * ChunkSize) = GetHeight(x + cx * ChunkSize, y + cy * ChunkSize);
+				HasTree(x + cx * ChunkSize, y + cy * ChunkSize) = GetHasTree(x + cx * ChunkSize, y + cy * ChunkSize);
 			}
 		}
 		last[cx & MapSizeMask][cy & MapSizeMask] = glm::ivec2(cx, cy);
@@ -213,9 +261,51 @@ void Heightmap::Populate(int cx, int cy)
 
 Heightmap* heightmap = new Heightmap;
 
-int GetColor(int x, int y)
+int Level1Slope(int dx, int dy)
 {
-	return floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.044f, 4, 0.5f, 0.5f, false)) * 8);
+	int height = heightmap->Height(dx, dy);
+
+	bool xa = heightmap->Height(dx-1, dy) > height;
+	bool xb = heightmap->Height(dx+1, dy) > height;
+	bool ya = heightmap->Height(dx, dy-1) > height;
+	bool yb = heightmap->Height(dx, dy+1) > height;
+
+	if ( xa && !xb &&  ya && !yb) return 127;
+	if (!xa &&  xb &&  ya && !yb) return 191;
+	if ( xa && !xb && !ya &&  yb) return 223;
+	if (!xa &&  xb && !ya &&  yb) return 239;
+
+	if (ya && !yb) return 63;
+	if (yb && !ya) return 207;
+	if (xa && !xb) return 95;
+	if (xb && !xa) return 175;
+	return 0;
+}
+
+// Swap bits P and Q in A
+int BS(int a, int p, int q)
+{
+	return (a & ~(1 << p) & ~(1 << q)) | (((a >> p) & 1) << q) | (((a >> q) & 1) << p);
+}
+
+// Flip shape on X axis
+int FX(int a)
+{
+	a = BS(a, 0, 1);
+	a = BS(a, 2, 3);
+	a = BS(a, 4, 5);
+	a = BS(a, 6, 7);
+	return a;
+}
+
+// Flip shape on Y axis
+int FY(int a)
+{
+	a = BS(a, 0, 2);
+	a = BS(a, 1, 3);
+	a = BS(a, 4, 6);
+	a = BS(a, 5, 7);
+	return a;
 }
 
 void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
@@ -223,11 +313,19 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 	memset(chunk.block, 0, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
 
 	heightmap->Populate(cpos.x, cpos.y);
+	heightmap->Populate(cpos.x-1, cpos.y);
+	heightmap->Populate(cpos.x+1, cpos.y);
+	heightmap->Populate(cpos.x, cpos.y-1);
+	heightmap->Populate(cpos.x, cpos.y+1);
+
 	for (int x = 0; x < ChunkSize; x++)
 	{
 		for (int y = 0; y < ChunkSize; y++)
 		{
-			int height = heightmap->Height(x + cpos.x * ChunkSize, y + cpos.y * ChunkSize);
+			int dx = x + cpos.x * ChunkSize;
+			int dy = y + cpos.y * ChunkSize;
+
+			int height = heightmap->Height(dx, dy);
 			if (height >= cpos.z * ChunkSize)
 			{
 				for (int z = 0; z < ChunkSize; z++)
@@ -235,16 +333,84 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 					if (z + cpos.z * ChunkSize == height)
 					{
 						chunk.block[x][y][z].shape = 255;
-						chunk.block[x][y][z].color = GetColor(cpos.x * ChunkSize + x, cpos.y * ChunkSize + y);
+						chunk.block[x][y][z].color = GetColor(dx, dy);
 						break;
 					}
 					chunk.block[x][y][z].shape = 255;
 					chunk.block[x][y][z].color = 50;
 				}
 			}
+
+			// slope on top
+			int z = height + 1 - cpos.z * ChunkSize;
+			if (z >= 0 && z < ChunkSize)
+			{
+				bool xa = heightmap->Height(dx-1, dy) > height;
+				bool xb = heightmap->Height(dx+1, dy) > height;
+				bool ya = heightmap->Height(dx, dy-1) > height;
+				bool yb = heightmap->Height(dx, dy+1) > height;
+
+
+				int shape = Level1Slope(dx, dy);
+				if ((Level1Slope(dx-1, dy) == 223 || Level1Slope(dx-1, dy) == 207) && (Level1Slope(dx, dy+1) == 223 || Level1Slope(dx, dy+1) == 95))
+				{
+					shape = 77;
+				}
+				else if ((Level1Slope(dx+1, dy) == FX(223) || Level1Slope(dx+1, dy) == FX(207)) && (Level1Slope(dx, dy+1) == FX(223) || Level1Slope(dx, dy+1) == FX(95)))
+				{
+					shape = 142;
+				}
+				else if ((Level1Slope(dx-1, dy) == FY(223) || Level1Slope(dx-1, dy) == FY(207)) && (Level1Slope(dx, dy-1) == FY(223) || Level1Slope(dx, dy-1) == FY(95)))
+				{
+					shape = FY(77);
+				}
+				else if ((Level1Slope(dx+1, dy) == FX(FY(223)) || Level1Slope(dx+1, dy) == FX(FY(207))) && (Level1Slope(dx, dy-1) == FX(FY(223)) || Level1Slope(dx, dy-1) == FX(FY(95))))
+				{
+					shape = FX(FY(77));
+				}
+				if (shape != 0)
+				{
+					chunk.block[x][y][z].color = GetColor(dx, dy);
+					chunk.block[x][y][z].shape = shape;
+				}
+			}
+		}
+	}
+
+	for (int x = -2; x < ChunkSize + 2; x++)
+	{
+		for (int y = -2; y < ChunkSize + 2; y++)
+		{
+			int dx = x + cpos.x * ChunkSize;
+			int dy = y + cpos.y * ChunkSize;
+
+			if (heightmap->HasTree(dx, dy))
+			{
+				int height = heightmap->Height(dx, dy);
+
+				for (int z = 0; z < ChunkSize; z++)
+				{
+					int dz = z + cpos.z * ChunkSize;
+					if (dz > height && dz < height + 6)
+					{
+						// trunk
+						chunk.block[x][y][z].color = 3*16;
+						chunk.block[x][y][z].shape = 255;
+					}
+					if (dz > height + 2 && dz < height + 6)
+					{
+						// leaves
+						chunk.Set(x-1, y, z, 255, 3*4);
+						chunk.Set(x+1, y, z, 255, 3*4);
+						chunk.Set(x, y-1, z, 255, 3*4);
+						chunk.Set(x, y+1, z, 255, 3*4);
+					}
+				}
+			}
 		}
 	}
 }
+
 
 // ============================
 
@@ -347,6 +513,14 @@ Map::Map()
 			}
 		}
 	}
+
+	// all colors
+	for (int x = 0; x < 4; x++)
+		for (int y = 0; y < 4; y++)
+			for (int z = 0; z < 4; z++)
+			{
+				Set(glm::ivec3(x*2, y*2, z*2+45), 255, glm::vec3(x*0.3333f, y*0.3333f, z*0.3333f));
+			}
 
 	// all blocks test
 	for (int a = 0; a < 16; a++)
@@ -559,6 +733,8 @@ void EditBlock(glm::ivec3 pos, Block block)
 	if (p.z == ChunkSizeMask) GetChunk(cpos + iz).ClearBuffer();
 }
 
+bool mode = false;
+
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
@@ -568,6 +744,16 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
+	}
+	if (action == GLFW_PRESS && key == GLFW_KEY_F1)
+	{
+		mode = !mode;
+		glm::ivec3 player(player_position.x, player_position.y, player_position.z);
+		glm::ivec3 cplayer = player / ChunkSize;
+		for (glm::ivec3 d : render_sphere)
+		{
+			GetChunk(cplayer + d).ClearBuffer();
+		}
 	}
 	if (action == GLFW_PRESS && selection)
 	{
@@ -1200,30 +1386,40 @@ void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, GLubyte co
 
 void render_block(glm::ivec3 pos, GLubyte color)
 {
-	if (map_get(pos - ix) == 0)
+	if (map_get(pos - ix) != 255)
 	{
 		draw_quad(pos, 0, 4, 6, 2, color);
 	}
-	if (map_get(pos + ix) == 0)
+	if (map_get(pos + ix) != 255)
 	{
 		draw_quad(pos, 1, 3, 7, 5, color);
 	}
-	if (map_get(pos - iy) == 0)
+	if (map_get(pos - iy) != 255)
 	{
 		draw_quad(pos, 0, 1, 5, 4, color);
 	}
-	if (map_get(pos + iy) == 0)
+	if (map_get(pos + iy) != 255)
 	{
 		draw_quad(pos, 2, 6, 7, 3, color);
 	}
-	if (map_get(pos - iz) == 0)
+	if (map_get(pos - iz) != 255)
 	{
 		draw_quad(pos, 0, 2, 3, 1, color);
 	}
-	if (map_get(pos + iz) == 0)
+	if (map_get(pos + iz) != 255)
 	{
 		draw_quad(pos, 4, 5, 7, 6, color);
 	}
+}
+
+int MinX(int a)
+{
+	return a & ~(1 << 1) & ~(1 << 3) & ~(1 << 5) & ~(1 << 7);
+}
+
+int MaxX(int a)
+{
+	return (a & ~(1 << 0) & ~(1 << 2) & ~(1 << 4) & ~(1 << 6)) >> 1;
 }
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
@@ -1241,7 +1437,46 @@ void render_general(glm::ivec3 pos, int block, GLubyte color)
 	}
 
 	// common faces
-	if (map_get(pos - ix) != 255) // TODO do more strict elimination!
+	if (mode)
+	{
+		if (MaxX(map_get(pos - ix)) != MinX(block))
+		{
+			draw_face(pos, block, 0, 4, 6, 2, color);
+		}
+		if (MinX(map_get(pos + ix)) != MaxX(block))
+		{
+			draw_face(pos, block, 1, 3, 7, 5, color);
+		}
+	}
+	else
+	{
+		if (map_get(pos - ix) != 255)
+		{
+			draw_face(pos, block, 0, 4, 6, 2, color);
+		}
+		if (map_get(pos + ix) != 255)
+		{
+			draw_face(pos, block, 1, 3, 7, 5, color);
+		}
+	}
+	if (map_get(pos - iy) != 255)
+	{
+		draw_face(pos, block, 0, 1, 5, 4, color);
+	}
+	if (map_get(pos + iy) != 255)
+	{
+		draw_face(pos, block, 2, 6, 7, 3, color);
+	}
+	if (map_get(pos - iz) != 255)
+	{
+		draw_face(pos, block, 0, 2, 3, 1, color);
+	}
+	if (map_get(pos + iz) != 255)
+	{
+		draw_face(pos, block, 4, 5, 7, 6, color);
+	}
+/*
+	if (map_get(pos - ix) != 255)
 	{
 		draw_face(pos, block, 0, 4, 6, 2, color);
 	}
@@ -1265,7 +1500,7 @@ void render_general(glm::ivec3 pos, int block, GLubyte color)
 	{
 		draw_face(pos, block, 4, 5, 7, 6, color);
 	}
-
+*/
 	// prism faces
 	if (block == 255 - 128 - 64)
 	{
