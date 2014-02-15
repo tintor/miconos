@@ -1,9 +1,18 @@
 // TODO:
+// frame rate / rendering debugging:
+// - print how many chunks are rendered
+// - draw frames around rendered chunks
+// - wireframe mode
+// # large spherical world / spherical gravity / print lat-long-alt
+// - enable rendering of triangle back sides (with different texture!)
+// BUG - stray long distorted triangle
+// BUG - some (chunk) faces missing / some (chunk) faces extra (top of moon)
 // disk persistence
 // client / server
 // multi-player
 // sky with day/night cycle
 // permanent server
+// semi-transparent blocks (requires reversing order or rendering)
 // textures with transparent pixels
 // static cloud voxels
 // text console / user chat
@@ -29,18 +38,20 @@
 // # advanced voxel editing (flood fill, cut/copy/paste, move, drawing shapes)
 // # wiki / user change tracking
 // # real world elevation data
-// # spherical world / spherical gravity ?
 // # zero-g - use quaternions for orientation
 // # translating blocks ?
 // # simple water (minecraft) with darker light in depth (flood fill ocean!)
 // # psysics: flowing water ?
 // # psysics: moving objects / vehicles ?
 
+#include <cstdint>
+
 #include <cmath>
 #include <string>
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <deque>
 #include <unordered_map>
 
 #define GLM_SWIZZLE
@@ -66,6 +77,8 @@ int width;
 int height;
 
 // Util
+
+template<typename T> T sqr(T a) { return a * a; }
 
 float sqr(glm::vec3 a) { return glm::dot(a, a); }
 
@@ -308,7 +321,7 @@ int FY(int a)
 	return a;
 }
 
-void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
+void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool terrain)
 {
 	memset(chunk.block, 0, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
 
@@ -409,6 +422,29 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 			}
 		}
 	}
+
+	// simple moon
+	int size = 1000;
+	for (int x = 0; x < ChunkSize; x++)
+	{
+		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - size) - sqr<int64_t>(size);
+		if (sx > 0) continue;
+
+		for (int y = 0; y < ChunkSize; y++)
+		{
+			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - size);
+			if (sy > 0) continue;
+
+			for (int z = 0; z < ChunkSize; z++)
+			{
+				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize);
+				if (sz > 0) continue;
+
+				chunk.block[x][y][z].shape = 255;
+				chunk.block[x][y][z].color = 21*2;
+			}
+		}
+	}
 }
 
 
@@ -424,7 +460,7 @@ struct Map
 		if (!mc)
 		{
 			mc = new MapChunk;
-			GenerateTerrain(cpos, *mc);
+			GenerateTerrain(cpos, *mc, true);
 			m_chunks[cpos] = mc;
 		}
 		return *mc;
@@ -441,14 +477,15 @@ struct Map
 		*mc = chunk;
 	}
 
-	void Set(glm::ivec3 pos, Block block)
+	void Set(glm::ivec3 pos, Block block, bool terrain = true)
 	{
-		MapChunk* mc = m_chunks[pos >> ChunkSizeBits];
+		MapChunk* mc = (pos >> ChunkSizeBits) == m_cpos ? m_chunk : m_chunks[pos >> ChunkSizeBits];
 		if (!mc)
 		{
 			mc = new MapChunk;
-			GenerateTerrain(pos >> ChunkSizeBits, *mc);
-			m_chunks[pos >> ChunkSizeBits] = mc;
+			GenerateTerrain(pos >> ChunkSizeBits, *mc, terrain);
+			m_chunk = m_chunks[pos >> ChunkSizeBits] = mc;
+			m_cpos = pos >> ChunkSizeBits;
 		}
 		mc->block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask] = block;
 	}
@@ -461,18 +498,21 @@ private:
 
 	std::unordered_map<glm::ivec3, MapChunk*, KeyHash> m_chunks;
 
-	void Set(glm::ivec3 pos, unsigned char shape, glm::vec3 color)
+	MapChunk* m_chunk;
+	glm::ivec3 m_cpos;
+
+	void Set(glm::ivec3 pos, unsigned char shape, glm::vec3 color, bool terrain = true)
 	{
 		Block block;
 		block.shape = shape;
 		block.color = ColorToCode(color);
-		Set(pos, block);
+		Set(pos, block, terrain);
 	}
 };
 
 int S(int a) { return 1 << a; }
 
-Map::Map()
+Map::Map() : m_chunk(nullptr), m_cpos(0x80000000, 0, 0)
 {
 	InitColorCodes();
 
@@ -509,7 +549,7 @@ Map::Map()
 					shape = S(0^f) + S(1^f) + S(2^f) + S(4^f);
 				}
 
-				Set(glm::ivec3(x+1, y-10, z+10), shape, glm::vec3(1, 1, 0));
+				Set(glm::ivec3(x+1, y-10, z+30), shape, glm::vec3(1, 1, 0));
 			}
 		}
 	}
@@ -735,57 +775,150 @@ void EditBlock(glm::ivec3 pos, Block block)
 
 bool mode = false;
 
+std::deque<std::string> console_lines;
+bool console_active = false;
+
+bool KeyToChar(int key, int mods, char& ch)
+{
+	bool shift = mods & GLFW_MOD_SHIFT;
+	if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z)
+	{
+		ch = (shift ? 'A' : 'a') + key - GLFW_KEY_A;
+		return true;
+	}
+	if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9)
+	{
+		ch = ((mods & GLFW_MOD_SHIFT) ? ")!@#$%^&*(" : "0123456789")[key - GLFW_KEY_0];
+		return true;
+	}
+	switch (key)
+	{
+	case GLFW_KEY_COMMA: ch = shift ? '<' : ','; break;
+	case GLFW_KEY_PERIOD: ch = shift ? '>' : '.'; break;
+	case GLFW_KEY_BACKSLASH: ch = shift ? '?' : '/'; break;
+	case GLFW_KEY_SEMICOLON: ch = shift ? ':' : ';'; break;
+	case GLFW_KEY_APOSTROPHE: ch = shift ? '"' : '\''; break;
+	case GLFW_KEY_EQUAL: ch = shift ? '+' : '='; break;
+	case GLFW_KEY_MINUS: ch = shift ? '_' : '-'; break;
+	case GLFW_KEY_LEFT_BRACKET: ch = shift ? '{' : '['; break;
+	case GLFW_KEY_RIGHT_BRACKET: ch = shift ? '}' : ']'; break;
+	case GLFW_KEY_SLASH: ch = shift ? '|' : '\\'; break;
+	case GLFW_KEY_GRAVE_ACCENT: ch = shift ? '~' : '`'; break;
+	case GLFW_KEY_SPACE: ch = ' '; break;
+	default: return false;
+	}
+	return true;
+}
+
+void console_print(const std::string& line)
+{
+	console_lines.push_back(line);
+	if (console_lines.size() == 40)
+	{
+		console_lines.pop_front();
+	}
+}
+
+void console_execute(const std::string& command)
+{
+	console_print("[" + command + "]");
+}
+
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-	if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
-	{
-		flying = !flying;
-	}
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
 	}
-	if (action == GLFW_PRESS && key == GLFW_KEY_F1)
+
+	if (console_active)
 	{
-		mode = !mode;
-		glm::ivec3 player(player_position.x, player_position.y, player_position.z);
-		glm::ivec3 cplayer = player / ChunkSize;
-		for (glm::ivec3 d : render_sphere)
+		if (action == GLFW_PRESS || action == GLFW_REPEAT)
 		{
-			GetChunk(cplayer + d).ClearBuffer();
+			char ch;
+			if (key == GLFW_KEY_BACKSPACE)
+			{
+				std::string& line = console_lines[console_lines.size() - 1];
+				if (line.size() > 2)
+				{
+					line = line.substr(0, line.size() - 1);
+					line[line.size() - 1] = '_';
+				}
+			}
+			else if (key == GLFW_KEY_F2)
+			{
+				console_active = false;
+			}
+			else if (key == GLFW_KEY_ENTER)
+			{
+				std::string line = console_lines[console_lines.size() - 1];
+				console_lines.pop_back();
+				console_execute(line.substr(1, line.size() - 2));
+				console_print(">_");
+			}
+			else if (KeyToChar(key, mods, /*out*/ch))
+			{
+				std::string& line = console_lines[console_lines.size() - 1];
+				if (line.size() < 120)
+				{
+					line[line.size() - 1] = ch;
+					line.append(1, '_');
+				}
+			}
 		}
 	}
-	if (action == GLFW_PRESS && selection)
+	else
 	{
-		Block block = map_get_block(sel_cube);
-		int red = block.color % 4;
-		int green = (block.color / 4) % 4;
-		int blue = block.color / 16;
+		if (action == GLFW_PRESS && key == GLFW_KEY_F2)
+		{
+			console_active = true;
+		}
+		if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
+		{
+			flying = !flying;
+		}
+		if (action == GLFW_PRESS && key == GLFW_KEY_F1)
+		{
+			mode = !mode;
+			glm::ivec3 player(player_position.x, player_position.y, player_position.z);
+			glm::ivec3 cplayer = player / ChunkSize;
+			for (glm::ivec3 d : render_sphere)
+			{
+				GetChunk(cplayer + d).ClearBuffer();
+			}
+		}
+		if (action == GLFW_PRESS && selection)
+		{
+			Block block = map_get_block(sel_cube);
+			int red = block.color % 4;
+			int green = (block.color / 4) % 4;
+			int blue = block.color / 16;
 
-		if (key == GLFW_KEY_Z)
-		{
-			block.color = ((red + 1) % 4) + green * 4 + blue * 16;
-			EditBlock(sel_cube, block);
-		}
-		if (key == GLFW_KEY_X)
-		{
-			block.color = red + ((green + 1) % 4) * 4 + blue * 16;
-			EditBlock(sel_cube, block);
-		}
-		if (key == GLFW_KEY_C)
-		{
-			block.color = red + green * 4 + ((blue + 1) % 4) * 16;
-			EditBlock(sel_cube, block);
-		}
-		if (key == GLFW_KEY_V)
-		{
-			block.shape = NextShape(block.shape);
-			EditBlock(sel_cube, block);
-		}
-		if (key == GLFW_KEY_B)
-		{
-			block.shape = PrevShape(block.shape);
-			EditBlock(sel_cube, block);
+			if (key == GLFW_KEY_Z)
+			{
+				block.color = ((red + 1) % 4) + green * 4 + blue * 16;
+				EditBlock(sel_cube, block);
+			}
+			if (key == GLFW_KEY_X)
+			{
+				block.color = red + ((green + 1) % 4) * 4 + blue * 16;
+				EditBlock(sel_cube, block);
+			}
+			if (key == GLFW_KEY_C)
+			{
+				block.color = red + green * 4 + ((blue + 1) % 4) * 16;
+				EditBlock(sel_cube, block);
+			}
+			if (key == GLFW_KEY_V)
+			{
+				block.shape = NextShape(block.shape);
+				EditBlock(sel_cube, block);
+			}
+			if (key == GLFW_KEY_B)
+			{
+				block.shape = PrevShape(block.shape);
+				EditBlock(sel_cube, block);
+			}
 		}
 	}
 }
@@ -829,9 +962,9 @@ void model_init(GLFWwindow* window)
 	}
 
 	InitColorCodes();
-}
 
-float sqr(float a) { return a * a; }
+	console_lines.push_back(">_");
+}
 
 uint NeighborBit(int dx, int dy, int dz)
 {
@@ -1172,8 +1305,11 @@ void model_frame(GLFWwindow* window)
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
 	}
 	
-	model_move_player(window, dt);
-	
+	if (!console_active)
+	{
+		model_move_player(window, dt);
+	}
+
 	map_refresh(glm::ivec3(player_position.x, player_position.y, player_position.z));
 
 	selection = SelectCube(/*out*/sel_cube, /*out*/sel_dist, /*out*/sel_face);
@@ -1835,6 +1971,15 @@ void render_gui()
 		int blue = block.color / 16;
 		text->Printf("selected: cube [%d %d %d], shape %u, color [%u %u %u], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, (uint)block.shape, red, green, blue, sel_face, sel_dist);
 	}
+
+	if (console_active)
+	{
+		for (const std::string& line : console_lines)
+		{
+			text->Printf("%.*s", line.size(), &line[0]);
+		}
+	}
+
 	glUseProgram(0);
 
 	if (selection)
@@ -1858,6 +2003,7 @@ void render_gui()
 
 		glDisableVertexAttribArray(line_position_loc);
 	}
+
 }
 
 void render_frame()
