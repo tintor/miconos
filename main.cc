@@ -6,7 +6,6 @@
 // BUG - stray long distorted triangle
 // BUG - some (chunk) faces missing / some (chunk) faces extra (top of moon)
 // BUG - crash during flying
-// BUG - chunk [0 0 0] sometimes renders almost full of white blocks
 
 // # large spherical world / spherical gravity / print lat-long-alt
 // disk persistence
@@ -634,7 +633,7 @@ struct Chunk
 		std::swap(vertices, a);
 	}
 
-	Chunk() : buffered(false) { }
+	Chunk() : buffered(false), cpos(0x80000000, 0, 0) { }
 };
 
 Chunk* map_cache[MapSize][MapSize][MapSize];
