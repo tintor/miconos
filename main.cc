@@ -1,12 +1,12 @@
 // TODO:
-// frame rate / rendering debugging:
+// rendering debugging:
 // - print how many chunks are rendered
 // - draw frames around rendered chunks
-// - wireframe mode
 // # large spherical world / spherical gravity / print lat-long-alt
 // - enable rendering of triangle back sides (with different texture!)
 // BUG - stray long distorted triangle
 // BUG - some (chunk) faces missing / some (chunk) faces extra (top of moon)
+// BUG - crash during flying -> create log of last position / orientation
 // disk persistence
 // client / server
 // multi-player
@@ -15,14 +15,14 @@
 // semi-transparent blocks (requires reversing order or rendering)
 // textures with transparent pixels
 // static cloud voxels
-// text console / user chat
+// user chat
 // # integrate original marching cubes algo
 // # [partial] color and shape pallete
 // # semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
 // # free mouse (but fixed camera) mode for editing
 // # texture mipmaps?
 // # PERF level-of-detail rendering
-// # portals
+// # portals (there is nice youtube demo and open source project!)
 // # procedural textures
 // # [partial] hidden triangle elimination between two slopes
 // # [partial] slope generation
@@ -698,6 +698,8 @@ bool selection = false;
 
 bool flying = true;
 
+bool wireframe = false;
+
 int slope_shapes[] = {
 	255 - 128 - 64,
 	255 - 2 - 1,
@@ -867,17 +869,21 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 			}
 		}
 	}
-	else
+	else if (action == GLFW_PRESS)
 	{
-		if (action == GLFW_PRESS && key == GLFW_KEY_F2)
+		if (key == GLFW_KEY_F2)
 		{
 			console_active = true;
 		}
-		if (action == GLFW_PRESS && key == GLFW_KEY_TAB)
+		else if (key == GLFW_KEY_F3)
+		{
+			wireframe = !wireframe;
+		}
+		else if (key == GLFW_KEY_TAB)
 		{
 			flying = !flying;
 		}
-		if (action == GLFW_PRESS && key == GLFW_KEY_F1)
+		else if (key == GLFW_KEY_F1)
 		{
 			mode = !mode;
 			glm::ivec3 player(player_position.x, player_position.y, player_position.z);
@@ -887,7 +893,7 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 				GetChunk(cplayer + d).ClearBuffer();
 			}
 		}
-		if (action == GLFW_PRESS && selection)
+		else if (selection)
 		{
 			Block block = map_get_block(sel_cube);
 			int red = block.color % 4;
@@ -1868,6 +1874,10 @@ void render_world_blocks(const glm::mat4& matrix)
 	float* ma = glm::value_ptr(player_orientation);
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
 
+	if (wireframe)
+	{
+		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	}
 	glUseProgram(block_program);
 
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
@@ -1907,6 +1917,10 @@ void render_world_blocks(const glm::mat4& matrix)
 	}
 
 	glUseProgram(0);
+	if (wireframe)
+	{
+		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+	}
 
 	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
 	block_render_time_ms_avg = block_render_time_ms_avg * 0.8f + block_render_time_ms * 0.2f;
