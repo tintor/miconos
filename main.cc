@@ -1,12 +1,14 @@
 // TODO:
 // rendering debugging:
-// - print how many chunks are rendered
-// - draw frames around rendered chunks
-// # large spherical world / spherical gravity / print lat-long-alt
+// - draw frames around rendered chunks (or just render chunks as cubes)
 // - enable rendering of triangle back sides (with different texture!)
+// - ability to freeze triangles that are rendered + be able to move through it (debug what is visible)
 // BUG - stray long distorted triangle
 // BUG - some (chunk) faces missing / some (chunk) faces extra (top of moon)
-// BUG - crash during flying -> create log of last position / orientation
+// BUG - crash during flying
+// BUG - chunk [0 0 0] sometimes renders almost full of white blocks
+
+// # large spherical world / spherical gravity / print lat-long-alt
 // disk persistence
 // client / server
 // multi-player
@@ -140,6 +142,10 @@ Sphere::Sphere(int size)
 }
 
 Sphere render_sphere(31); // render limit
+
+// Log
+
+std::ofstream tracelog("tracelog");
 
 // Map
 
@@ -1198,6 +1204,7 @@ void model_move_player(GLFWwindow* window, float dt)
 		player_velocity.z = 10;
 	}
 
+	glm::vec3 p = player_position;
 	if (dir.x != 0 || dir.y != 0 || dir.z != 0)
 	{
 		dir = glm::normalize(dir);
@@ -1211,6 +1218,10 @@ void model_move_player(GLFWwindow* window, float dt)
 		}
 		Simulate(0.01, dir);
 		dt -= 0.01;
+	}
+	if (p != player_position)
+	{
+		tracelog << "position = [" << player_position.x << " " << player_position.y << " " << player_position.z << "]" << std::endl;
 	}
 }
 
@@ -1305,6 +1316,11 @@ void model_frame(GLFWwindow* window)
 		last_cursor_x = cursor_x;
 		last_cursor_y = cursor_y;
 		player_orientation = glm::rotate(glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)), -player_pitch, glm::vec3(1, 0, 0));
+
+		float* m = glm::value_ptr(player_orientation);
+		glm::vec3 forward(m[4], m[5], m[6]);
+		glm::vec3 right(m[0], m[1], m[2]);
+		tracelog << "orientation = [" << m[0] << " " << m[1] << " " << m[2] << ", " << m[4] << " " << m[5] << " " << m[6] << ", " << m[8] << " " << m[9] << " " << m[10] << "]" << std::endl;
 
 		perspective_rotation = glm::rotate(perspective, player_pitch, glm::vec3(1, 0, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, player_yaw, glm::vec3(0, 1, 0));
@@ -1461,6 +1477,7 @@ void render_init()
 }
 
 int triangle_count = 0;
+int chunk_count = 0;
 
 GLuint block_buffer;
 GLuint line_buffer;
@@ -1852,6 +1869,7 @@ bool render_buffered_chunk(Chunk& chunk)
 		return false;
 
 	triangle_count += chunk.vertices.size() / 3;
+	chunk_count += 1;
 	glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * chunk.vertices.size(), &chunk.vertices[0], GL_STREAM_DRAW);
 	glDrawArrays(GL_TRIANGLES, 0, chunk.vertices.size());
@@ -1973,9 +1991,10 @@ void render_gui()
 	
 	// Text test
 	text->Reset(height, matrix);
-	text->Printf("position: %.1f %.1f %.1f, triangles: %d, blocks: %.0fms, map: %.0fms",
-			 player_position[0], player_position[1], player_position[2], triangle_count, block_render_time_ms_avg, map_refresh_time_ms);
+	text->Printf("position: %.1f %.1f %.1f, chunks: %d, triangles: %d, blocks: %.0fms, map: %.0fms",
+			 player_position[0], player_position[1], player_position[2], chunk_count, triangle_count, block_render_time_ms_avg, map_refresh_time_ms);
 	triangle_count = 0;
+	chunk_count = 0;
 
 	if (selection)
 	{
@@ -2071,8 +2090,6 @@ int main(int argc, char** argv)
 	GLuint vao;
 	glGenVertexArrays(1, &vao);
 	glBindVertexArray(vao);
-
-	Error("main_init");
 
 	while (!glfwWindowShouldClose(window))
 	{
