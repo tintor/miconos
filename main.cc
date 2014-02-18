@@ -1,11 +1,13 @@
 // TODO:
 // rendering debugging:
 // - draw frames around rendered chunks (or just render chunks as cubes)
-// - enable rendering of triangle back sides (with different texture!)
 // - ability to freeze triangles that are rendered + be able to move through it (debug what is visible)
+// - corrupted chunk rendered at [0 0 0] sometimes!
 // BUG - stray long distorted triangle
-// BUG - some (chunk) faces missing / some (chunk) faces extra (top of moon)
+// BUG - some (chunk) faces missing / some (chunk) faces extra (top of moon) around moon
 // BUG - crash during flying
+// BUG - leaking occlusion culling query objects
+// BUG - when changing orientation only recompute occlusion for chunks that are entering into frustum (unable to get it working)
 
 // # large spherical world / spherical gravity / print lat-long-alt
 // disk persistence
@@ -35,7 +37,6 @@
 // # PERF multi-threaded terrain generation
 // # PERF multi-threaded chunk array buffer construction
 // # PERF manual occulsion culling (for caves / mountains)
-// # PERF OpenGL occulsion culling (for caves / mountains)
 // # advanced voxel editing (flood fill, cut/copy/paste, move, drawing shapes)
 // # wiki / user change tracking
 // # real world elevation data
@@ -130,7 +131,7 @@ Sphere::Sphere(int size)
 		{
 			for (d.z = -size; d.z < size; d.z++)
 			{
-				if (glm::dot(d, d) <= size * size)
+				if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size)
 				{
 					m_list.push_back(d);
 				}
@@ -429,15 +430,15 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool terrain)
 	}
 
 	// simple moon
-	int size = 1000;
+	int size = 2000;
 	for (int x = 0; x < ChunkSize; x++)
 	{
-		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - size) - sqr<int64_t>(size);
+		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - size*0.8) - sqr<int64_t>(size);
 		if (sx > 0) continue;
 
 		for (int y = 0; y < ChunkSize; y++)
 		{
-			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - size);
+			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - size*0.8);
 			if (sy > 0) continue;
 
 			for (int z = 0; z < ChunkSize; z++)
@@ -625,6 +626,7 @@ struct Chunk
 	glm::ivec3 cpos;
 	bool buffered;
 	std::vector<Vertex> vertices;
+	GLuint query;
 
 	void ClearBuffer()
 	{
@@ -633,7 +635,7 @@ struct Chunk
 		std::swap(vertices, a);
 	}
 
-	Chunk() : buffered(false), cpos(0x80000000, 0, 0) { }
+	Chunk() : buffered(false), cpos(0x80000000, 0, 0), query(-1) { }
 };
 
 Chunk* map_cache[MapSize][MapSize][MapSize];
@@ -704,6 +706,7 @@ bool selection = false;
 bool flying = true;
 
 bool wireframe = false;
+bool occlusion = true;
 
 int slope_shapes[] = {
 	255 - 128 - 64,
@@ -763,11 +766,28 @@ int PrevShape(int shape)
 	return 0;
 }
 
+std::vector<GLuint> free_queries;
+
+void ReleaseChunkQueries(glm::vec3 p)
+{
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(p)) >> ChunkSizeBits;
+	for (glm::ivec3 d : render_sphere)
+	{
+		Chunk& chunk = GetChunk(cplayer + d);
+		if (chunk.query != (GLuint)(-1))
+		{
+			free_queries.push_back(chunk.query);
+			chunk.query = -1;
+		}
+	}
+}
+
 void EditBlock(glm::ivec3 pos, Block block)
 {
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
 	glm::ivec3 p(pos.x & ChunkSizeMask, pos.y & ChunkSizeMask, pos.z & ChunkSizeMask);
 
+	Block prev_block = map_get_block(sel_cube);
 	map->Set(pos, block);
 	map_get_block(pos) = block;
 	GetChunk(cpos).ClearBuffer();
@@ -778,6 +798,11 @@ void EditBlock(glm::ivec3 pos, Block block)
 	if (p.x == ChunkSizeMask) GetChunk(cpos + ix).ClearBuffer();
 	if (p.y == ChunkSizeMask) GetChunk(cpos + iy).ClearBuffer();
 	if (p.z == ChunkSizeMask) GetChunk(cpos + iz).ClearBuffer();
+
+	if (block.shape != prev_block.shape && block.shape != 255)
+	{
+		ReleaseChunkQueries(player_position);
+	}
 }
 
 bool mode = false;
@@ -883,6 +908,10 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 		else if (key == GLFW_KEY_F3)
 		{
 			wireframe = !wireframe;
+		}
+		else if (key == GLFW_KEY_F4)
+		{
+			occlusion = !occlusion;
 		}
 		else if (key == GLFW_KEY_TAB)
 		{
@@ -1176,6 +1205,8 @@ void Simulate(float dt, glm::vec3 dir)
 	ResolveCollisionsWithBlocks();
 }
 
+bool new_orientation = true;
+
 void model_move_player(GLFWwindow* window, float dt)
 {
 	glm::vec3 dir(0, 0, 0);
@@ -1220,6 +1251,8 @@ void model_move_player(GLFWwindow* window, float dt)
 	}
 	if (p != player_position)
 	{
+		ReleaseChunkQueries(p);
+		new_orientation = false;
 		tracelog << "position = [" << player_position.x << " " << player_position.y << " " << player_position.z << "]" << std::endl;
 	}
 }
@@ -1324,6 +1357,8 @@ void model_frame(GLFWwindow* window)
 		perspective_rotation = glm::rotate(perspective, player_pitch, glm::vec3(1, 0, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, player_yaw, glm::vec3(0, 1, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
+
+		new_orientation = true;
 	}
 	
 	if (!console_active)
@@ -1372,6 +1407,9 @@ Text* text = nullptr;
 int line_program;
 GLuint line_matrix_loc;
 GLuint line_position_loc;
+
+const int OcclusionQueryCount = 32 * 32 * 32;
+GLuint occlusion_query[OcclusionQueryCount];
 
 int block_program;
 GLuint block_matrix_loc;
@@ -1438,6 +1476,23 @@ void load_noise_texture(int size)
 	delete[] image;
 }
 
+GLuint GetFreeQuery()
+{
+	if (free_queries.size() == 0)
+	{
+		tracelog << "Panic: Out of free queries!" << std::endl;
+		exit(1);
+	}
+	GLuint query = free_queries[free_queries.size() - 1];
+	if (query == (GLuint)-1)
+	{
+		tracelog << "Panic: query == -1" << std::endl;
+		exit(1);
+	}
+	free_queries.pop_back();
+	return query;
+}
+
 void render_init()
 {
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
@@ -1461,18 +1516,21 @@ void render_init()
 	line_matrix_loc = glGetUniformLocation(line_program, "matrix");
 	line_position_loc = glGetAttribLocation(line_program, "position");
 
+	glGenQueries(OcclusionQueryCount, occlusion_query);
+	for (int i = 0; i < OcclusionQueryCount; i++)
+	{
+		free_queries.push_back(occlusion_query[i]);
+	}
+
 	block_program = load_program("block");
 	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
 	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
 	block_pos_loc = glGetUniformLocation(block_program, "pos");
 	block_eye_loc = glGetUniformLocation(block_program, "eye");
-
-	Error("inita2");
 	block_position_loc = glGetAttribLocation(block_program, "position");
 	block_color_loc = glGetAttribLocation(block_program, "color");
 	block_light_loc = glGetAttribLocation(block_program, "light");
 	block_uv_loc = glGetAttribLocation(block_program, "uv");
-	Error("inita");
 }
 
 int triangle_count = 0;
@@ -1779,9 +1837,15 @@ void render_general(glm::ivec3 pos, int block, GLubyte color)
 }
 
 #include <array>
-std::array<glm::vec4, 4> frustum;
 
-void InitFrustum(const glm::mat4& matrix)
+struct Frustum
+{
+	std::array<glm::vec4, 4> frustum;
+	void Init(const glm::mat4& matrix);
+	bool IsSphereCompletelyOutside(glm::vec3 p, float radius) const;
+};
+
+void Frustum::Init(const glm::mat4& matrix)
 {
 	const float* clip = glm::value_ptr(matrix);
 	// left
@@ -1811,7 +1875,7 @@ void InitFrustum(const glm::mat4& matrix)
 	}
 }
 
-bool SphereCompletelyOutsideFrustum(glm::vec3 p, float radius)
+bool Frustum::IsSphereCompletelyOutside(glm::vec3 p, float radius) const
 {
 	for (int i = 0; i < 4; i++)
 	{
@@ -1852,8 +1916,11 @@ void buffer_chunk(Chunk& chunk)
 	}
 }
 
-bool render_buffered_chunk(Chunk& chunk)
+bool chunk_renderable(Chunk& chunk, const Frustum& frustum)
 {
+	if (!chunk.buffered)
+		return false;
+
 	// Empty and underground chunks have no triangles to render
 	if (chunk.vertices.size() == 0)
 		return false;
@@ -1864,15 +1931,26 @@ bool render_buffered_chunk(Chunk& chunk)
 
 	glm::ivec3 pos = chunk.cpos * ChunkSize;
 	glm::ivec3 p = pos + (ChunkSize / 2);
-	if (SphereCompletelyOutsideFrustum(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius))
-		return false;
+	return !frustum.IsSphereCompletelyOutside(glm::vec3(p.x, p.y, p.z), ChunkSize * BlockRadius);
+}
 
+void render_chunk(Chunk& chunk)
+{
 	triangle_count += chunk.vertices.size() / 3;
 	chunk_count += 1;
+
+	glm::ivec3 pos = chunk.cpos * ChunkSize;
 	glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * chunk.vertices.size(), &chunk.vertices[0], GL_STREAM_DRAW);
+
 	glDrawArrays(GL_TRIANGLES, 0, chunk.vertices.size());
-	return true;
+}
+
+GLuint GetQueryResult(GLuint query)
+{
+	GLuint result = 0;
+	glGetQueryObjectuiv(query, GL_QUERY_RESULT, &result);
+	return result;
 }
 
 glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
@@ -1880,13 +1958,16 @@ glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
 	return (glm::vec3(a) - c) * 1.02f + c;
 }
 
+Frustum last_frustum;
+
 void render_world_blocks(const glm::mat4& matrix)
 {
 	float time_start = glfwGetTime();
 	glBindTexture(GL_TEXTURE_2D, block_texture);
-	glm::ivec3 cplayer = glm::ivec3(player_position) >> ChunkSizeBits;
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(player_position)) >> ChunkSizeBits;
 
-	InitFrustum(matrix);
+	Frustum frustum;
+	frustum.Init(matrix); // TODO - avoid recomputing if same
 
 	float* ma = glm::value_ptr(player_orientation);
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
@@ -1895,8 +1976,8 @@ void render_world_blocks(const glm::mat4& matrix)
 	{
 		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	}
-	glUseProgram(block_program);
 
+	glUseProgram(block_program);
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(block_sampler_loc, 0/*block_texture*/);
 	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player_position));
@@ -1913,6 +1994,17 @@ void render_world_blocks(const glm::mat4& matrix)
 	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
 	int buffer_budget = 5000;
+
+	// TODO: move buffering to separate thread!
+	// Center chunk is special!
+	glm::ivec3 d(0, 0, 0);
+	Chunk& center_chunk = GetChunk(cplayer + d);
+	if (!center_chunk.buffered)
+	{
+		buffer_chunk(center_chunk);
+		--buffer_budget;
+	}
+
 	for (glm::ivec3 d : render_sphere)
 	{
 		Chunk& chunk = GetChunk(cplayer + d);
@@ -1922,18 +2014,70 @@ void render_world_blocks(const glm::mat4& matrix)
 			if (--buffer_budget == 0) break;
 		}
 	}
-	for (glm::ivec3 d : render_sphere)
+
+	int max_triangles = 4000000;
+
+	// Center chunk is special
+	render_chunk(center_chunk);
+
+	if (occlusion == 0)
 	{
-		Chunk& chunk = GetChunk(cplayer + d);
-		if (chunk.buffered)
+		for (glm::ivec3 d : render_sphere)
 		{
-			if (render_buffered_chunk(chunk))
-				if (triangle_count > 4000000)
+			Chunk& chunk = GetChunk(cplayer + d);
+			if (chunk_renderable(chunk, frustum))
+			{
+				render_chunk(chunk);
+				if (triangle_count > max_triangles)
 					break;
+			}
+		}
+	}
+	else
+	{
+		for (glm::ivec3 d : render_sphere)
+		{
+			Chunk& chunk = GetChunk(cplayer + d);
+			if (!chunk_renderable(chunk, frustum))
+				continue;
+
+			if (chunk.query == (GLuint)(-1))
+			{
+				chunk.query = GetFreeQuery();
+				glBeginQuery(GL_SAMPLES_PASSED, chunk.query);
+				render_chunk(chunk);
+				glEndQuery(GL_SAMPLES_PASSED);
+				if (triangle_count > max_triangles)
+					break;
+			}
+			else
+			{
+				GLuint samples = GetQueryResult(chunk.query);
+				if (samples > 0)
+				{
+					render_chunk(chunk);
+					if (triangle_count > max_triangles)
+						break;
+				}
+				// BUG: when changing orientation no need to recompute everything, just chunks that are new from last_frustum
+				// It
+				else if (new_orientation && samples == 0 /*&& !chunk_renderable(chunk, last_frustum)*/)
+				{
+					glBeginQuery(GL_SAMPLES_PASSED, chunk.query);
+					render_chunk(chunk);
+					glEndQuery(GL_SAMPLES_PASSED);
+					if (triangle_count > max_triangles)
+						break;
+				}
+			}
 		}
 	}
 
+	new_orientation = false;
+	last_frustum = frustum;
+
 	glUseProgram(0);
+
 	if (wireframe)
 	{
 		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -1990,8 +2134,8 @@ void render_gui()
 	
 	// Text test
 	text->Reset(height, matrix);
-	text->Printf("position: %.1f %.1f %.1f, chunks: %d, triangles: %d, blocks: %.0fms, map: %.0fms",
-			 player_position[0], player_position[1], player_position[2], chunk_count, triangle_count, block_render_time_ms_avg, map_refresh_time_ms);
+	text->Printf("position: %.1f %.1f %.1f, chunks: %d, triangles: %d, frame: %.0fms, map: %.0fms, occlusion: %d",
+			 player_position[0], player_position[1], player_position[2], chunk_count, triangle_count, block_render_time_ms_avg, map_refresh_time_ms, occlusion);
 	triangle_count = 0;
 	chunk_count = 0;
 
@@ -2036,13 +2180,6 @@ void render_gui()
 		glDisableVertexAttribArray(line_position_loc);
 	}
 
-}
-
-void render_frame()
-{
-	glViewport(0, 0, width, height);
-	render_world();
-	render_gui();
 }
 
 void OnError(int error, const char* message)
@@ -2093,7 +2230,11 @@ int main(int argc, char** argv)
 	while (!glfwWindowShouldClose(window))
 	{
 		model_frame(window);
-		render_frame();
+
+		glViewport(0, 0, width, height);
+		render_world();
+		render_gui();
+
 		glfwSwapBuffers(window);
 		glfwPollEvents();
 	}
