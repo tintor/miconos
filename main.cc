@@ -327,6 +327,9 @@ int FY(int a)
 	return a;
 }
 
+const int MoonRadius = 500;
+const glm::ivec3 MoonCenter(MoonRadius * 0.8, MoonRadius * 0.8, 0);
+
 void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool terrain)
 {
 	memset(chunk.block, 0, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
@@ -430,20 +433,19 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool terrain)
 	}
 
 	// simple moon
-	int size = 2000;
 	for (int x = 0; x < ChunkSize; x++)
 	{
-		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - size*0.8) - sqr<int64_t>(size);
+		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - MoonCenter.x) - sqr<int64_t>(MoonRadius);
 		if (sx > 0) continue;
 
 		for (int y = 0; y < ChunkSize; y++)
 		{
-			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - size*0.8);
+			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - MoonCenter.y);
 			if (sy > 0) continue;
 
 			for (int z = 0; z < ChunkSize; z++)
 			{
-				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize);
+				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize - MoonCenter.z);
 				if (sz > 0) continue;
 
 				chunk.block[x][y][z].shape = 255;
@@ -452,7 +454,6 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool terrain)
 		}
 	}
 }
-
 
 // ============================
 
@@ -690,7 +691,7 @@ void map_refresh(glm::ivec3 player)
 
 // Model
 
-static glm::vec3 player_position(0, 0, 20);
+static glm::vec3 player_position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
 static float player_yaw = 0, player_pitch = 0;
 glm::mat4 player_orientation;
 float last_time;
@@ -856,6 +857,8 @@ void console_execute(const std::string& command)
 	console_print("[" + command + "]");
 }
 
+glm::vec3 player_velocity;
+
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
@@ -916,6 +919,7 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 		else if (key == GLFW_KEY_TAB)
 		{
 			flying = !flying;
+			player_velocity = glm::vec3(0, 0, 0);
 		}
 		else if (key == GLFW_KEY_F1)
 		{
@@ -1158,8 +1162,6 @@ uint CubeNeighbors(glm::ivec3 cube)
 	return neighbors;
 }
 
-glm::vec3 player_velocity;
-
 void ResolveCollisionsWithBlocks()
 {
 	int px = roundf(player_position.x);
@@ -1198,9 +1200,29 @@ void ResolveCollisionsWithBlocks()
 	}
 }
 
+glm::vec3 Gravity(glm::vec3 pos)
+{
+	// return glm::vec3(0, 0, -15);
+	glm::vec3 dir = glm::vec3(MoonCenter) - pos;
+	double dist2 = glm::dot(dir, dir);
+	double a = 10000000;
+
+	if (dist2 > MoonRadius * MoonRadius)
+	{
+		return dir * (float)(a / (sqrt(dist2) * dist2));
+	}
+	else
+	{
+		return dir * (float)(a / (MoonRadius * MoonRadius * MoonRadius));
+	}
+}
+
 void Simulate(float dt, glm::vec3 dir)
 {
-	if (!flying) player_velocity.z -= dt * 15;
+	if (!flying)
+	{
+		player_velocity += Gravity(player_position) * dt;
+	}
 	player_position += dir * ((flying ? 10 : 4) * dt) + player_velocity * dt;
 	ResolveCollisionsWithBlocks();
 }
@@ -1229,9 +1251,9 @@ void model_move_player(GLFWwindow* window, float dt)
 	if (glfwGetKey(window, 'Q')) dir[2] += 1;
 	if (glfwGetKey(window, 'E')) dir[2] -= 1;
 
-	if (!flying && glfwGetKey(window, GLFW_KEY_SPACE) && player_velocity.z == 0)
+	if (!flying && glfwGetKey(window, GLFW_KEY_SPACE))
 	{
-		player_velocity.z = 10;
+		player_velocity = Gravity(player_position) * -0.5f;
 	}
 
 	glm::vec3 p = player_position;
