@@ -737,39 +737,9 @@ bool selection = false;
 bool wireframe = false;
 bool occlusion = true;
 
-int slope_shapes[] = {
-	255 - 128 - 64,
-	255 - 2 - 1,
-	255 - 32 - 16,
-	255 - 8 - 4,
-	255 - 64 - 16,
-	255 - 8 - 2,
-	255 - 128 - 32,
-	255 - 4 - 1,
-	255 - 32 - 2,
-	255 - 64 - 4,
-	255 - 16 - 1,
-	255 - 128 - 8 };
-
-int pyramid_shapes[] = {
-	23,
-	43,
-	13 + 64,
-	8 + 4 + 2 + 128,
-	16 + 32 + 64 + 1,
-	32 + 16 + 128 + 2,
-	64 + 128 + 16 + 4,
-	128 + 64 + 32 + 8 };
-
-int anti_pyramid_shapes[] = {
-	254,
-	253,
-	251,
-	247,
-	255 - 16,
-	255 - 32,
-	255 - 64,
-	127 };
+const int slope_shapes[]        = { 63, 252, 207, 243, 175, 245, 95, 250, 221, 187, 238, 119 };
+const int pyramid_shapes[]      = { 23, 43, 77, 142, 113, 178, 212, 232 };
+const int anti_pyramid_shapes[] = { 254, 253, 251, 247, 239, 223, 191, 127 };
 
 int NextShape(int shape)
 {
@@ -838,6 +808,40 @@ bool mode = false;
 
 Console console;
 
+void OnEditKey(int key)
+{
+	Block block = map_get_block(sel_cube);
+	int red = block.color % 4;
+	int green = (block.color / 4) % 4;
+	int blue = block.color / 16;
+
+	if (key == GLFW_KEY_Z)
+	{
+		block.color = ((red + 1) % 4) + green * 4 + blue * 16;
+		EditBlock(sel_cube, block);
+	}
+	if (key == GLFW_KEY_X)
+	{
+		block.color = red + ((green + 1) % 4) * 4 + blue * 16;
+		EditBlock(sel_cube, block);
+	}
+	if (key == GLFW_KEY_C)
+	{
+		block.color = red + green * 4 + ((blue + 1) % 4) * 16;
+		EditBlock(sel_cube, block);
+	}
+	if (key == GLFW_KEY_V)
+	{
+		block.shape = NextShape(block.shape);
+		EditBlock(sel_cube, block);
+	}
+	if (key == GLFW_KEY_B)
+	{
+		block.shape = PrevShape(block.shape);
+		EditBlock(sel_cube, block);
+	}
+}
+
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
@@ -890,36 +894,14 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 		}
 		else if (selection)
 		{
-			Block block = map_get_block(sel_cube);
-			int red = block.color % 4;
-			int green = (block.color / 4) % 4;
-			int blue = block.color / 16;
-
-			if (key == GLFW_KEY_Z)
-			{
-				block.color = ((red + 1) % 4) + green * 4 + blue * 16;
-				EditBlock(sel_cube, block);
-			}
-			if (key == GLFW_KEY_X)
-			{
-				block.color = red + ((green + 1) % 4) * 4 + blue * 16;
-				EditBlock(sel_cube, block);
-			}
-			if (key == GLFW_KEY_C)
-			{
-				block.color = red + green * 4 + ((blue + 1) % 4) * 16;
-				EditBlock(sel_cube, block);
-			}
-			if (key == GLFW_KEY_V)
-			{
-				block.shape = NextShape(block.shape);
-				EditBlock(sel_cube, block);
-			}
-			if (key == GLFW_KEY_B)
-			{
-				block.shape = PrevShape(block.shape);
-				EditBlock(sel_cube, block);
-			}
+			OnEditKey(key);
+		}
+	}
+	else if (action == GLFW_REPEAT)
+	{
+		if (selection)
+		{
+			OnEditKey(key);
 		}
 	}
 }
