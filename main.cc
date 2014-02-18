@@ -1896,21 +1896,11 @@ GLuint GetQueryResult(GLuint query)
 	return result;
 }
 
-glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
-{
-	return (glm::vec3(a) - c) * 1.02f + c;
-}
-
-Frustum last_frustum;
-
-void render_world_blocks(const glm::mat4& matrix)
+void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 {
 	float time_start = glfwGetTime();
 	glBindTexture(GL_TEXTURE_2D, block_texture);
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-
-	Frustum frustum;
-	frustum.Init(matrix); // TODO - avoid recomputing if same
 
 	float* ma = glm::value_ptr(player::orientation);
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
@@ -1936,30 +1926,10 @@ void render_world_blocks(const glm::mat4& matrix)
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
-	int buffer_budget = 5000;
-
-	// TODO: move buffering to separate thread!
-	// Center chunk is special!
-	glm::ivec3 d(0, 0, 0);
-	Chunk& center_chunk = GetChunk(cplayer + d);
-	if (!center_chunk.buffered)
-	{
-		buffer_chunk(center_chunk);
-		--buffer_budget;
-	}
-
-	for (glm::ivec3 d : render_sphere)
-	{
-		Chunk& chunk = GetChunk(cplayer + d);
-		if (!chunk.buffered)
-		{
-			buffer_chunk(chunk);
-			if (--buffer_budget == 0) break;
-		}
-	}
-
 	// Center chunk is special
-	render_chunk(center_chunk);
+	render_chunk(GetChunk(cplayer + glm::ivec3(0)));
+
+	static Frustum last_frustum;
 
 	if (occlusion == 0)
 	{
@@ -1993,7 +1963,8 @@ void render_world_blocks(const glm::mat4& matrix)
 			}
 			else
 			{
-				GLuint samples = GetQueryResult(chunk.query);
+				GLuint samples = GetQueryResult(chunk.query);				
+
 				if (samples > 0)
 				{
 					render_chunk(chunk);
@@ -2026,45 +1997,83 @@ void render_world_blocks(const glm::mat4& matrix)
 
 	stats::block_render_time_ms = (glfwGetTime() - time_start) * 1000;
 	stats::block_render_time_ms_avg = stats::block_render_time_ms_avg * 0.75f + stats::block_render_time_ms * 0.25f;
+}
 
-	if (selection)
+glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
+{
+	return (glm::vec3(a) - c) * 1.02f + c;
+}
+
+void render_block_selection(const glm::mat4& matrix)
+{
+	glUseProgram(line_program);
+	glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
+
+	glBindBuffer(GL_ARRAY_BUFFER, line_buffer);
+	glEnableVertexAttribArray(line_position_loc);
+
+	glVertexAttribPointer(line_position_loc, 3, GL_FLOAT, GL_FALSE, 0, 0);
+
+	glm::vec3* vline = reinterpret_cast<glm::vec3*>(line_data);
+	glm::vec3 c = glm::vec3(sel_cube) + 0.5f;
+	for (int i = 0; i <= 1; i++)
 	{
-		glUseProgram(line_program);
-		glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
-
-		glBindBuffer(GL_ARRAY_BUFFER, line_buffer);
-		glEnableVertexAttribArray(line_position_loc);
-
-		glVertexAttribPointer(line_position_loc, 3, GL_FLOAT, GL_FALSE, 0, 0);
-
-		glm::vec3* vline = reinterpret_cast<glm::vec3*>(line_data);
-		glm::vec3 c = glm::vec3(sel_cube) + 0.5f;
-		for (int i = 0; i <= 1; i++)
+		for (int j = 0; j <= 1; j++)
 		{
-			for (int j = 0; j <= 1; j++)
-			{
-				glm::ivec3 sel = sel_cube;
-				*vline++ = Q(sel + i*iy + j*iz, c); *vline++ = Q(sel + ix + i*iy + j*iz, c);
-				*vline++ = Q(sel + i*ix + j*iz, c); *vline++ = Q(sel + iy + i*ix + j*iz, c);
-				*vline++ = Q(sel + i*ix + j*iy, c); *vline++ = Q(sel + iz + i*ix + j*iy, c);
-			}
+			glm::ivec3 sel = sel_cube;
+			*vline++ = Q(sel + i*iy + j*iz, c); *vline++ = Q(sel + ix + i*iy + j*iz, c);
+			*vline++ = Q(sel + i*ix + j*iz, c); *vline++ = Q(sel + iy + i*ix + j*iz, c);
+			*vline++ = Q(sel + i*ix + j*iy, c); *vline++ = Q(sel + iz + i*ix + j*iy, c);
 		}
+	}
 
-		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 3 * 24, line_data, GL_STREAM_DRAW);
-		glDrawArrays(GL_LINES, 0, 24);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 3 * 24, line_data, GL_STREAM_DRAW);
+	glDrawArrays(GL_LINES, 0, 24);
 
-		glDisableVertexAttribArray(line_position_loc);
+	glDisableVertexAttribArray(line_position_loc);
+}
+
+// TODO: move this to separate thread(s)!
+void buffer_chunks()
+{
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+	int buffer_budget = 5000;
+
+	Chunk& center_chunk = GetChunk(cplayer + glm::ivec3(0));
+	if (!center_chunk.buffered)
+	{
+		buffer_chunk(center_chunk);
+		--buffer_budget;
+	}
+
+	for (glm::ivec3 d : render_sphere)
+	{
+		Chunk& chunk = GetChunk(cplayer + d);
+		if (!chunk.buffered)
+		{
+			buffer_chunk(chunk);
+			if (--buffer_budget == 0) break;
+		}
 	}
 }
 
 void render_world()
 {
+	// TODO - avoid recomputing if same
 	glm::mat4 matrix = glm::translate(perspective_rotation, -player::position);
-	
+	Frustum frustum;
+	frustum.Init(matrix);
+
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	render_world_blocks(matrix);
+	buffer_chunks();
+	render_world_blocks(matrix, frustum);
+
+	if (selection)
+	{
+		render_block_selection(matrix);
+	}
 
 	glDisable(GL_DEPTH_TEST);
 }
