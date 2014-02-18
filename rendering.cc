@@ -25,13 +25,9 @@ int gen_buffer(GLenum target, GLsizei size, const void* data)
 	GLuint buffer;
 	fprintf(stderr, "Marko\n");
 	glGenBuffers(1, &buffer);
-	Error("Ren1a");
 	glBindBuffer(target, buffer);
-	Error("Ren1b");
 	glBufferData(target, size, data, GL_STATIC_DRAW);
-	Error("Ren1c");
 	glBindBuffer(target, 0);
-	Error("Ren1d");
 	return buffer;
 }
 
@@ -185,17 +181,11 @@ void text_gen_buffers(GLuint position_buffer, GLuint uv_buffer, float x, float y
 		x += n;
 	}
 
-	Error("gena0");
 	glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
-	Error("gena1");
 	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, position_data, GL_STATIC_DRAW);
-	Error("gena2");
 	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
-	Error("gena3");
 	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, uv_data, GL_STATIC_DRAW);
-	Error("gena4");
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	Error("gena5");
 
 	delete[] position_data;
 	delete[] uv_data;
@@ -205,24 +195,19 @@ void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position
 {
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	Error("RenA");
 	glEnableVertexAttribArray(text_position_loc);
 	glEnableVertexAttribArray(text_uv_loc);
-	Error("RenB");
 
 	glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
 	glVertexAttribPointer(position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
 	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
-	Error("RenC");
 	glVertexAttribPointer(uv_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glDrawArrays(GL_TRIANGLES, 0, length * 6);
-	Error("RenD");
 
 	glDisableVertexAttribArray(position_loc);
 	glDisableVertexAttribArray(uv_loc);
 	glDisable(GL_BLEND);
-	Error("RenE");
 }
 
 Text::Text()
@@ -234,7 +219,6 @@ Text::Text()
 	fprintf(stderr, "pos_loc=%d\n", text_position_loc);
 	text_uv_loc = glGetAttribLocation(text_program, "uv");
 	glBindFragDataLocation(text_program, 0, "color");
-	Error("Text::Text");
 
 	glGenBuffers(1, &m_positionBuffer);
 	glGenBuffers(1, &m_uvBuffer);
@@ -272,10 +256,5 @@ void Text::Printf(const char* format, ...)
 void Text::PrintAt(float x, float y, float n, const char* text)
 {
 	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, n, text);
-	Error("Ren1");
 	text_draw_buffers(m_positionBuffer, m_uvBuffer, text_position_loc, text_uv_loc, strlen(text));
-	Error("Ren2");
-	//glDeleteBuffers(1, &position_buffer);
-	//glDeleteBuffers(1, &uv_buffer);
-	Error("Ren3");
 }

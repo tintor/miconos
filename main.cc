@@ -23,7 +23,7 @@
 // user chat
 
 // # advanced editor:
-// # - [partial] color and shape pallete
+// # - [partial] color and shape pallete as part of GUI
 // # - free mouse (but fixed camera) mode for editing
 // # - flood fill tool
 // # - cut/copy/paste/move tool
@@ -31,6 +31,7 @@
 // # - wiki / user change tracking
 
 // # more support for slopes:
+// # - integrate original marching cubes algo
 // # - [partial] hidden triangle elimination between two slopes
 // # - [partial] slope generation
 // # - collision detection with slopes
@@ -56,7 +57,6 @@
 // # real world elevation data
 // # translating blocks ?
 // # psysics: moving objects / vehicles ?
-// # integrate original marching cubes algo
 // # texture mipmaps?
 // # procedural textures
 
@@ -1585,9 +1585,7 @@ void render_general_init()
 	glGenBuffers(1, &line_buffer);
 }
 
-std::vector<Vertex>* vertex_data;
-
-void vertex(glm::ivec3 pos, GLubyte color, GLubyte light, GLubyte uv, int c)
+void vertex(std::vector<Vertex>& vertices, glm::ivec3 pos, GLubyte color, GLubyte light, GLubyte uv, int c)
 {
 	Vertex v;
 	v.color = color;
@@ -1596,73 +1594,73 @@ void vertex(glm::ivec3 pos, GLubyte color, GLubyte light, GLubyte uv, int c)
 	v.pos[0] = (pos.x & ChunkSizeMask) + corner[c].x;
 	v.pos[1] = (pos.y & ChunkSizeMask) + corner[c].y;
 	v.pos[2] = (pos.z & ChunkSizeMask) + corner[c].z;
-	vertex_data->push_back(v);
+	vertices.push_back(v);
 }
 
-void draw_quad(glm::ivec3 pos, int a, int b, int c, int d, GLubyte color)
+void draw_quad(std::vector<Vertex>& vertices, glm::ivec3 pos, int a, int b, int c, int d, GLubyte color)
 {
 	GLubyte light = light_cache[a][b][c];
-	vertex(pos, color, light, 0, a);
-	vertex(pos, color, light, 1, b);
-	vertex(pos, color, light, 3, c);
-	vertex(pos, color, light, 0, a);
-	vertex(pos, color, light, 3, c);
-	vertex(pos, color, light, 2, d);
+	vertex(vertices, pos, color, light, 0, a);
+	vertex(vertices, pos, color, light, 1, b);
+	vertex(vertices, pos, color, light, 3, c);
+	vertex(vertices, pos, color, light, 0, a);
+	vertex(vertices, pos, color, light, 3, c);
+	vertex(vertices, pos, color, light, 2, d);
 }
 
-void draw_triangle(glm::ivec3 pos, int a, int b, int c, GLubyte color)
+void draw_triangle(std::vector<Vertex>& vertices, glm::ivec3 pos, int a, int b, int c, GLubyte color)
 {
 	GLubyte light = light_cache[a][b][c];
-	vertex(pos, color, light, 0, a);
-	vertex(pos, color, light, 1, b);
-	vertex(pos, color, light, 3, c);
+	vertex(vertices, pos, color, light, 0, a);
+	vertex(vertices, pos, color, light, 1, b);
+	vertex(vertices, pos, color, light, 3, c);
 }
 
 int B(int a, int i) { return (a & (1 << i)) >> i; }
 
-void draw_face(glm::ivec3 pos, int block, int a, int b, int c, int d, GLubyte color)
+void draw_face(std::vector<Vertex>& vertices, glm::ivec3 pos, int block, int a, int b, int c, int d, GLubyte color)
 {
-	int vertices = B(block, a) + B(block, b) + B(block, c) + B(block, d);
+	int n = B(block, a) + B(block, b) + B(block, c) + B(block, d);
 
-	if (vertices == 4)
+	if (n == 4)
 	{
-		draw_quad(pos, a, b, c, d, color);
+		draw_quad(vertices, pos, a, b, c, d, color);
 	}
-	else if (vertices == 3)
+	else if (n == 3)
 	{
 		GLubyte light = light_cache[a][b][c];
-		if (block & (1 << a)) vertex(pos, color, light, 0, a);
-		if (block & (1 << b)) vertex(pos, color, light, 1, b);
-		if (block & (1 << c)) vertex(pos, color, light, 3, c);
-		if (block & (1 << d)) vertex(pos, color, light, 2, d);
+		if (block & (1 << a)) vertex(vertices, pos, color, light, 0, a);
+		if (block & (1 << b)) vertex(vertices, pos, color, light, 1, b);
+		if (block & (1 << c)) vertex(vertices, pos, color, light, 3, c);
+		if (block & (1 << d)) vertex(vertices, pos, color, light, 2, d);
 	}
 }
 
-void render_block(glm::ivec3 pos, GLubyte color)
+void render_block(std::vector<Vertex>& vertices, glm::ivec3 pos, GLubyte color)
 {
 	if (map_get(pos - ix) != 255)
 	{
-		draw_quad(pos, 0, 4, 6, 2, color);
+		draw_quad(vertices, pos, 0, 4, 6, 2, color);
 	}
 	if (map_get(pos + ix) != 255)
 	{
-		draw_quad(pos, 1, 3, 7, 5, color);
+		draw_quad(vertices, pos, 1, 3, 7, 5, color);
 	}
 	if (map_get(pos - iy) != 255)
 	{
-		draw_quad(pos, 0, 1, 5, 4, color);
+		draw_quad(vertices, pos, 0, 1, 5, 4, color);
 	}
 	if (map_get(pos + iy) != 255)
 	{
-		draw_quad(pos, 2, 6, 7, 3, color);
+		draw_quad(vertices, pos, 2, 6, 7, 3, color);
 	}
 	if (map_get(pos - iz) != 255)
 	{
-		draw_quad(pos, 0, 2, 3, 1, color);
+		draw_quad(vertices, pos, 0, 2, 3, 1, color);
 	}
 	if (map_get(pos + iz) != 255)
 	{
-		draw_quad(pos, 4, 5, 7, 6, color);
+		draw_quad(vertices, pos, 4, 5, 7, 6, color);
 	}
 }
 
@@ -1678,7 +1676,7 @@ int MaxX(int a)
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
 // cube is 255, empty is 0, prisms / pyramids / anti-pyramids are in between
-void render_general(glm::ivec3 pos, int block, GLubyte color)
+void render_general(std::vector<Vertex>& vertices, glm::ivec3 pos, int block, GLubyte color)
 {
 	if (block == 0)
 	{
@@ -1686,7 +1684,7 @@ void render_general(glm::ivec3 pos, int block, GLubyte color)
 	}
 	if (block == 255)
 	{
-		render_block(pos, color);
+		render_block(vertices, pos, color);
 		return;
 	}
 
@@ -1695,39 +1693,39 @@ void render_general(glm::ivec3 pos, int block, GLubyte color)
 	{
 		if (MaxX(map_get(pos - ix)) != MinX(block))
 		{
-			draw_face(pos, block, 0, 4, 6, 2, color);
+			draw_face(vertices, pos, block, 0, 4, 6, 2, color);
 		}
 		if (MinX(map_get(pos + ix)) != MaxX(block))
 		{
-			draw_face(pos, block, 1, 3, 7, 5, color);
+			draw_face(vertices, pos, block, 1, 3, 7, 5, color);
 		}
 	}
 	else
 	{
 		if (map_get(pos - ix) != 255)
 		{
-			draw_face(pos, block, 0, 4, 6, 2, color);
+			draw_face(vertices, pos, block, 0, 4, 6, 2, color);
 		}
 		if (map_get(pos + ix) != 255)
 		{
-			draw_face(pos, block, 1, 3, 7, 5, color);
+			draw_face(vertices, pos, block, 1, 3, 7, 5, color);
 		}
 	}
 	if (map_get(pos - iy) != 255)
 	{
-		draw_face(pos, block, 0, 1, 5, 4, color);
+		draw_face(vertices, pos, block, 0, 1, 5, 4, color);
 	}
 	if (map_get(pos + iy) != 255)
 	{
-		draw_face(pos, block, 2, 6, 7, 3, color);
+		draw_face(vertices, pos, block, 2, 6, 7, 3, color);
 	}
 	if (map_get(pos - iz) != 255)
 	{
-		draw_face(pos, block, 0, 2, 3, 1, color);
+		draw_face(vertices, pos, block, 0, 2, 3, 1, color);
 	}
 	if (map_get(pos + iz) != 255)
 	{
-		draw_face(pos, block, 4, 5, 7, 6, color);
+		draw_face(vertices, pos, block, 4, 5, 7, 6, color);
 	}
 /*
 	if (map_get(pos - ix) != 255)
@@ -1758,119 +1756,119 @@ void render_general(glm::ivec3 pos, int block, GLubyte color)
 	// prism faces
 	if (block == 255 - 128 - 64)
 	{
-		draw_quad(pos, 2, 4, 5, 3, color);
+		draw_quad(vertices, pos, 2, 4, 5, 3, color);
 	}
 	if (block == 255 - 2 - 1)
 	{
-		draw_quad(pos, 4, 2, 3, 5, color);
+		draw_quad(vertices, pos, 4, 2, 3, 5, color);
 	}
 	if (block == 255 - 32 - 16)
 	{
-		draw_quad(pos, 1, 7, 6, 0, color);
+		draw_quad(vertices, pos, 1, 7, 6, 0, color);
 	}
 	if (block == 255 - 8 - 4)
 	{
-		draw_quad(pos, 7, 1, 0, 6, color);
+		draw_quad(vertices, pos, 7, 1, 0, 6, color);
 	}
 	if (block == 255 - 64 - 16)
 	{
-		draw_quad(pos, 0, 5, 7, 2, color);
+		draw_quad(vertices, pos, 0, 5, 7, 2, color);
 	}
 	if (block == 255 - 8 - 2)
 	{
-		draw_quad(pos, 5, 0, 2, 7, color);
+		draw_quad(vertices, pos, 5, 0, 2, 7, color);
 	}
 	if (block == 255 - 128 - 32)
 	{
-		draw_quad(pos, 3, 6, 4, 1, color);
+		draw_quad(vertices, pos, 3, 6, 4, 1, color);
 	}
 	if (block == 255 - 4 - 1)
 	{
-		draw_quad(pos, 6, 3, 1, 4, color);
+		draw_quad(vertices, pos, 6, 3, 1, 4, color);
 	}
 	if (block == 255 - 32 - 2)
 	{
-		draw_quad(pos, 0, 3, 7, 4, color);
+		draw_quad(vertices, pos, 0, 3, 7, 4, color);
 	}
 	if (block == 255 - 64 - 4)
 	{
-		draw_quad(pos, 3, 0, 4, 7, color);
+		draw_quad(vertices, pos, 3, 0, 4, 7, color);
 	}
 	if (block == 255 - 16 - 1)
 	{
-		draw_quad(pos, 5, 6, 2, 1, color);
+		draw_quad(vertices, pos, 5, 6, 2, 1, color);
 	}
 	if (block == 255 - 128 - 8)
 	{
-		draw_quad(pos, 6, 5, 1, 2, color);
+		draw_quad(vertices, pos, 6, 5, 1, 2, color);
 	}
 
 	// pyramid faces
 	if (block == 23)
 	{
-		draw_triangle(pos, 1, 2, 4, color);
+		draw_triangle(vertices, pos, 1, 2, 4, color);
 	}
 	if (block == 43)
 	{
-		draw_triangle(pos, 0, 5, 3, color);
+		draw_triangle(vertices, pos, 0, 5, 3, color);
 	}
 	if (block == 13 + 64)
 	{
-		draw_triangle(pos, 3, 6, 0, color);
+		draw_triangle(vertices, pos, 3, 6, 0, color);
 	}
 	if (block == 8 + 4 + 2 + 128)
 	{
-		draw_triangle(pos, 2, 1, 7, color);
+		draw_triangle(vertices, pos, 2, 1, 7, color);
 	}
 	if (block == 16 + 32 + 64 + 1)
 	{
-		draw_triangle(pos, 5, 0, 6, color);
+		draw_triangle(vertices, pos, 5, 0, 6, color);
 	}
 	if (block == 32 + 16 + 128 + 2)
 	{
-		draw_triangle(pos, 4, 7, 1, color);
+		draw_triangle(vertices, pos, 4, 7, 1, color);
 	}
 	if (block == 64 + 128 + 16 + 4)
 	{
-		draw_triangle(pos, 7, 4, 2, color);
+		draw_triangle(vertices, pos, 7, 4, 2, color);
 	}
 	if (block == 128 + 64 + 32 + 8)
 	{
-		draw_triangle(pos, 6, 3, 5, color);
+		draw_triangle(vertices, pos, 6, 3, 5, color);
 	}
 
 	// anti-pyramid faces
 	if (block == 254)
 	{
-		draw_triangle(pos, 1, 4, 2, color);
+		draw_triangle(vertices, pos, 1, 4, 2, color);
 	}
 	if (block == 253)
 	{
-		draw_triangle(pos, 0, 3, 5, color);
+		draw_triangle(vertices, pos, 0, 3, 5, color);
 	}
 	if (block == 251)
 	{
-		draw_triangle(pos, 3, 0, 6, color);
+		draw_triangle(vertices, pos, 3, 0, 6, color);
 	}
 	if (block == 247)
 	{
-		draw_triangle(pos, 2, 7, 1, color);
+		draw_triangle(vertices, pos, 2, 7, 1, color);
 	}
 	if (block == 255 - 16)
 	{
-		draw_triangle(pos, 5, 6, 0, color);
+		draw_triangle(vertices, pos, 5, 6, 0, color);
 	}
 	if (block == 255 - 32)
 	{
-		draw_triangle(pos, 4, 1, 7, color);
+		draw_triangle(vertices, pos, 4, 1, 7, color);
 	}
 	if (block == 255 - 64)
 	{
-		draw_triangle(pos, 7, 2, 4, color);
+		draw_triangle(vertices, pos, 7, 2, 4, color);
 	}
 	if (block == 127)
 	{
-		draw_triangle(pos, 6, 5, 3, color);
+		draw_triangle(vertices, pos, 6, 5, 3, color);
 	}
 }
 
@@ -1932,7 +1930,6 @@ int buffer_budget = 0;
 
 void buffer_chunk(Chunk& chunk)
 {
-	vertex_data = &chunk.vertices;
 	for (int x = 0; x < ChunkSize; x++)
 	{
 		for (int y = 0; y < ChunkSize; y++)
@@ -1940,18 +1937,17 @@ void buffer_chunk(Chunk& chunk)
 			for (int z = 0; z < ChunkSize; z++)
 			{
 				Block block = chunk.block[x][y][z];
-				render_general(chunk.cpos * ChunkSize + glm::ivec3(x, y, z), block.shape, block.color);
+				render_general(chunk.vertices, chunk.cpos * ChunkSize + glm::ivec3(x, y, z), block.shape, block.color);
 			}
 		}
 	}
-	vertex_data = nullptr;
 
-	chunk.buffered = true;
 	if (chunk.vertices.capacity() > chunk.vertices.size())
 	{
 		std::vector<Vertex> vertices(chunk.vertices);
 		std::swap(vertices, chunk.vertices);
 	}
+	chunk.buffered = true;
 }
 
 bool chunk_renderable(Chunk& chunk, const Frustum& frustum)
