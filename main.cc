@@ -6,21 +6,39 @@
 // BUG - leaking occlusion culling query objects
 // BUG - when changing orientation only recompute occlusion for chunks that are entering into frustum (unable to get it working)
 
-// # large spherical world / print lat-long-alt
-// # use quaternions for orientation
+// # large spherical world
+// - print lat-long-alt coordinates
+// - use quaternions for orientation + adjust UP vector using gravity
+// - spherical terrain generation
 
 // # PERF level-of-detail rendering
-// disk persistence
+// - be able to simplify spherical surface
+// - store low triangle buffers in chunks to render from distance
+// - convert chunk to cube with low resolution generated texture?
+
 // render blocks back to front
 // - semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
 // - textures with transparent pixels
 
-// client / server
-// multi-player
-// sky with day/night cycle
+// client / server:
+// - disk persistence on server
+// - terrain generation on server
+// - server sends: chunks, block updates and player position
+// - client sends: edits, player commands
+
+// multi-player:
+// - render other players
+// - login users
+// - chat
+
 // permanent server
-// static cloud voxels
-// user chat
+// - where to host?
+// - hostname / domain name?
+
+// sky:
+// - day/night cycle
+// - static cloud voxels (+ transparency + marching cubes)
+// - nice sun with lens flare
 
 // # advanced editor:
 // # - [partial] color and shape pallete as part of GUI
@@ -31,10 +49,11 @@
 // # - wiki / user change tracking
 
 // # more support for slopes:
-// # - integrate original marching cubes algo
+// # - integrate original marching cubes algo (will be usefull for water rendering!)
 // # - [partial] hidden triangle elimination between two slopes
 // # - [partial] slope generation
 // # - collision detection with slopes
+// # - light and shadows
 
 // # water:
 // # - animated surface
@@ -43,17 +62,18 @@
 // # animated grass
 
 // # shadows:
-// # - real shadows from sun
+// # - real shadows from sun (no bounce)
 // # - point lights with shadows (for caves)?
 
 // # portals (there is nice youtube demo and open source project!)
 
-// # more basic shapes: cones, cylinders
+// # more basic shapes: cones, cylinders (with level-of-detail!)
 
-// # nice sun with lens flare
 // # PERF multi-threaded terrain generation
 // # PERF multi-threaded chunk array buffer construction
-// # PERF manual occulsion culling (for caves / mountains)
+// # faster occlusion culling when player is moving
+// # PERF manual occulsion culling - potentially visible set (for caves / mountains)
+
 // # real world elevation data
 // # translating blocks ?
 // # psysics: moving objects / vehicles ?
