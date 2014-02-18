@@ -23,8 +23,10 @@ class Text
 public:
 	Text();
 	void Reset(int height, glm::mat4& matrix);
+	void Print(const char* text, int length);
 	void Printf(const char* format, ...);
-	void PrintAt(float x, float y, float n, const char* text);
+	void PrintAt(float x, float y, float n, const char* text, int length);
+
 private:
 	float m_tx;
 	float m_ty;
@@ -32,4 +34,31 @@ private:
 
 	GLuint m_positionBuffer;
 	GLuint m_uvBuffer;
+};
+
+const int ConsoleWidth = 130;
+const int ConsoleHeight = 38;
+
+class Console
+{
+public:
+	Console();
+	virtual void Execute(const char* command) { PrintLine("[" + std::string(command) + "]"); }
+	void PrintLine(const std::string& line);
+	static bool KeyToChar(int key, int mods, char& ch);
+	bool OnKey(int key, int mods);
+	void Render(Text* text, float time);
+
+	bool IsVisible() { return m_visible; }
+	void Show() { m_visible = true; }
+	void Hide() { m_visible = false; }
+
+private:
+	bool m_visible = false;
+
+	char m_output[ConsoleHeight][ConsoleWidth];
+	int m_last_line = 0;
+
+	char m_input[ConsoleWidth];
+	int m_cursor_pos = 0;
 };

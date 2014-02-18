@@ -241,6 +241,12 @@ void Text::Reset(int height, glm::mat4& matrix)
 	m_ty = height - m_ts;
 }
 
+void Text::Print(const char* text, int length)
+{
+	PrintAt(m_tx, m_ty, m_ts, text, length);
+	m_ty -= m_ts * 2;
+}
+
 void Text::Printf(const char* format, ...)
 {
 	char buffer[1024];
@@ -249,12 +255,107 @@ void Text::Printf(const char* format, ...)
 	vsnprintf(buffer, sizeof(buffer), format, va);
 	va_end(va);
 
-	PrintAt(m_tx, m_ty, m_ts, buffer);
+	PrintAt(m_tx, m_ty, m_ts, buffer, strlen(buffer));
 	m_ty -= m_ts * 2;
 }
 
-void Text::PrintAt(float x, float y, float n, const char* text)
+void Text::PrintAt(float x, float y, float n, const char* text, int length)
 {
 	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, n, text);
-	text_draw_buffers(m_positionBuffer, m_uvBuffer, text_position_loc, text_uv_loc, strlen(text));
+	text_draw_buffers(m_positionBuffer, m_uvBuffer, text_position_loc, text_uv_loc, length);
+}
+
+Console::Console()
+{
+	memset(m_output, ' ', ConsoleWidth * ConsoleHeight);
+	memset(m_input, ' ', ConsoleWidth);
+	m_input[m_cursor_pos++] = '>';
+}
+
+bool Console::KeyToChar(int key, int mods, char& ch)
+{
+	bool shift = mods & GLFW_MOD_SHIFT;
+	if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z)
+	{
+		ch = (shift ? 'A' : 'a') + key - GLFW_KEY_A;
+		return true;
+	}
+	if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9)
+	{
+		ch = ((mods & GLFW_MOD_SHIFT) ? ")!@#$%^&*(" : "0123456789")[key - GLFW_KEY_0];
+		return true;
+	}
+	switch (key)
+	{
+	case GLFW_KEY_COMMA: ch = shift ? '<' : ','; break;
+	case GLFW_KEY_PERIOD: ch = shift ? '>' : '.'; break;
+	case GLFW_KEY_SLASH: ch = shift ? '?' : '/'; break;
+	case GLFW_KEY_SEMICOLON: ch = shift ? ':' : ';'; break;
+	case GLFW_KEY_APOSTROPHE: ch = shift ? '"' : '\''; break;
+	case GLFW_KEY_EQUAL: ch = shift ? '+' : '='; break;
+	case GLFW_KEY_MINUS: ch = shift ? '_' : '-'; break;
+	case GLFW_KEY_LEFT_BRACKET: ch = shift ? '{' : '['; break;
+	case GLFW_KEY_RIGHT_BRACKET: ch = shift ? '}' : ']'; break;
+	case GLFW_KEY_BACKSLASH: ch = shift ? '|' : '\\'; break;
+	case GLFW_KEY_WORLD_1: ch = shift ? '~' : '`'; break;
+	case GLFW_KEY_SPACE: ch = ' '; break;
+	default: return false;
+	}
+	return true;
+}
+
+void Console::PrintLine(const std::string& str)
+{
+	m_last_line = (m_last_line + 1) % ConsoleHeight;
+	int length = std::min<int>(ConsoleWidth, str.length());
+	memcpy(m_output[m_last_line], str.c_str(), length);
+	memset(m_output[m_last_line] + length, ' ', ConsoleWidth - length);
+}
+
+bool Console::OnKey(int key, int mods)
+{
+	char ch;
+	if (key == GLFW_KEY_BACKSPACE)
+	{
+		if (m_cursor_pos > 1)
+		{
+			m_input[m_cursor_pos--] = ' ';
+		}
+		return true;
+	}
+	if (key == GLFW_KEY_ENTER)
+	{
+		m_input[m_cursor_pos] = 0;
+		Execute(m_input + 1);
+		memset(m_input + 1, ' ', ConsoleWidth);
+		m_cursor_pos = 1;
+		return true;
+	}
+	if (KeyToChar(key, mods, /*out*/ch))
+	{
+		if (m_cursor_pos + 1 < ConsoleWidth)
+		{
+			m_input[m_cursor_pos++] = ch;
+		}
+		return true;
+	}
+	return false;
+}
+
+void Console::Render(Text* text, float time)
+{
+	if (!m_visible)
+		return;
+
+	for (int i = m_last_line + 1; i < ConsoleHeight; i++)
+	{
+		text->Print(m_output[i], ConsoleWidth);
+	}
+	for (int i = 0; i <= m_last_line; i++)
+	{
+		text->Print(m_output[i], ConsoleWidth);
+	}
+
+	m_input[m_cursor_pos] = (fmod(time, 1.6f) <= 0.8) ? '_' : ' ';
+	text->Print(m_input, ConsoleWidth);
 }

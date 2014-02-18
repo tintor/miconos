@@ -675,7 +675,15 @@ unsigned char map_get_color(glm::ivec3 pos)
 	return map_get_block(pos).color;
 }
 
-float map_refresh_time_ms = 0;
+namespace stats
+{
+	int triangle_count = 0;
+	int chunk_count = 0;
+
+	float block_render_time_ms = 0;
+	float block_render_time_ms_avg = 0;
+	float map_refresh_time_ms = 0;
+}
 
 glm::ivec3 last_cplayer(0x80000000, 0, 0);
 
@@ -700,15 +708,22 @@ void map_refresh(glm::ivec3 player)
 			chunk.cpos = cpos;
 		}
 	}
-	map_refresh_time_ms = (glfwGetTime() - time_start) * 1000;
+	stats::map_refresh_time_ms = (glfwGetTime() - time_start) * 1000;
 }
 
 // Model
 
-// glm::vec3 player_position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
-glm::vec3 player_position(0, 0, 20);
-float player_yaw = 0, player_pitch = 0;
-glm::mat4 player_orientation;
+namespace player
+{
+//	glm::vec3 position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
+	glm::vec3 position(0, 0, 20);
+	float yaw = 0;
+	float pitch = 0;
+	glm::mat4 orientation;
+	glm::vec3 velocity;
+	bool flying = true;
+}
+
 float last_time;
 
 glm::mat4 perspective;
@@ -718,8 +733,6 @@ glm::ivec3 sel_cube;
 int sel_face;
 float sel_dist;
 bool selection = false;
-
-bool flying = true;
 
 bool wireframe = false;
 bool occlusion = true;
@@ -817,62 +830,13 @@ void EditBlock(glm::ivec3 pos, Block block)
 
 	if (block.shape != prev_block.shape && block.shape != 255)
 	{
-		ReleaseChunkQueries(player_position);
+		ReleaseChunkQueries(player::position);
 	}
 }
 
 bool mode = false;
 
-std::deque<std::string> console_lines;
-bool console_active = false;
-
-bool KeyToChar(int key, int mods, char& ch)
-{
-	bool shift = mods & GLFW_MOD_SHIFT;
-	if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z)
-	{
-		ch = (shift ? 'A' : 'a') + key - GLFW_KEY_A;
-		return true;
-	}
-	if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9)
-	{
-		ch = ((mods & GLFW_MOD_SHIFT) ? ")!@#$%^&*(" : "0123456789")[key - GLFW_KEY_0];
-		return true;
-	}
-	switch (key)
-	{
-	case GLFW_KEY_COMMA: ch = shift ? '<' : ','; break;
-	case GLFW_KEY_PERIOD: ch = shift ? '>' : '.'; break;
-	case GLFW_KEY_BACKSLASH: ch = shift ? '?' : '/'; break;
-	case GLFW_KEY_SEMICOLON: ch = shift ? ':' : ';'; break;
-	case GLFW_KEY_APOSTROPHE: ch = shift ? '"' : '\''; break;
-	case GLFW_KEY_EQUAL: ch = shift ? '+' : '='; break;
-	case GLFW_KEY_MINUS: ch = shift ? '_' : '-'; break;
-	case GLFW_KEY_LEFT_BRACKET: ch = shift ? '{' : '['; break;
-	case GLFW_KEY_RIGHT_BRACKET: ch = shift ? '}' : ']'; break;
-	case GLFW_KEY_SLASH: ch = shift ? '|' : '\\'; break;
-	case GLFW_KEY_GRAVE_ACCENT: ch = shift ? '~' : '`'; break;
-	case GLFW_KEY_SPACE: ch = ' '; break;
-	default: return false;
-	}
-	return true;
-}
-
-void console_print(const std::string& line)
-{
-	console_lines.push_back(line);
-	if (console_lines.size() == 40)
-	{
-		console_lines.pop_front();
-	}
-}
-
-void console_execute(const std::string& command)
-{
-	console_print("[" + command + "]");
-}
-
-glm::vec3 player_velocity;
+Console console;
 
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
@@ -881,39 +845,17 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 		glfwSetWindowShouldClose(window, GL_TRUE);
 	}
 
-	if (console_active)
+	if (console.IsVisible())
 	{
 		if (action == GLFW_PRESS || action == GLFW_REPEAT)
 		{
-			char ch;
-			if (key == GLFW_KEY_BACKSPACE)
+			if (console.OnKey(key, mods))
 			{
-				std::string& line = console_lines[console_lines.size() - 1];
-				if (line.size() > 2)
-				{
-					line = line.substr(0, line.size() - 1);
-					line[line.size() - 1] = '_';
-				}
+				// handled by console
 			}
 			else if (key == GLFW_KEY_F2)
 			{
-				console_active = false;
-			}
-			else if (key == GLFW_KEY_ENTER)
-			{
-				std::string line = console_lines[console_lines.size() - 1];
-				console_lines.pop_back();
-				console_execute(line.substr(1, line.size() - 2));
-				console_print(">_");
-			}
-			else if (KeyToChar(key, mods, /*out*/ch))
-			{
-				std::string& line = console_lines[console_lines.size() - 1];
-				if (line.size() < 120)
-				{
-					line[line.size() - 1] = ch;
-					line.append(1, '_');
-				}
+				console.Hide();
 			}
 		}
 	}
@@ -921,7 +863,7 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		if (key == GLFW_KEY_F2)
 		{
-			console_active = true;
+			console.Show();
 		}
 		else if (key == GLFW_KEY_F3)
 		{
@@ -933,17 +875,17 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 		}
 		else if (key == GLFW_KEY_TAB)
 		{
-			flying = !flying;
-			player_velocity = glm::vec3(0, 0, 0);
+			player::flying = !player::flying;
+			player::velocity = glm::vec3(0, 0, 0);
 		}
 		else if (key == GLFW_KEY_F1)
 		{
 			mode = !mode;
-			glm::ivec3 player(player_position.x, player_position.y, player_position.z);
-			glm::ivec3 cplayer = player / ChunkSize;
+			glm::ivec3 pos(player::position);
+			glm::ivec3 cpos = pos / ChunkSize;
 			for (glm::ivec3 d : render_sphere)
 			{
-				GetChunk(cplayer + d).ClearBuffer();
+				GetChunk(cpos + d).ClearBuffer();
 			}
 		}
 		else if (selection)
@@ -1021,8 +963,6 @@ void model_init(GLFWwindow* window)
 	}
 
 	InitColorCodes();
-
-	console_lines.push_back(">_");
 }
 
 uint NeighborBit(int dx, int dy, int dz)
@@ -1179,11 +1119,11 @@ uint CubeNeighbors(glm::ivec3 cube)
 
 void ResolveCollisionsWithBlocks()
 {
-	int px = roundf(player_position.x);
-	int py = roundf(player_position.y);
-	int pz = roundf(player_position.z);
+	int px = roundf(player::position.x);
+	int py = roundf(player::position.y);
+	int pz = roundf(player::position.z);
 
-	glm::vec3 start = player_position;
+	glm::vec3 start = player::position;
 	for (int i = 0; i < 100; i++)
 	{
 		// Resolve all collisions simultaneously
@@ -1198,10 +1138,9 @@ void ResolveCollisionsWithBlocks()
 					glm::ivec3 cube(x, y, z);
 					if (map_get(cube) != 0)
 					{
-						glm::vec3 p = player_position;
-						if (1 == SphereVsCube(p, 0.8f, cube, CubeNeighbors(cube)))
+						if (1 == SphereVsCube(player::position, 0.8f, cube, CubeNeighbors(cube)))
 						{
-							sum += p;
+							sum += player::position;
 							c += 1;
 						}
 					}
@@ -1210,8 +1149,8 @@ void ResolveCollisionsWithBlocks()
 		}
 		if (c == 0)
 			break;
-		player_velocity.z = 0;
-		player_position = sum / (float)c;
+		player::velocity = glm::vec3(0, 0, 0);
+		player::position = sum / (float)c;
 	}
 }
 
@@ -1235,11 +1174,11 @@ glm::vec3 Gravity(glm::vec3 pos)
 
 void Simulate(float dt, glm::vec3 dir)
 {
-	if (!flying)
+	if (!player::flying)
 	{
-		player_velocity += Gravity(player_position) * dt;
+		player::velocity += Gravity(player::position) * dt;
 	}
-	player_position += dir * ((flying ? 10 : 4) * dt) + player_velocity * dt;
+	player::position += dir * ((player::flying ? 10 : 4) * dt) + player::velocity * dt;
 	ResolveCollisionsWithBlocks();
 }
 
@@ -1249,11 +1188,11 @@ void model_move_player(GLFWwindow* window, float dt)
 {
 	glm::vec3 dir(0, 0, 0);
 
-	float* m = glm::value_ptr(player_orientation);
+	float* m = glm::value_ptr(player::orientation);
 	glm::vec3 forward(m[4], m[5], m[6]);
 	glm::vec3 right(m[0], m[1], m[2]);
 
-	if (!flying)
+	if (!player::flying)
 	{
 		forward.z = 0;
 		forward = glm::normalize(forward);
@@ -1267,12 +1206,12 @@ void model_move_player(GLFWwindow* window, float dt)
 	if (glfwGetKey(window, 'Q')) dir[2] += 1;
 	if (glfwGetKey(window, 'E')) dir[2] -= 1;
 
-	if (!flying && glfwGetKey(window, GLFW_KEY_SPACE))
+	if (!player::flying && glfwGetKey(window, GLFW_KEY_SPACE))
 	{
-		player_velocity = Gravity(player_position) * -0.5f;
+		player::velocity = Gravity(player::position) * -0.5f;
 	}
 
-	glm::vec3 p = player_position;
+	glm::vec3 p = player::position;
 	if (dir.x != 0 || dir.y != 0 || dir.z != 0)
 	{
 		dir = glm::normalize(dir);
@@ -1287,11 +1226,11 @@ void model_move_player(GLFWwindow* window, float dt)
 		Simulate(0.01, dir);
 		dt -= 0.01;
 	}
-	if (p != player_position)
+	if (p != player::position)
 	{
 		ReleaseChunkQueries(p);
 		new_orientation = false;
-		tracelog << "position = [" << player_position.x << " " << player_position.y << " " << player_position.z << "]" << std::endl;
+		tracelog << "position = [" << player::position.x << " " << player::position.y << " " << player::position.z << "]" << std::endl;
 	}
 }
 
@@ -1332,12 +1271,12 @@ bool IntersectRayCube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube, float& dis
 
 bool SelectCube(glm::ivec3& sel_cube, float& sel_dist, int& sel_face)
 {
-	float* ma = glm::value_ptr(player_orientation);
+	float* ma = glm::value_ptr(player::orientation);
 	glm::vec3 dir(ma[4], ma[5], ma[6]);
 
-	int px = roundf(player_position.x);
-	int py = roundf(player_position.y);
-	int pz = roundf(player_position.z);
+	int px = roundf(player::position.x);
+	int py = roundf(player::position.y);
+	int pz = roundf(player::position.z);
 
 	bool found = false;
 	int Dist = 6;
@@ -1351,7 +1290,7 @@ bool SelectCube(glm::ivec3& sel_cube, float& sel_dist, int& sel_face)
 				if (map_get(i) != 0)
 				{
 					float dist; int face;
-					if (IntersectRayCube(player_position, dir, i, /*out*/dist, /*out*/face) && dist > 0 && dist <= Dist && (!found || dist < sel_dist))
+					if (IntersectRayCube(player::position, dir, i, /*out*/dist, /*out*/face) && dist > 0 && dist <= Dist && (!found || dist < sel_dist))
 					{
 						found = true;
 						sel_cube = i;
@@ -1365,9 +1304,6 @@ bool SelectCube(glm::ivec3& sel_cube, float& sel_dist, int& sel_face)
 	return found;
 }
 
-double last_cursor_x = 0;
-double last_cursor_y = 0;
-
 void model_frame(GLFWwindow* window)
 {
 	double time = glfwGetTime();
@@ -1376,40 +1312,44 @@ void model_frame(GLFWwindow* window)
 
 	double cursor_x, cursor_y;
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
+	static double last_cursor_x = 0;
+	static double last_cursor_y = 0;
 	if (cursor_x != last_cursor_x || cursor_y != last_cursor_y)
 	{
-		player_yaw += (cursor_x - last_cursor_x) / 150;
-		player_pitch += (cursor_y - last_cursor_y) / 150;
-		if (player_pitch > M_PI / 2) player_pitch = M_PI / 2;
-		if (player_pitch < -M_PI / 2) player_pitch = -M_PI / 2;
+		player::yaw += (cursor_x - last_cursor_x) / 150;
+		player::pitch += (cursor_y - last_cursor_y) / 150;
+		if (player::pitch > M_PI / 2) player::pitch = M_PI / 2;
+		if (player::pitch < -M_PI / 2) player::pitch = -M_PI / 2;
 		//glfwSetCursorPos(window, 0, 0);
 		last_cursor_x = cursor_x;
 		last_cursor_y = cursor_y;
-		player_orientation = glm::rotate(glm::rotate(glm::mat4(), -player_yaw, glm::vec3(0, 0, 1)), -player_pitch, glm::vec3(1, 0, 0));
+		player::orientation = glm::rotate(glm::rotate(glm::mat4(), -player::yaw, glm::vec3(0, 0, 1)), -player::pitch, glm::vec3(1, 0, 0));
 
-		float* m = glm::value_ptr(player_orientation);
+		float* m = glm::value_ptr(player::orientation);
 		glm::vec3 forward(m[4], m[5], m[6]);
 		glm::vec3 right(m[0], m[1], m[2]);
 		tracelog << "orientation = [" << m[0] << " " << m[1] << " " << m[2] << ", " << m[4] << " " << m[5] << " " << m[6] << ", " << m[8] << " " << m[9] << " " << m[10] << "]" << std::endl;
 
-		perspective_rotation = glm::rotate(perspective, player_pitch, glm::vec3(1, 0, 0));
-		perspective_rotation = glm::rotate(perspective_rotation, player_yaw, glm::vec3(0, 1, 0));
+		perspective_rotation = glm::rotate(perspective, player::pitch, glm::vec3(1, 0, 0));
+		perspective_rotation = glm::rotate(perspective_rotation, player::yaw, glm::vec3(0, 1, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
 
 		new_orientation = true;
 	}
 	
-	if (!console_active)
+	if (!console.IsVisible())
 	{
 		model_move_player(window, dt);
 	}
 
-	map_refresh(glm::ivec3(player_position.x, player_position.y, player_position.z));
+	map_refresh(glm::ivec3(player::position));
 
 	selection = SelectCube(/*out*/sel_cube, /*out*/sel_dist, /*out*/sel_face);
 }
 
 // Render
+
+const int MaxTriangles = 4000000;
 
 GLuint block_texture;
 glm::vec3 light_direction(0.5, 1, -1);
@@ -1571,9 +1511,6 @@ void render_init()
 	block_uv_loc = glGetAttribLocation(block_program, "uv");
 }
 
-int triangle_count = 0;
-int chunk_count = 0;
-
 GLuint block_buffer;
 GLuint line_buffer;
 
@@ -1727,32 +1664,7 @@ void render_general(std::vector<Vertex>& vertices, glm::ivec3 pos, int block, GL
 	{
 		draw_face(vertices, pos, block, 4, 5, 7, 6, color);
 	}
-/*
-	if (map_get(pos - ix) != 255)
-	{
-		draw_face(pos, block, 0, 4, 6, 2, color);
-	}
-	if (map_get(pos + ix) != 255)
-	{
-		draw_face(pos, block, 1, 3, 7, 5, color);
-	}
-	if (map_get(pos - iy) != 255)
-	{
-		draw_face(pos, block, 0, 1, 5, 4, color);
-	}
-	if (map_get(pos + iy) != 255)
-	{
-		draw_face(pos, block, 2, 6, 7, 3, color);
-	}
-	if (map_get(pos - iz) != 255)
-	{
-		draw_face(pos, block, 0, 2, 3, 1, color);
-	}
-	if (map_get(pos + iz) != 255)
-	{
-		draw_face(pos, block, 4, 5, 7, 6, color);
-	}
-*/
+
 	// prism faces
 	if (block == 255 - 128 - 64)
 	{
@@ -1921,9 +1833,6 @@ bool Frustum::IsSphereCompletelyOutside(glm::vec3 p, float radius) const
 	return false;
 }
 
-float block_render_time_ms = 0;
-float block_render_time_ms_avg = 0;
-
 const float BlockRadius = sqrtf(3) / 2;
 
 int buffer_budget = 0;
@@ -1970,8 +1879,8 @@ bool chunk_renderable(Chunk& chunk, const Frustum& frustum)
 
 void render_chunk(Chunk& chunk)
 {
-	triangle_count += chunk.vertices.size() / 3;
-	chunk_count += 1;
+	stats::triangle_count += chunk.vertices.size() / 3;
+	stats::chunk_count += 1;
 
 	glm::ivec3 pos = chunk.cpos * ChunkSize;
 	glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
@@ -1998,12 +1907,12 @@ void render_world_blocks(const glm::mat4& matrix)
 {
 	float time_start = glfwGetTime();
 	glBindTexture(GL_TEXTURE_2D, block_texture);
-	glm::ivec3 cplayer = glm::ivec3(glm::floor(player_position)) >> ChunkSizeBits;
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
 
 	Frustum frustum;
 	frustum.Init(matrix); // TODO - avoid recomputing if same
 
-	float* ma = glm::value_ptr(player_orientation);
+	float* ma = glm::value_ptr(player::orientation);
 	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
 
 	if (wireframe)
@@ -2014,7 +1923,7 @@ void render_world_blocks(const glm::mat4& matrix)
 	glUseProgram(block_program);
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(block_sampler_loc, 0/*block_texture*/);
-	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player_position));
+	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player::position));
 
 	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
 	glEnableVertexAttribArray(block_position_loc);
@@ -2049,8 +1958,6 @@ void render_world_blocks(const glm::mat4& matrix)
 		}
 	}
 
-	int max_triangles = 4000000;
-
 	// Center chunk is special
 	render_chunk(center_chunk);
 
@@ -2062,7 +1969,7 @@ void render_world_blocks(const glm::mat4& matrix)
 			if (chunk_renderable(chunk, frustum))
 			{
 				render_chunk(chunk);
-				if (triangle_count > max_triangles)
+				if (stats::triangle_count > MaxTriangles)
 					break;
 			}
 		}
@@ -2081,7 +1988,7 @@ void render_world_blocks(const glm::mat4& matrix)
 				glBeginQuery(GL_SAMPLES_PASSED, chunk.query);
 				render_chunk(chunk);
 				glEndQuery(GL_SAMPLES_PASSED);
-				if (triangle_count > max_triangles)
+				if (stats::triangle_count > MaxTriangles)
 					break;
 			}
 			else
@@ -2090,7 +1997,7 @@ void render_world_blocks(const glm::mat4& matrix)
 				if (samples > 0)
 				{
 					render_chunk(chunk);
-					if (triangle_count > max_triangles)
+					if (stats::triangle_count > MaxTriangles)
 						break;
 				}
 				// BUG: when changing orientation no need to recompute everything, just chunks that are new from last_frustum
@@ -2100,7 +2007,7 @@ void render_world_blocks(const glm::mat4& matrix)
 					glBeginQuery(GL_SAMPLES_PASSED, chunk.query);
 					render_chunk(chunk);
 					glEndQuery(GL_SAMPLES_PASSED);
-					if (triangle_count > max_triangles)
+					if (stats::triangle_count > MaxTriangles)
 						break;
 				}
 			}
@@ -2117,8 +2024,8 @@ void render_world_blocks(const glm::mat4& matrix)
 		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 	}
 
-	block_render_time_ms = (glfwGetTime() - time_start) * 1000;
-	block_render_time_ms_avg = block_render_time_ms_avg * 0.8f + block_render_time_ms * 0.2f;
+	stats::block_render_time_ms = (glfwGetTime() - time_start) * 1000;
+	stats::block_render_time_ms_avg = stats::block_render_time_ms_avg * 0.75f + stats::block_render_time_ms * 0.25f;
 
 	if (selection)
 	{
@@ -2152,7 +2059,7 @@ void render_world_blocks(const glm::mat4& matrix)
 
 void render_world()
 {
-	glm::mat4 matrix = glm::translate(perspective_rotation, -player_position);
+	glm::mat4 matrix = glm::translate(perspective_rotation, -player::position);
 	
 	glEnable(GL_DEPTH_TEST);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -2169,9 +2076,9 @@ void render_gui()
 	// Text test
 	text->Reset(height, matrix);
 	text->Printf("position: %.1f %.1f %.1f, chunks: %d, triangles: %d, frame: %.0fms, map: %.0fms, occlusion: %d",
-			 player_position[0], player_position[1], player_position[2], chunk_count, triangle_count, block_render_time_ms_avg, map_refresh_time_ms, occlusion);
-	triangle_count = 0;
-	chunk_count = 0;
+			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count, stats::block_render_time_ms_avg, stats::map_refresh_time_ms, occlusion);
+	stats::triangle_count = 0;
+	stats::chunk_count = 0;
 
 	if (selection)
 	{
@@ -2181,14 +2088,12 @@ void render_gui()
 		int blue = block.color / 16;
 		text->Printf("selected: cube [%d %d %d], shape %u, color [%u %u %u], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, (uint)block.shape, red, green, blue, sel_face, sel_dist);
 	}
-
-	if (console_active)
+	else
 	{
-		for (const std::string& line : console_lines)
-		{
-			text->Printf("%.*s", line.size(), &line[0]);
-		}
+		text->Print("", 0);
 	}
+
+	console.Render(text, last_time);
 
 	glUseProgram(0);
 
@@ -2213,7 +2118,6 @@ void render_gui()
 
 		glDisableVertexAttribArray(line_position_loc);
 	}
-
 }
 
 void OnError(int error, const char* message)
