@@ -1,50 +1,64 @@
 // TODO:
-// rendering debugging:
-// - draw frames around rendered chunks (or just render chunks as cubes)
-// - ability to freeze triangles that are rendered + be able to move through it (debug what is visible)
-// - corrupted chunk rendered at [0 0 0] sometimes!
-// BUG - stray long distorted triangle
+// BUG - corrupted chunk rendered at [0 0 0] sometimes!
+// BUG - stray long distorted triangles
 // BUG - some (chunk) faces missing / some (chunk) faces extra (top of moon) around moon
 // BUG - crash during flying
 // BUG - leaking occlusion culling query objects
 // BUG - when changing orientation only recompute occlusion for chunks that are entering into frustum (unable to get it working)
 
-// # large spherical world / spherical gravity / print lat-long-alt
+// # large spherical world / print lat-long-alt
+// # use quaternions for orientation
+
+// # PERF level-of-detail rendering
 // disk persistence
+// render blocks back to front
+// - semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
+// - textures with transparent pixels
+
 // client / server
 // multi-player
 // sky with day/night cycle
 // permanent server
-// semi-transparent blocks (requires reversing order or rendering)
-// textures with transparent pixels
 // static cloud voxels
 // user chat
-// # integrate original marching cubes algo
-// # [partial] color and shape pallete
-// # semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
-// # free mouse (but fixed camera) mode for editing
-// # texture mipmaps?
-// # PERF level-of-detail rendering
+
+// # advanced editor:
+// # - [partial] color and shape pallete
+// # - free mouse (but fixed camera) mode for editing
+// # - flood fill tool
+// # - cut/copy/paste/move tool
+// # - drawing shapes
+// # - wiki / user change tracking
+
+// # more support for slopes:
+// # - [partial] hidden triangle elimination between two slopes
+// # - [partial] slope generation
+// # - collision detection with slopes
+
+// # water:
+// # - animated surface
+// # - simple water (minecraft) with darker light in depth (flood fill ocean!)
+
+// # animated grass
+
+// # shadows:
+// # - real shadows from sun
+// # - point lights with shadows (for caves)?
+
 // # portals (there is nice youtube demo and open source project!)
-// # procedural textures
-// # [partial] hidden triangle elimination between two slopes
-// # [partial] slope generation
-// # collision detection with slopes
-// # transparent water blocks
-// # real shadows from sun
+
+// # more basic shapes: cones, cylinders
+
 // # nice sun with lens flare
-// # point lights with shadows (for caves)?
 // # PERF multi-threaded terrain generation
 // # PERF multi-threaded chunk array buffer construction
 // # PERF manual occulsion culling (for caves / mountains)
-// # advanced voxel editing (flood fill, cut/copy/paste, move, drawing shapes)
-// # wiki / user change tracking
 // # real world elevation data
-// # zero-g - use quaternions for orientation
 // # translating blocks ?
-// # simple water (minecraft) with darker light in depth (flood fill ocean!)
-// # psysics: flowing water ?
 // # psysics: moving objects / vehicles ?
+// # integrate original marching cubes algo
+// # texture mipmaps?
+// # procedural textures
 
 #include <cstdint>
 
@@ -691,8 +705,9 @@ void map_refresh(glm::ivec3 player)
 
 // Model
 
-static glm::vec3 player_position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
-static float player_yaw = 0, player_pitch = 0;
+// glm::vec3 player_position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
+glm::vec3 player_position(0, 0, 20);
+float player_yaw = 0, player_pitch = 0;
 glm::mat4 player_orientation;
 float last_time;
 
@@ -1202,7 +1217,8 @@ void ResolveCollisionsWithBlocks()
 
 glm::vec3 Gravity(glm::vec3 pos)
 {
-	// return glm::vec3(0, 0, -15);
+	return glm::vec3(0, 0, -15);
+
 	glm::vec3 dir = glm::vec3(MoonCenter) - pos;
 	double dist2 = glm::dot(dir, dir);
 	double a = 10000000;
