@@ -230,13 +230,13 @@ Text::Text()
 	load_png_texture("font.png");
 }
 
-void Text::Reset(int height, glm::mat4& matrix)
+void Text::Reset(int width, int height, glm::mat4& matrix)
 {
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glUseProgram(text_program);
 	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(text_sampler_loc, 0/*text_texture*/);
-	m_ts = height / 80;
+	m_ts = (height > width) ? height / 160 : height / 80;
 	m_tx = m_ts / 2;
 	m_ty = height - m_ts;
 }

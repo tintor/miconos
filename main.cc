@@ -2084,8 +2084,7 @@ void render_gui()
 {
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
 	
-	// Text test
-	text->Reset(height, matrix);
+	text->Reset(width, height, matrix);
 	text->Printf("position: %.1f %.1f %.1f, chunks: %d, triangles: %d, frame: %.0fms, map: %.0fms, occlusion: %d",
 			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count, stats::block_render_time_ms_avg, stats::map_refresh_time_ms, occlusion);
 	stats::triangle_count = 0;

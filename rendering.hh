@@ -22,7 +22,7 @@ class Text
 {
 public:
 	Text();
-	void Reset(int height, glm::mat4& matrix);
+	void Reset(int width, int height, glm::mat4& matrix);
 	void Print(const char* text, int length);
 	void Printf(const char* format, ...);
 	void PrintAt(float x, float y, float n, const char* text, int length);
@@ -36,6 +36,7 @@ private:
 	GLuint m_uvBuffer;
 };
 
+// TODO make it work for vertical monitor setup
 const int ConsoleWidth = 130;
 const int ConsoleHeight = 38;
 
