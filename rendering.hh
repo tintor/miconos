@@ -44,8 +44,8 @@ class Console
 {
 public:
 	Console();
-	virtual void Execute(const char* command) { PrintLine("[" + std::string(command) + "]"); }
-	void PrintLine(const std::string& line);
+	virtual void Execute(const char* command) { char buffer[1000]; buffer[0] = 0; snprintf(buffer, sizeof(buffer), "[%s]", command); PrintLine(buffer); }
+	void PrintLine(const char* line);
 	static bool KeyToChar(int key, int mods, char& ch);
 	bool OnKey(int key, int mods);
 	void Render(Text* text, float time);

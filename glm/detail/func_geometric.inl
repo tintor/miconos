@@ -186,7 +186,7 @@ namespace detail
 		vecType<T, P> const & y
 	)
 	{
-		GLM_STATIC_ASSERT(std::numeric_limits<T>::is_iec559, "'dot' only accept floating-point inputs");
+		//GLM_STATIC_ASSERT(std::numeric_limits<T>::is_iec559, "'dot' only accept floating-point inputs");
 		return detail::compute_dot<vecType, T, P>::call(x, y);
 	}
 
@@ -215,7 +215,7 @@ namespace detail
 		detail::tvec3<T, P> const & y
 	)
 	{
-		GLM_STATIC_ASSERT(std::numeric_limits<T>::is_iec559, "'cross' only accept floating-point inputs");
+		//GLM_STATIC_ASSERT(std::numeric_limits<T>::is_iec559, "'cross' only accept floating-point inputs");
 
 		return detail::tvec3<T, P>(
 			x.y * y.z - y.y * x.z,

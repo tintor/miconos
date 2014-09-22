@@ -304,11 +304,11 @@ bool Console::KeyToChar(int key, int mods, char& ch)
 	return true;
 }
 
-void Console::PrintLine(const std::string& str)
+void Console::PrintLine(const char* str)
 {
 	m_last_line = (m_last_line + 1) % ConsoleHeight;
-	int length = std::min<int>(ConsoleWidth, str.length());
-	memcpy(m_output[m_last_line], str.c_str(), length);
+	int length = std::min<int>(ConsoleWidth, strlen(str));
+	memcpy(m_output[m_last_line], str, length);
 	memset(m_output[m_last_line] + length, ' ', ConsoleWidth - length);
 }
 
