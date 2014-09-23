@@ -532,6 +532,15 @@ const char* str(glm::dvec3 a)
 	memcpy(buffer, p, size + 1);
 	return p;
 }
+const char* str(glm::vec3 a)
+{
+	char buffer[100];
+	snprintf(buffer, sizeof(buffer), "[%f %f %f]", a.x, a.y, a.z);
+	int size = strlen(buffer);
+	char* p = new char[size + 1];
+	memcpy(buffer, p, size + 1);
+	return p;
+}
 
 struct Map
 {
@@ -722,18 +731,15 @@ struct Cube
 {
 	static glm::ivec3 corner[8];
 	static const int faces[6][4];
-	static Plucker face_edges[6][4];
 
 	static void Init()
 	{
 		FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1);
-		FOR(f, 6) FOR(c, 4) face_edges[f][c] = Plucker::points(glm::dvec3(corner[faces[f][c]]), glm::dvec3(corner[faces[f][(c+1)%4]]));
 	}
 };
 
 glm::ivec3 Cube::corner[8];
-const int Cube::faces[6][4] = { { 0, 4, 6, 2 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 6, 7, 3 }, { 0, 2, 3, 1 }, { 4, 5, 7, 6 } };
-Plucker Cube::face_edges[6][4];
+const int Cube::faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
 
 // ============================
 
@@ -983,7 +989,7 @@ unsigned char map_get_color(glm::ivec3 pos)
 	return mc.block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask].color;
 }
 
-double distance2_point_and_line(glm::dvec3 point, glm::dvec3 orig, glm::dvec3 dir)
+float distance2_point_and_line(glm::vec3 point, glm::vec3 orig, glm::vec3 dir)
 {
 	assert(is_unit_length(dir));
 	return glm::distance2(point, orig + dir * glm::dot(point - orig, dir));
@@ -1002,41 +1008,8 @@ private:
 template<int size>
 bool intersects_line_polygon(Plucker line, const Plucker edges[size])
 {
-	double a = line_crossing(line, edges[0]);
-	for (auto e = edges + 1; e != edges + size; e++)
-	{
-		if (opposite_sign_strict(a, line_crossing(line, *e))) return false;
-	}
+	FOR(i, size) if (line_crossing(line, edges[i]) > 0) return false;
 	return true;
-}
-
-bool intersects_line_cube(Plucker line)
-{
-	for (auto face : Cube::face_edges) if (intersects_line_polygon<4>(line, face)) return true;
-	return false;
-}
-
-bool intersects_line_cube(glm::dvec3 orig, glm::dvec3 dir, glm::ivec3 cube)
-{
-	assert(is_unit_length(dir));
-	orig -= glm::dvec3(cube);
-	glm::dvec3 cube_center(0.5, 0.5, 0.5);
-	double pos = glm::dot(cube_center - orig, dir);
-	double dist2 = glm::distance2(cube_center, orig + dir * pos);
-	return dist2 < 0.25 || (dist2 < 0.75 && intersects_line_cube(Plucker::orig_dir(orig, dir)));
-}
-
-bool intersects_line_cubes(glm::dvec3 orig, glm::dvec3 dir, std::vector<glm::ivec4>& cubes)
-{
-	for (int i = 0; i < cubes.size(); i++)
-	{
-		if (intersects_line_cube(orig, dir, cubes[i].xyz()))
-		{
-			if (i > 0) std::swap(cubes[i], cubes[i - 1]);
-			return true;
-		}
-	}
-	return false;
 }
 
 // Is there any empty block in chunk A from which at least one face from chunk A+D is visible?
@@ -1045,9 +1018,9 @@ int LineOfSight::chunk_visible_fast(glm::ivec3 a, glm::ivec3 d)
 	std::ivector<glm::ivec3, 3> moves;
 	FOR(i, 3) if (d[i] < 0) moves.push_back(Axis[i]); else if (d[i] > 0) moves.push_back(-Axis[i]);
 	
-	glm::dvec3 orig = glm::dvec3(d << ChunkSizeBits) + ChunkSize * 0.5;
-	glm::dvec3 dir = glm::normalize(-orig + ChunkSize * 0.5); 
-	double D2 = sqr(ChunkSize + ChunkSize)*0.75;
+	glm::vec3 orig = glm::vec3(d << ChunkSizeBits) + ChunkSize * 0.5f;
+	glm::vec3 dir = glm::normalize(-orig + ChunkSize * 0.5f); 
+	float D2 = sqr(ChunkSize + ChunkSize) * 0.75f;
 
 	m_marked.clear();		
 	m_stack.clear();
@@ -1064,7 +1037,7 @@ int LineOfSight::chunk_visible_fast(glm::ivec3 a, glm::ivec3 d)
 			if (m_marked[glm::abs(q)]) continue;
 			/*DEBUG*/ if (!g_chunks.loaded(a + q)) { fprintf(stderr, "WARNING! a=%s q=%s d=%s last_cpos=%s\n", str(a), str(q), str(d), str(g_chunks.last_cpos())); return -1; }
 			if (g_chunks(a + q).obstructor) continue;
-			if (distance2_point_and_line(glm::dvec3(q) + glm::dvec3(0.5, 0.5, 0.5), orig, dir) > D2) continue;
+			if (distance2_point_and_line(glm::vec3(q) + glm::vec3(0.5, 0.5, 0.5), orig, dir) > D2) continue;
 			m_stack.push_back(q);
 			m_marked.set(glm::abs(q));
 		}
@@ -1104,7 +1077,6 @@ glm::mat4 perspective_rotation;
 
 glm::ivec3 sel_cube;
 int sel_face;
-float sel_dist;
 bool selection = false;
 
 bool wireframe = false;
@@ -1558,59 +1530,85 @@ void model_move_player(GLFWwindow* window, float dt)
 	}
 }
 
-bool IntersectRayTriangle(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube, float& dist, int triangle[3])
+float intersect_line_plane(glm::vec3 orig, glm::vec3 dir, glm::vec4 plane)
 {
-	glm::vec3 a = glm::vec3(cube + Cube::corner[triangle[0]]);
-	glm::vec3 b = glm::vec3(cube + Cube::corner[triangle[1]]);
-	glm::vec3 c = glm::vec3(cube + Cube::corner[triangle[2]]);
-	glm::vec3 pos;
-	if (!glm::intersectRayTriangle(orig, dir, a, b, c, /*out*/pos)) return false;
-	return glm::intersectRayPlane(orig, dir, a, glm::cross(b - a, c - a), /*out*/dist);
+	assert(is_unit_length(dir));
+	assert(is_unit_length(plane.xyz()));
+	return (-plane.w - glm::dot(orig, plane.xyz())) / glm::dot(dir, plane.xyz());
 }
 
-bool IntersectRayCube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube, float& dist, int& face)
+const float BlockRadius = sqrtf(3) / 2;
+
+// Find cube face that contains closest point of intersection with the ray.
+// No results if ray's origin is inside the cube
+int intersects_ray_cube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube)
 {
-	int triangles[12][3] = { { 0, 4, 6 }, { 0, 6, 2 },
-					 { 1, 3, 7 }, { 1, 7, 5 },
-					 { 0, 1, 5 }, { 0, 5, 4 },
-					 { 2, 6, 7 }, { 2, 7, 3 },
-					 { 0, 2, 3 }, { 0, 3, 1 },
-					 { 4, 5, 7 }, { 4, 7, 6 } };
-	bool found = false;
-	FOR(i, 12)
+	orig -= glm::dvec3(cube);
+	glm::vec3 cube_center(0.5f, 0.5f, 0.5f);
+	float pos = glm::dot(cube_center - orig, dir);
+	if (pos + BlockRadius < 0) return -1;
+
+	// optional, check if cube is far from ray
+	float dist2 = glm::distance2(cube_center, orig + dir * pos);
+	if (dist2 >= 0.75) return -1;
+
+	if (orig.x < 0 && dir.x > 0)
 	{
-		float q_dist;
-		if (IntersectRayTriangle(orig, dir, cube, q_dist, triangles[i]) && (!found || q_dist < dist))
-		{
-			dist = q_dist;
-			found = true;
-			face = i / 2;
-		}
+		float d = -orig.x / dir.x;
+		glm::vec3 k = orig + dir * d;
+		if (0 <= k.y && k.y <= 1 && 0 <= k.z && k.z <= 1) return 0;
 	}
-	return found;
+	if (orig.x > 1 && dir.x < 0)
+	{
+		float d = (1 - orig.x) / dir.x;
+		glm::vec3 k = orig + dir * d;
+		if (0 <= k.y && k.y <= 1 && 0 <= k.z && k.z <= 1) return 1;
+	}
+	if (orig.y < 0 && dir.y > 0)
+	{		
+		float d = -orig.y / dir.y;
+		glm::vec3 k = orig + dir * d;
+		if (0 <= k.x && k.x <= 1 && 0 <= k.z && k.z <= 1) return 2;
+	}
+	if (orig.y > 1 && dir.y < 0)
+	{
+		float d = (1 - orig.y) / dir.y;
+		glm::vec3 k = orig + dir * d;
+		if (0 <= k.x && k.x <= 1 && 0 <= k.z && k.z <= 1) return 3;
+	}
+	if (orig.z < 0 && dir.z > 0)
+	{		
+		float d = -orig.z / dir.z;
+		glm::vec3 k = orig + dir * d;
+		if (0 <= k.x && k.x <= 1 && 0 <= k.y && k.y <= 1) return 4;
+	}
+	if (orig.z > 1 && dir.z < 0)
+	{		
+		float d = (1 - orig.z) / dir.z;
+		glm::vec3 k = orig + dir * d;
+		if (0 <= k.x && k.x <= 1 && 0 <= k.y && k.y <= 1) return 5;
+	}
+	return -1;
 }
 
-bool SelectCube(glm::ivec3& sel_cube, float& sel_dist, int& sel_face)
+Sphere select_sphere(8);
+
+bool SelectCube(glm::ivec3& sel_cube, int& sel_face)
 {
 	float* ma = glm::value_ptr(player::orientation);
 	glm::vec3 dir(ma[4], ma[5], ma[6]);
 	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
-	bool found = false;
-	int Dist = 6;
-	// TODO: use Sphere class here to avoid unnecessary Intersect calls!
-	FOR2(x, p.x - Dist, p.x + Dist) FOR2(y, p.y - Dist, p.y + Dist) FOR2(z, p.z - Dist, p.z + Dist)
+
+	for (glm::i8vec3 d : select_sphere)
 	{
-		glm::ivec3 i(x, y, z);
-		float dist; int face;
-		if (map_get(i) != 0 && IntersectRayCube(player::position, dir, i, /*out*/dist, /*out*/face) && dist > 0 && dist <= Dist && (!found || dist < sel_dist))
+		glm::ivec3 cube = p + glm::ivec3(d);
+		if (map_get(cube) != 0 && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
 		{
-			found = true;
-			sel_cube = i;
-			sel_dist = dist;
-			sel_face = face;
+			sel_cube = cube;
+			return true;
 		}
 	}
-	return found;
+	return false;
 }
 
 auto buffer_it = render_sphere.begin();
@@ -1658,7 +1656,7 @@ void model_frame(GLFWwindow* window)
 		buffer_it = render_sphere.begin();
 	}
 
-	selection = SelectCube(/*out*/sel_cube, /*out*/sel_dist, /*out*/sel_face);
+	selection = SelectCube(/*out*/sel_cube, /*out*/sel_face);
 	double end = std::max<float>(0, (glfwGetTime() - time) * 1000);
 	stats::model_time_ms = stats::model_time_ms * 0.85f + end * 0.15f;
 }
@@ -2144,8 +2142,6 @@ bool Frustum::IsSphereCompletelyOutside(glm::vec3 p, float radius) const
 	return false;
 }
 
-const float BlockRadius = sqrtf(3) / 2;
-
 int buffer_budget = 0;
 
 std::vector<Vertex> g_buffer_chunk(6 * ChunkSize * ChunkSize * ChunkSize);
@@ -2437,17 +2433,19 @@ void render_gui()
 	stats::chunk_count = 0;
 
 	if (show_counters)
-	if (selection)
 	{
-		Block block = map_get_block(sel_cube);
-		int red = block.color % 4;
-		int green = (block.color / 4) % 4;
-		int blue = block.color / 16;
-		text->Printf("selected: cube [%d %d %d], shape %u, color [%u %u %u], face %d, distance %.1f", sel_cube.x, sel_cube.y, sel_cube.z, (uint)block.shape, red, green, blue, sel_face, sel_dist);
-	}
-	else
-	{
-		text->Print("", 0);
+		if (selection)
+		{
+			Block block = map_get_block(sel_cube);
+			int red = block.color % 4;
+			int green = (block.color / 4) % 4;
+			int blue = block.color / 16;
+			text->Printf("selected: cube [%d %d %d], shape %u, color [%u %u %u]", sel_cube.x, sel_cube.y, sel_cube.z, (uint)block.shape, red, green, blue);
+		}
+		else
+		{
+			text->Print("", 0);
+		}
 	}
 
 	console.Render(text, last_time);
@@ -2482,13 +2480,8 @@ void OnError(int error, const char* message)
 	fprintf(stderr, "GLFW error %d: %s\n", error, message);
 }
 
-void refresh_worker(int k, int n)
-{
-	
-}
-
 int main(int argc, char** argv)
-{
+{	
 	Cube::Init();
 	if (!glfwInit())
 	{

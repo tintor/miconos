@@ -87,19 +87,19 @@ private:
 
 struct Plucker
 {
-	glm::dvec3 d, m;
+	glm::vec3 d, m;
 
 	Plucker() {}
-	static Plucker points(glm::dvec3 a, glm::dvec3 b) { return Plucker(b - a, glm::cross(a, b)); }
-	static Plucker orig_dir(glm::dvec3 orig, glm::dvec3 dir) { return Plucker(dir, glm::cross(orig, dir)); }
+	static Plucker points(glm::vec3 a, glm::vec3 b) { return Plucker(b - a, glm::cross(a, b)); }
+	static Plucker orig_dir(glm::vec3 orig, glm::vec3 dir) { return Plucker(dir, glm::cross(orig, dir)); }
 private:
-	Plucker(glm::dvec3 D, glm::dvec3 M) : d(D), m(M) { }
+	Plucker(glm::vec3 D, glm::vec3 M) : d(D), m(M) { }
 };
 
-inline double line_crossing(Plucker a, Plucker b) { return glm::dot(a.d, b.m) + glm::dot(b.d, a.m); }
+inline float line_crossing(Plucker a, Plucker b) { return glm::dot(a.d, b.m) + glm::dot(b.d, a.m); }
 inline bool opposite_sign_strict(double a, double b) { return a * b < 0; }
-inline bool is_unit_length(glm::dvec3 a) { return std::abs(glm::length2(a) - 1) <= 1e-15; }
-inline glm::dvec3 random_dvec3() { return glm::dvec3(glm::linearRand(0.0, 1.0), glm::linearRand(0.0, 1.0), glm::linearRand(0.0, 1.0)); }
+inline bool is_unit_length(glm::vec3 a) { return std::abs(glm::length2(a) - 1) <= 5e-7; }
+inline glm::vec3 random_vec3() { return glm::vec3(glm::linearRand(0.0f, 1.0f), glm::linearRand(0.0f, 1.0f), glm::linearRand(0.0f, 1.0f)); }
 template<typename T> T sqr(T a) { return a * a; }
 float sqr(glm::vec3 a) { return glm::dot(a, a); }
 
