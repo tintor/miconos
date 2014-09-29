@@ -1,8 +1,19 @@
 // TODO:
 // BUG - stray long distorted triangles
-// BUG - crash during flying (writing to object after free())
-// BUG - leaking occlusion culling query objects
-// BUG - when changing orientation only recompute occlusion for chunks that are entering into frustum (unable to get it working)
+// BUG - PVC incorrectly filters some chunks in crater boundary
+
+// # more proceduraly generated stuff!
+// - more varied hills -> higher order noise (use more expensive one)
+// - smooth 3d tunnels
+// - diffuse/reduce process
+
+// # eye-candy
+// - grass!
+// - iregular grid (just a bit) - affects collision testing
+
+// # async computation
+// - loading and buffering of chunks in separate threads
+// - pvc computation in separate threads
 
 // # large spherical world
 // - print lat-long-alt coordinates
@@ -10,15 +21,15 @@
 // - spherical terrain generation
 
 // # PERF level-of-detail rendering
-// - be able to simplify spherical surface
-// - store low triangle buffers in chunks to render from distance
+// - use lower resultion buffers (ie. less triangles) of chunks for rendering in the distance
 // - convert chunk to cube with low resolution generated texture?
 
-// render blocks back to front
+// # render blocks back to front
 // - semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
+// - need to re-sort triangles inside chunk buffer (for nearby chunks only) as player moves
 // - textures with transparent pixels
 
-// client / server:
+// # client / server:
 // - disk persistence on server
 // - terrain generation on server
 // - server sends: chunks, block updates and player position
@@ -35,7 +46,7 @@
 
 // sky:
 // - day/night cycle
-// - static cloud voxels (+ transparency + marching cubes)
+// - static cloud voxels (+ transparency)
 // - nice sun with lens flare
 
 // # advanced editor:
@@ -57,8 +68,6 @@
 // # - animated surface
 // # - simple water (minecraft) with darker light in depth (flood fill ocean!)
 
-// # animated grass
-
 // # shadows:
 // # - real shadows from sun (no bounce)
 // # - point lights with shadows (for caves)?
@@ -67,10 +76,7 @@
 
 // # more basic shapes: cones, cylinders (with level-of-detail!)
 
-// # PERF multi-threaded terrain generation
 // # PERF multi-threaded chunk array buffer construction
-// # faster occlusion culling when player is moving
-// # PERF manual occulsion culling - potentially visible set (for caves / mountains)
 
 // # real world elevation data
 // # translating blocks ?
