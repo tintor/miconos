@@ -1,6 +1,7 @@
 // TODO:
 // BUG - stray long distorted triangles
 // BUG - PVC incorrectly filters some chunks in crater boundary
+// - slowly blend-in newly buffered chunks so that they are less noticable
 
 // # more proceduraly generated stuff!
 // - more varied hills -> higher order noise (use more expensive one)
@@ -677,6 +678,14 @@ Map::Map() : m_cpos(0x80000000, 0, 0)
 
 Map* map = new Map;
 
+Block& map_get_block(glm::ivec3 pos)
+{
+	return map->Get(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask];
+}
+
+unsigned char map_get(glm::ivec3 pos) { return map_get_block(pos).shape; }
+unsigned char map_get_color(glm::ivec3 pos) { return map_get_block(pos).color; }
+
 // ============================
 
 struct Cube
@@ -721,10 +730,17 @@ struct VisibleChunks
 	}
 };
 
+int MinX(int a) { return a & 85; }
+int MaxX(int a) { return (a >> 1) & 85; }
+
+int MinY(int a) { return a & 51; }
+int MaxY(int a) { return (a >> 2) & 51; }
+
+int MinZ(int a) { return a & 15; }
+int MaxZ(int a) { return (a >> 4) & 15; }
 
 struct Chunk
 {
-	Block block[ChunkSize][ChunkSize][ChunkSize];
 	glm::ivec3 cpos;
 	bool buffered;
 	std::vector<Vertex> vertices;
@@ -742,24 +758,25 @@ struct Chunk
 		release(planes);
 		visible.clear();
 
-		obstructor = true;
-		FOR(z, 2)
-		{
-			z *= ChunkSize - 1;
-			FOR(x, ChunkSize) FOR(y, ChunkSize)
-			{
-				// TODO: check only the outside face! it doesn't have to be cube!
-				if (block[x][y][z].shape != 255 || block[x][z][y].shape != 255 || block[z][x][y].shape != 255) { obstructor = false; break; }
-			}
-		}
+		obstructor = is_obstructor();
 	}
 
+	bool is_obstructor()
+	{
+		MapChunk& mc = map->Get(cpos);
+		FOR(a, ChunkSize) FOR(b, ChunkSize)
+		{
+			if (MinX(mc.block[0][a][b].shape) != MinX(255) || MaxX(mc.block[ChunkSize-1][a][b].shape) != MaxX(255)) return false;
+			if (MinY(mc.block[a][0][b].shape) != MinY(255) || MaxX(mc.block[a][ChunkSize-1][b].shape) != MaxY(255)) return false;
+			if (MinZ(mc.block[a][b][0].shape) != MinZ(255) || MaxX(mc.block[a][b][ChunkSize-1].shape) != MaxZ(255)) return false;
+		}
+		return true;
+	}
+	
 	void init(glm::ivec3 _cpos)
 	{
 		if (cpos == _cpos) return;
 		cpos = _cpos;
-		MapChunk& mc = map->Get(cpos);
-		memcpy(block, mc.block, sizeof(mc.block));
 		clear();
 	}
 
@@ -787,7 +804,7 @@ struct Chunk
 			glm::ivec4 plane(normal, w);
 			if (!contains(planes, plane)) planes.push_back(plane);
 		}
-		//compress(planes);
+		compress(planes);
 	}
 
 	glm::ivec3 unpack(int i)
@@ -922,24 +939,7 @@ public:
 
 Chunks g_chunks;
 
-Block& map_get_block(glm::ivec3 pos)
-{
-	return g_chunks(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask];
-}
-
-unsigned char map_get(glm::ivec3 pos)
-{
-	if (g_chunks.loaded(pos >> ChunkSizeBits)) return map_get_block(pos).shape;
-	MapChunk& mc = map->Get(pos >> ChunkSizeBits);
-	return mc.block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask].shape;
-}
-
-unsigned char map_get_color(glm::ivec3 pos)
-{
-	if (g_chunks.loaded(pos >> ChunkSizeBits)) return map_get_block(pos).color;
-	MapChunk& mc = map->Get(pos >> ChunkSizeBits);
-	return mc.block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask].color;
-}
+// ======================
 
 float distance2_point_and_line(glm::vec3 point, glm::vec3 orig, glm::vec3 dir)
 {
@@ -1826,15 +1826,6 @@ void BlockRenderer::draw_face(int block, int a, int b, int c, int d)
 	}
 }
 
-int MinX(int a) { return a & (~(1 << 1) & ~(1 << 3) & ~(1 << 5) & ~(1 << 7)); }
-int MaxX(int a) { return (a & (~(1 << 0) & ~(1 << 2) & ~(1 << 4) & ~(1 << 6))) >> 1; }
-
-int MinY(int a) { return a & (~(1 << 2) & ~(1 << 3) & ~(1 << 6) & ~(1 << 7)); }
-int MaxY(int a) { return (a & (~(1 << 0) & ~(1 << 1) & ~(1 << 4) & ~(1 << 5))) >> 2; }
-
-int MinZ(int a) { return a & (~(1 << 4) & ~(1 << 5) & ~(1 << 6) & ~(1 << 7)); }
-int MaxZ(int a) { return (a & (~(1 << 0) & ~(1 << 1) & ~(1 << 2) & ~(1 << 3))) >> 4; }
-
 bool Visible(int a, int b) { return (a | b) != a; }
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
@@ -2029,9 +2020,10 @@ int64_t chunks_buffered = 0;
 void buffer_chunk(Chunk& chunk)
 {
 	g_renderer.m_vertices.clear();
+	MapChunk& mc = map->Get(chunk.cpos);
 	FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
 	{
-		g_renderer.render(chunk.cpos * ChunkSize + glm::ivec3(x, y, z), chunk.block[x][y][z]);
+		g_renderer.render(chunk.cpos * ChunkSize + glm::ivec3(x, y, z), mc.block[x][y][z]);
 	}
 
 	chunks_buffered += 1;
