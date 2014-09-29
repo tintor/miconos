@@ -4,7 +4,6 @@
 // - slowly blend-in newly buffered chunks so that they are less noticable
 
 // # more proceduraly generated stuff!
-// - more varied hills -> higher order noise (use more expensive one)
 // - smooth 3d tunnels
 // - diffuse/reduce process
 
@@ -13,8 +12,8 @@
 // - iregular grid (just a bit) - affects collision testing
 
 // # async computation
-// - loading and buffering of chunks in separate threads
 // - pvc computation in separate threads
+// - more agressive pvc!
 
 // # large spherical world
 // - print lat-long-alt coordinates
@@ -119,6 +118,20 @@ float SimplexNoise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbu
 	return total / max;
 }
 
+float SimplexNoise(glm::vec3 p, int octaves, float freqf, float ampf, bool turbulent)
+{
+	float freq = 1.0f, amp = 1.0f, max = amp;
+	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
+	FOR(i, octaves - 1)
+	{
+		freq *= freqf;
+		amp *= ampf;
+		max += amp;
+		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
+	}
+	return total / max;
+}
+
 bool Closer(glm::i8vec3 a, glm::i8vec3 b) { return glm::length2(glm::ivec3(a)) < glm::length2(glm::ivec3(b)); }
 
 struct Sphere : public std::vector<glm::i8vec3>
@@ -140,11 +153,11 @@ struct Sphere : public std::vector<glm::i8vec3>
 
 // ============================
 
-const int ChunkSizeBits = 4, MapSizeBits = 6;
+const int ChunkSizeBits = 4, MapSizeBits = 7;
 const int ChunkSize = 1 << ChunkSizeBits, MapSize = 1 << MapSizeBits;
 const int ChunkSizeMask = ChunkSize - 1, MapSizeMask = MapSize - 1;
 
-static const int RenderDistance = 30;
+static const int RenderDistance = 40;
 Sphere render_sphere(RenderDistance);
 static_assert(RenderDistance < MapSize / 2, "");
 
@@ -223,12 +236,13 @@ struct Heightmap
 
 int GetHeight(int x, int y)
 {
-	return SimplexNoise(glm::vec2(x, y) * 0.007f, 4, 0.5f, 0.5f, true) * 50;
+	float q = SimplexNoise(glm::vec2(x, y) * 0.004f, 6, 0.5f, 0.5f, true);
+	return q * q * q * q * 200;
 }
 
 int GetColor(int x, int y)
 {
-	return floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.044f, 4, 0.5f, 0.5f, false)) * 8);
+	return floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.024f, 6, 0.5f, 0.5f, false)) * 8);
 }
 
 float Tree(int x, int y)
@@ -315,7 +329,7 @@ const glm::ivec3 CraterCenter(CraterRadius * -0.8, CraterRadius * -0.8, 0);
 const int MoonRadius = 500;
 const glm::ivec3 MoonCenter(MoonRadius * 0.8, MoonRadius * 0.8, 0);
 
-void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool)
+void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 {
 	memset(chunk.block, 0, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
 
@@ -324,32 +338,49 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool)
 	heightmap->Populate(cpos.x+1, cpos.y);
 	heightmap->Populate(cpos.x, cpos.y-1);
 	heightmap->Populate(cpos.x, cpos.y+1);
-
+	
 	FOR(x, ChunkSize) FOR(y, ChunkSize)
 	{
 		int dx = x + cpos.x * ChunkSize;
 		int dy = y + cpos.y * ChunkSize;
 
 		int height = heightmap->Height(dx, dy);
-		if (height >= cpos.z * ChunkSize)
+		FOR(z, ChunkSize)
 		{
-			FOR(z, ChunkSize)
+			int dz = z + cpos.z * ChunkSize;
+			glm::ivec3 pos(dx, dy, dz);
+			if (dz <= height)
 			{
-				if (z + cpos.z * ChunkSize == height)
+				// ground and caves
+				chunk.block[x][y][z].shape = 255;
+				chunk.block[x][y][z].color = GetColor(dx, dy);
+				if (height - dz <= 200)
+				{
+					float q = SimplexNoise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
+					if (q < -0.2)
+					{
+						chunk.block[x][y][z].shape = 0;
+					}
+				}
+			}
+			else if (dz > 100 && dz < 200)
+			{
+				// clouds
+				float q = SimplexNoise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
+				if (q < -0.4)
 				{
 					chunk.block[x][y][z].shape = 255;
-					chunk.block[x][y][z].color = GetColor(dx, dy);
-					break;
+					chunk.block[x][y][z].color = 1 + 4*2 + 16*3; 
 				}
-				chunk.block[x][y][z].shape = 255;
-				chunk.block[x][y][z].color = 50;
 			}
 		}
 
 		// slope on top
 		int z = height + 1 - cpos.z * ChunkSize;
-		if (z >= 0 && z < ChunkSize)
+		if (false && z >= 0 && z < ChunkSize)
 		{
+			if (z > 0 && chunk.block[x][y][z-1].shape == 0) break;
+			
 			int shape = Level1Slope(dx, dy);
 			if ((Level1Slope(dx-1, dy) == 223 || Level1Slope(dx-1, dy) == 207) && (Level1Slope(dx, dy+1) == 223 || Level1Slope(dx, dy+1) == 95))
 			{
@@ -490,7 +521,6 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool)
 
 // ============================
 
-#include <string>
 const char* str(glm::ivec3 a)
 {
 	char buffer[100];
@@ -533,7 +563,7 @@ struct Map
 		}
 		MapChunk* p = new MapChunk();
 		p->cpos = cpos;
-		GenerateTerrain(cpos, *p, false);
+		GenerateTerrain(cpos, *p);
 		//m_lock[std::abs(cpos.x ^ cpos.y ^ cpos.z) % 64].lock();
 		while (true)
 		{
@@ -676,6 +706,26 @@ Map::Map() : m_cpos(0x80000000, 0, 0)
 	}
 }
 
+// ============================
+
+struct Cube
+{
+	static glm::ivec3 corner[8];
+	static const int faces[6][4];
+
+	Cube()
+	{
+		FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1);
+	}
+};
+
+glm::ivec3 Cube::corner[8];
+const int Cube::faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
+
+Cube x_dummy;
+
+// ============================
+
 Map* map = new Map;
 
 Block& map_get_block(glm::ivec3 pos)
@@ -685,22 +735,6 @@ Block& map_get_block(glm::ivec3 pos)
 
 unsigned char map_get(glm::ivec3 pos) { return map_get_block(pos).shape; }
 unsigned char map_get_color(glm::ivec3 pos) { return map_get_block(pos).color; }
-
-// ============================
-
-struct Cube
-{
-	static glm::ivec3 corner[8];
-	static const int faces[6][4];
-
-	static void Init()
-	{
-		FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1);
-	}
-};
-
-glm::ivec3 Cube::corner[8];
-const int Cube::faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
 
 // ============================
 
@@ -739,10 +773,29 @@ int MaxY(int a) { return (a >> 2) & 51; }
 int MinZ(int a) { return a & 15; }
 int MaxZ(int a) { return (a >> 4) & 15; }
 
+struct BlockRenderer
+{
+	std::vector<Vertex> m_vertices;
+	glm::ivec3 m_pos;
+	GLubyte m_color;
+
+	void vertex(GLubyte light, GLubyte uv, int c);
+	void draw_quad(int a, int b, int c, int d);
+	void draw_triangle(int a, int b, int c);
+	void draw_face(int block, int a, int b, int c, int d);
+	void render(glm::ivec3 pos, Block bs);
+
+	glm::ivec3 unpack(int i)
+	{
+		auto pos = m_vertices[i].pos;
+		return glm::ivec3(pos[0], pos[1], pos[2]);
+	}
+};
+
 struct Chunk
 {
-	glm::ivec3 cpos;
-	bool buffered;
+	std::mutex mutex;
+	glm::ivec3 cpos; // TODO -> should be atomic -> pack into uint64 -> 21 bit per coordinate -> 25 effective
 	std::vector<Vertex> vertices;
 	std::vector<glm::ivec4> planes; // Overflow? // TODO: compress as normals are 5bits
 	GLuint query;
@@ -751,14 +804,18 @@ struct Chunk
 	bool obstructor;
 	VisibleChunks visible;
 
-	void clear()
+	void buffer(BlockRenderer& renderer)
 	{
-		buffered = false;
-		release(vertices);
-		release(planes);
-		visible.clear();
-
-		obstructor = is_obstructor();
+		renderer.m_vertices.clear();
+		MapChunk& mc = map->Get(cpos);
+		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
+		{
+			renderer.render(cpos * ChunkSize + glm::ivec3(x, y, z), mc.block[x][y][z]);
+		}
+	
+		vertices.resize(renderer.m_vertices.size());
+		std::copy(renderer.m_vertices.begin(), renderer.m_vertices.end(), vertices.begin());
+		assert(vertices.size() == vertices.capacity());
 	}
 
 	bool is_obstructor()
@@ -773,16 +830,34 @@ struct Chunk
 		return true;
 	}
 	
-	void init(glm::ivec3 _cpos)
+	void init(glm::ivec3 _cpos, BlockRenderer& renderer)
 	{
-		if (cpos == _cpos) return;
+		mutex.lock();
+		if (cpos == _cpos) { mutex.unlock(); return; }
 		cpos = _cpos;
-		clear();
+		release(vertices);
+		release(planes);
+		visible.clear();
+		buffer(renderer);
+		init_planes();
+		obstructor = is_obstructor();
+		mutex.unlock();
 	}
 
+	void reset(BlockRenderer& renderer)
+	{
+		mutex.lock();
+		release(vertices);
+		release(planes);
+		visible.clear();
+		buffer(renderer);
+		init_planes();
+		obstructor = is_obstructor();
+		mutex.unlock();
+	}
+	
 	void init_planes()
 	{
-		assert(buffered);
 		FOR(i, vertices.size() / 3)
 		{
 			glm::ivec3 a = unpack(i * 3);
@@ -793,7 +868,7 @@ struct Chunk
 			bool xy = (normal.x == 0 || normal.y == 0 || abs(normal.x) == abs(normal.y));
 			bool xz = (normal.x == 0 || normal.z == 0 || abs(normal.x) == abs(normal.z));
 			bool yz = (normal.y == 0 || normal.z == 0 || abs(normal.y) == abs(normal.z));
-			if (!xy || !xz || !yz)
+			if (!xy || !xz || !yz || (normal.x == 0 && normal.y == 0 && normal.z == 0))
 			{
 				fprintf(stderr, "normal %s, a %s, b %s, c %s\n", str(normal), str(a), str(b), str(c));
 				assert(false);
@@ -816,7 +891,6 @@ struct Chunk
 	// at least one of the points
 	bool contains_face_visible_from(const glm::ivec3 point[], int count)
 	{
-		assert(buffered);
 		switch (count)
 		{
 		case 1:
@@ -835,7 +909,6 @@ struct Chunk
 	
 	bool contains_face_visible_from_chunk(glm::ivec3 cpos2)
 	{
-		assert(buffered);
 		if (vertices.size() == 0) return false;
 
 		assert(cpos != cpos2);
@@ -851,17 +924,32 @@ struct Chunk
 		return contains_face_visible_from(points.begin(), points.size());
 	}
 	
-	Chunk() : buffered(false), obstructor(false), cpos(0x80000000, 0, 0), query(-1), query_version(-1) { }
+	Chunk() : obstructor(false), cpos(0x80000000, 0, 0), query(-1), query_version(-1) { }
 };
 
 Console console;
 
+namespace player
+{
+//	glm::vec3 position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
+	glm::vec3 position(0, 0, 20);
+	std::atomic<int> cposx(0), cposy(0), cposz(1); // TODO: use formula!
+	float yaw = 0;
+	float pitch = 0;
+	glm::mat4 orientation;
+	glm::vec3 velocity;
+	bool flying = true;
+}
+
 #include <functional>
 #include <atomic>
+#include "unistd.h"
 class Chunks
 {
 public:
-	Chunks(): m_last_cpos(0x80000000, 0, 0), m_map(new Chunk[MapSize * MapSize * MapSize]) { }
+	static const int Threads = 8;
+
+	Chunks(): m_map(new Chunk[MapSize * MapSize * MapSize]) { }
 
 	Chunk& operator()(glm::ivec3 cpos)
 	{
@@ -870,55 +958,48 @@ public:
 		return chunk;
 	}
 
-	static void refresh_worker(Chunks* chunks, glm::ivec3 cpos, int k, int n)
+	void start_threads()
 	{
-		//float time_start = glfwGetTime();
-		for (int i = k; i < render_sphere.size(); i += n)
+		FOR(i, Threads)
 		{
-			glm::ivec3 c = cpos + glm::ivec3(render_sphere[i]);
-			chunks->get(c).init(c);
+			std::thread t(loader_thread, this, i);
+			t.detach();
 		}
-		//float time = (glfwGetTime() - time_start) * 1000;
-		//fprintf(stderr, "refresh worker %d = %lf\n", k, time);
 	}
 	
+	static void loader_thread(Chunks* chunks, int k)
+	{
+		glm::ivec3 last_cpos(0x80000000, 0, 0);
+		BlockRenderer renderer;
+		while (true)
+		{
+			int x = player::cposx;
+			int y = player::cposy;
+			int z = player::cposz;
+			glm::ivec3 cpos(x, y, z);
+			if (cpos == last_cpos)
+			{
+				usleep(200);
+				continue;
+			}
+
+			if (owner(cpos) == k) chunks->get(cpos).init(cpos, renderer);
+			for (int i = 0; i < render_sphere.size(); i++)
+			{
+				glm::ivec3 c = cpos + glm::ivec3(render_sphere[i]);
+				if (owner(c) == k) chunks->get(c).init(c, renderer);
+			}
+			last_cpos = cpos;
+		}
+	}
+	
+	static int owner(glm::ivec3 cpos)
+	{
+		return static_cast<uint32_t>(cpos.x ^ cpos.y ^ cpos.z) % Threads;
+	}
+	
+	// TODO: add trylock to prevent it from being unloaded
 	bool loaded(glm::ivec3 cpos) { return get(cpos).cpos == cpos; }
-
-	// load new chunks as player moves
-	bool refresh(glm::ivec3 cpos)
-	{
-		if (cpos == m_last_cpos) return false;
-		m_last_cpos = cpos;
-		// PERF: if cpos is next to m_last_cpos, then only iterate chunks on sphere boundary!
-
-		fprintf(stderr, "refresh begin\n");
-		float time_start = glfwGetTime();
-
-		const int N = 7;
-		std::thread workers[N];
-		FOR(i, N)
-		{
-			std::thread w(refresh_worker, this, cpos, i, N+1);
-			std::swap(w, workers[i]);
-		}
-		get(cpos).init(cpos);
-		refresh_worker(this, cpos, N, N+1);
-		FOR(i, N) workers[i].join();
-		
-		map_refresh_time_ms = (glfwGetTime() - time_start) * 1000;
-		//map->Print();
-		//fprintf(stderr, "refresh end %lf\n", map_refresh_time_ms);
-
-		/*for (auto d : render_sphere)
-		{
-			glm::ivec3 c = cpos + glm::ivec3(d);
-			assert(get(c).cpos == c);
-		}
-		assert(get(cpos).cpos == cpos);*/
-		return true;
-	}
-	
-	glm::ivec3 last_cpos() { return m_last_cpos; }
 
 private:
 	Chunk& get(glm::ivec3 a)
@@ -931,10 +1012,7 @@ private:
 	}
 
 private:
-	glm::ivec3 m_last_cpos;
 	Chunk* m_map; // Huge array in memory!
-public:
-	float map_refresh_time_ms;
 };
 
 Chunks g_chunks;
@@ -987,7 +1065,7 @@ int LineOfSight::chunk_visible_fast(glm::ivec3 a, glm::ivec3 d)
 			if (q == glm::ivec3(0, 0, 0)) return 1;
 			if (!between(d, q, glm::ivec3(0, 0, 0))) continue;
 			if (m_marked[glm::abs(q)]) continue;
-			/*DEBUG*/ if (!g_chunks.loaded(a + q)) { fprintf(stderr, "WARNING! a=%s q=%s d=%s last_cpos=%s\n", str(a), str(q), str(d), str(g_chunks.last_cpos())); return -1; }
+			if (!g_chunks.loaded(a + q)) return -1;
 			if (g_chunks(a + q).obstructor) continue;
 			if (distance2_point_and_line(glm::vec3(q) + glm::vec3(0.5, 0.5, 0.5), orig, dir) > D2) continue;
 			m_stack.push_back(q);
@@ -1005,22 +1083,10 @@ namespace stats
 	float frame_time_ms = 0;
 	float block_render_time_ms = 0;
 	float model_time_ms = 0;
-	float buffer_time_ms = 0;
 	float pvc_time_ms = 0;
 }
 
 // Model
-
-namespace player
-{
-//	glm::vec3 position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
-	glm::vec3 position(0, 0, 20);
-	float yaw = 0;
-	float pitch = 0;
-	glm::mat4 orientation;
-	glm::vec3 velocity;
-	bool flying = true;
-}
 
 float last_time;
 
@@ -1065,6 +1131,7 @@ int PrevShape(int shape)
 
 std::vector<GLuint> free_queries;
 int current_query_version = 0;
+BlockRenderer g_renderer;
 
 void EditBlock(glm::ivec3 pos, Block block)
 {
@@ -1073,15 +1140,14 @@ void EditBlock(glm::ivec3 pos, Block block)
 
 	Block prev_block = map_get_block(sel_cube);
 	map->Set(pos, block);
-	map_get_block(pos) = block;
-	g_chunks(cpos).clear();
+	g_chunks(cpos).reset(g_renderer);
 
-	if (p.x == 0) g_chunks(cpos - ix).clear();
-	if (p.y == 0) g_chunks(cpos - iy).clear();
-	if (p.z == 0) g_chunks(cpos - iz).clear();
-	if (p.x == ChunkSizeMask) g_chunks(cpos + ix).clear();
-	if (p.y == ChunkSizeMask) g_chunks(cpos + iy).clear();
-	if (p.z == ChunkSizeMask) g_chunks(cpos + iz).clear();
+	if (p.x == 0) g_chunks(cpos - ix).reset(g_renderer);
+	if (p.y == 0) g_chunks(cpos - iy).reset(g_renderer);
+	if (p.z == 0) g_chunks(cpos - iz).reset(g_renderer);
+	if (p.x == ChunkSizeMask) g_chunks(cpos + ix).reset(g_renderer);
+	if (p.y == ChunkSizeMask) g_chunks(cpos + iy).reset(g_renderer);
+	if (p.z == ChunkSizeMask) g_chunks(cpos + iz).reset(g_renderer);
 
 	if (block.shape != prev_block.shape && block.shape != 255)
 	{
@@ -1125,7 +1191,6 @@ void OnEditKey(int key)
 }
 
 bool show_counters = true;
-auto buffer_it = render_sphere.begin();
 
 void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
@@ -1214,10 +1279,6 @@ void model_init(GLFWwindow* window)
 	last_time = glfwGetTime();
 
 	glfwSetCursorPos(window, 0, 0);
-
-	g_chunks.refresh(glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits);
-	
-	InitColorCodes();
 }
 
 uint NeighborBit(int dx, int dy, int dz)
@@ -1413,7 +1474,7 @@ void Simulate(float dt, glm::vec3 dir)
 	{
 		player::velocity += Gravity(player::position) * dt;
 	}
-	player::position += dir * ((player::flying ? 10 : 4) * dt) + player::velocity * dt;
+	player::position += dir * ((player::flying ? 20 : 4) * dt) + player::velocity * dt;
 	ResolveCollisionsWithBlocks();
 }
 
@@ -1432,6 +1493,7 @@ void model_move_player(GLFWwindow* window, float dt)
 		right.z = 0;
 		right = glm::normalize(right);
 	}
+
 	if (glfwGetKey(window, 'A')) dir -= right;
 	if (glfwGetKey(window, 'D')) dir += right;
 	if (glfwGetKey(window, 'W')) dir += forward;
@@ -1584,11 +1646,11 @@ void model_frame(GLFWwindow* window)
 		model_move_player(window, dt);
 	}
 
-	if (g_chunks.refresh(glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits))
-	{
-		buffer_it = render_sphere.begin();
-	}
-
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+	player::cposx = cplayer.x;
+	player::cposy = cplayer.y;
+	player::cposz = cplayer.z;
+	
 	selection = SelectCube(/*out*/sel_cube, /*out*/sel_face);
 	double end = std::max<float>(0, (glfwGetTime() - time) * 1000);
 	stats::model_time_ms = stats::model_time_ms * 0.85f + end * 0.15f;
@@ -1749,6 +1811,8 @@ void render_init()
 	block_color_loc = glGetAttribLocation(block_program, "color");
 	block_light_loc = glGetAttribLocation(block_program, "light");
 	block_uv_loc = glGetAttribLocation(block_program, "uv");
+
+	g_chunks.start_threads();
 }
 
 GLuint block_buffer;
@@ -1761,20 +1825,6 @@ void render_general_init()
 	glGenBuffers(1, &block_buffer);
 	glGenBuffers(1, &line_buffer);
 }
-
-struct BlockRenderer
-{
-	std::vector<Vertex> m_vertices;
-	glm::ivec3 m_pos;
-	GLubyte m_color;
-
-	BlockRenderer() : m_vertices(6 * ChunkSize * ChunkSize * ChunkSize) { }
-	void vertex(GLubyte light, GLubyte uv, int c);
-	void draw_quad(int a, int b, int c, int d);
-	void draw_triangle(int a, int b, int c);
-	void draw_face(int block, int a, int b, int c, int d);
-	void render(glm::ivec3 pos, Block bs);
-};
 
 void BlockRenderer::vertex(GLubyte light, GLubyte uv, int c)
 {
@@ -2014,32 +2064,8 @@ bool Frustum::IsSphereCompletelyOutside(glm::vec3 p, float radius) const
 
 int buffer_budget = 0;
 
-BlockRenderer g_renderer;
-int64_t chunks_buffered = 0;
-
-void buffer_chunk(Chunk& chunk)
-{
-	g_renderer.m_vertices.clear();
-	MapChunk& mc = map->Get(chunk.cpos);
-	FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
-	{
-		g_renderer.render(chunk.cpos * ChunkSize + glm::ivec3(x, y, z), mc.block[x][y][z]);
-	}
-
-	chunks_buffered += 1;
-	chunk.vertices.resize(g_renderer.m_vertices.size());
-	std::copy(g_renderer.m_vertices.begin(), g_renderer.m_vertices.end(), chunk.vertices.begin());
-	assert(chunk.vertices.size() == chunk.vertices.capacity());
-	
-	chunk.buffered = true;
-	chunk.init_planes();
-}
-
 bool chunk_renderable(Chunk& chunk, const Frustum& frustum)
 {
-	if (!chunk.buffered)
-		return false;
-
 	// Empty and underground chunks have no triangles to render
 	if (chunk.vertices.size() == 0)
 		return false;
@@ -2081,7 +2107,7 @@ int precompute_potentially_visible_chunks(Chunk& chunk, int budget)
 	do
 	{
 		glm::ivec3 b = chunk.cpos + glm::ivec3(*chunk.visible.it);
-		if (!g_chunks.loaded(b) || !g_chunks(b).buffered) break;
+		if (!g_chunks.loaded(b)) break;
 
 		if (g_chunks(b).contains_face_visible_from_chunk(chunk.cpos))
 		{
@@ -2096,8 +2122,9 @@ int precompute_potentially_visible_chunks(Chunk& chunk, int budget)
 	return budget;
 }
 
-void precompute_potentially_visible_chunks(glm::ivec3 cplayer, int budget=4000)
+void precompute_potentially_visible_chunks(glm::ivec3 cplayer, int budget=5000)
 {
+	if (!g_chunks.loaded(cplayer)) return;
 	budget = precompute_potentially_visible_chunks(g_chunks(cplayer), budget);
 	if (budget <= 0) return;
 
@@ -2106,7 +2133,6 @@ void precompute_potentially_visible_chunks(glm::ivec3 cplayer, int budget=4000)
 	{
 		if (!g_chunks.loaded(cplayer + glm::ivec3(d))) break;
 		Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
-		if (!chunk.buffered) continue;
 		budget = precompute_potentially_visible_chunks(chunk, budget);
 		if (budget <= 0) return;
 	}
@@ -2138,7 +2164,8 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
-	// Center chunk is special
+	if (g_chunks.loaded(cplayer))
+	{
 	Chunk& chunk0 = g_chunks(cplayer);
 	render_chunk(chunk0);
 
@@ -2147,12 +2174,15 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 	{
 		for (glm::i8vec3 d : filter)
 		{
-			Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
-			if (chunk_renderable(chunk, frustum))
+			if (g_chunks.loaded(cplayer + glm::ivec3(d)))
 			{
-				render_chunk(chunk);
-				if (stats::triangle_count > MaxTriangles * 3)
-					break;
+				Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
+				if (chunk_renderable(chunk, frustum))
+				{
+					render_chunk(chunk);
+					if (stats::triangle_count > MaxTriangles * 3)
+						break;
+				}
 			}
 		}
 	}
@@ -2186,6 +2216,7 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 				}
 			}
 		}
+	}
 	}
 
 	glUseProgram(0);
@@ -2226,34 +2257,6 @@ void render_block_selection(const glm::mat4& matrix)
 	glDisableVertexAttribArray(line_position_loc);
 }
 
-bool buffer_chunks(glm::ivec3 cplayer, int budget = 5000)
-{
-	Chunk& center_chunk = g_chunks(cplayer);
-	if (!center_chunk.buffered)
-	{
-		buffer_chunk(center_chunk);
-		if (--budget <= 0) return false;
-	}
-	while (buffer_it != render_sphere.end())
-	{
-		glm::i8vec3 d = *buffer_it;
-		if (!g_chunks.loaded(cplayer + glm::ivec3(d))) break;
-		Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
-		if (!chunk.buffered)
-		{
-			buffer_chunk(chunk);
-			budget -= 10;
-			if (budget <= 0) return false;
-		}
-		else
-		{
-			if (--budget <= 0) return false;
-		}
-		buffer_it++;
-	}
-	return true;
-}
-
 void render_world()
 {
 	// TODO - avoid recomputing if same
@@ -2262,11 +2265,6 @@ void render_world()
 	frustum.Init(matrix);
 
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-	
-	float time_start = glfwGetTime();
-	buffer_chunks(cplayer);
-	float time = std::max<float>(0, (glfwGetTime() - time_start) * 1000);
-	stats::buffer_time_ms = stats::buffer_time_ms * 0.75f + time * 0.25f;
 	
 	if (pvs > 0)
 	{
@@ -2292,10 +2290,9 @@ void render_gui()
 
 	text->Reset(width, height, matrix);
 	if (show_counters)
-	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk map:%2.0f frame:%2.1f model:%1.1f buffer:%2.1f_%lu pvs:%2.1f_%luk render %2.1f",
+	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.1f model:%1.1f pvs:%2.1f_%luk render %2.1f",
 			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count / 3000,
-			 g_chunks.map_refresh_time_ms, stats::frame_time_ms, stats::model_time_ms, stats::buffer_time_ms, chunks_buffered / 1000,
-			 stats::pvc_time_ms, pvcs_computed / 1000, stats::block_render_time_ms);
+			 stats::frame_time_ms, stats::model_time_ms, stats::pvc_time_ms, pvcs_computed / 1000, stats::block_render_time_ms);
 	stats::triangle_count = 0;
 	stats::chunk_count = 0;
 
@@ -2348,8 +2345,7 @@ void OnError(int error, const char* message)
 }
 
 int main(int argc, char** argv)
-{	
-	Cube::Init();
+{
 	if (!glfwInit())
 	{
 		return 0;

@@ -216,7 +216,6 @@ Text::Text()
 	text_matrix_loc = glGetUniformLocation(text_program, "matrix");
 	text_sampler_loc = glGetUniformLocation(text_program, "sampler");
 	text_position_loc = glGetAttribLocation(text_program, "position");
-	fprintf(stderr, "pos_loc=%d\n", text_position_loc);
 	text_uv_loc = glGetAttribLocation(text_program, "uv");
 	glBindFragDataLocation(text_program, 0, "color");
 
