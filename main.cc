@@ -108,7 +108,7 @@ float SimplexNoise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbu
 {
 	float freq = 1.0f, amp = 1.0f, max = amp;
 	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
-	for (int i = 1; i < octaves; i++)
+	FOR(i, octaves - 1)
 	{
 		freq *= freqf;
 		amp *= ampf;
@@ -124,18 +124,12 @@ struct Sphere : public std::vector<glm::i8vec3>
 {
 	Sphere(int size)
 	{
-		glm::ivec3 d;
-		for (d.x = -size; d.x <= size; d.x++)
+		FOR2(x, -size, size) FOR2(y, -size, size) FOR2(z, -size, size)
 		{
-			for (d.y = -size; d.y <= size; d.y++)
+			glm::ivec3 d(x, y, z);
+			if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size)
 			{
-				for (d.z = -size; d.z < size; d.z++)
-				{
-					if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size)
-					{
-						push_back(glm::i8vec3(d));
-					}
-				}
+				push_back(glm::i8vec3(d));
 			}
 		}
 		std::sort(begin(), end(), Closer);
@@ -167,23 +161,14 @@ glm::vec3 color_codes[64];
 
 void InitColorCodes()
 {
-	for (int r = 0; r < 4; r++)
-	{
-		for (int g = 0; g < 4; g++)
-		{
-			for (int b = 0; b < 4; b++)
-			{
-				color_codes[r + g * 4 + b * 16] = glm::vec3(r / 3.0f, g / 3.0f, b / 3.0f);
-			}
-		}
-	}
+	FOR(r, 4) FOR(g, 4) FOR(b, 4) color_codes[r + g * 4 + b * 16] = glm::vec3(r / 3.0f, g / 3.0f, b / 3.0f);
 }
 
 unsigned char ColorToCode(glm::vec3 color)
 {
 	int code = 0;
 	float err = sqr(color_codes[code] - color);
-	for (int i = 1; i < 64; i++)
+	FOR2(i, 1, 63)
 	{
 		float e = sqr(color_codes[i] - color);
 		if (e < err)
@@ -227,13 +212,7 @@ struct Heightmap
 
 	Heightmap()
 	{
-		for (int x = 0; x < ChunkSize; x++)
-		{
-			for (int y = 0; y < ChunkSize; y++)
-			{
-				last[x][y] = glm::ivec2(1000000, 1000000);
-			}
-		}
+		FOR(x, ChunkSize) FOR(y, ChunkSize) last[x][y] = glm::ivec2(1000000, 1000000);
 	}
 
 	void Populate(int cx, int cy);
@@ -259,13 +238,10 @@ float Tree(int x, int y)
 bool GetHasTree(int x, int y)
 {
 	float a = Tree(x, y);
-	for (int xx = -1; xx <= 1; xx++)
+	FOR2(xx, -1, 1) FOR2(yy, -1, 1)
 	{
-		for (int yy = -1; yy <= 1; yy++)
-		{
-			if ((xx != 0 || yy != 0) && a <= Tree(x + xx, y + yy))
-				return false;
-		}
+		if ((xx != 0 || yy != 0) && a <= Tree(x + xx, y + yy))
+			return false;
 	}
 	return true;
 }
@@ -274,13 +250,10 @@ void Heightmap::Populate(int cx, int cy)
 {
 	if (last[cx & MapSizeMask][cy & MapSizeMask] != glm::ivec2(cx, cy))
 	{
-		for (int x = 0; x < ChunkSize; x++)
+		FOR(x, ChunkSize) FOR(y, ChunkSize)
 		{
-			for (int y = 0; y < ChunkSize; y++)
-			{
-				Height(x + cx * ChunkSize, y + cy * ChunkSize) = GetHeight(x + cx * ChunkSize, y + cy * ChunkSize);
-				HasTree(x + cx * ChunkSize, y + cy * ChunkSize) = GetHasTree(x + cx * ChunkSize, y + cy * ChunkSize);
-			}
+			Height(x + cx * ChunkSize, y + cy * ChunkSize) = GetHeight(x + cx * ChunkSize, y + cy * ChunkSize);
+			HasTree(x + cx * ChunkSize, y + cy * ChunkSize) = GetHasTree(x + cx * ChunkSize, y + cy * ChunkSize);
 		}
 		last[cx & MapSizeMask][cy & MapSizeMask] = glm::ivec2(cx, cy);
 	}
@@ -351,55 +324,52 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool)
 	heightmap->Populate(cpos.x, cpos.y-1);
 	heightmap->Populate(cpos.x, cpos.y+1);
 
-	for (int x = 0; x < ChunkSize; x++)
+	FOR(x, ChunkSize) FOR(y, ChunkSize)
 	{
-		for (int y = 0; y < ChunkSize; y++)
+		int dx = x + cpos.x * ChunkSize;
+		int dy = y + cpos.y * ChunkSize;
+
+		int height = heightmap->Height(dx, dy);
+		if (height >= cpos.z * ChunkSize)
 		{
-			int dx = x + cpos.x * ChunkSize;
-			int dy = y + cpos.y * ChunkSize;
-
-			int height = heightmap->Height(dx, dy);
-			if (height >= cpos.z * ChunkSize)
+			FOR(z, ChunkSize)
 			{
-				for (int z = 0; z < ChunkSize; z++)
+				if (z + cpos.z * ChunkSize == height)
 				{
-					if (z + cpos.z * ChunkSize == height)
-					{
-						chunk.block[x][y][z].shape = 255;
-						chunk.block[x][y][z].color = GetColor(dx, dy);
-						break;
-					}
 					chunk.block[x][y][z].shape = 255;
-					chunk.block[x][y][z].color = 50;
-				}
-			}
-
-			// slope on top
-			int z = height + 1 - cpos.z * ChunkSize;
-			if (z >= 0 && z < ChunkSize)
-			{
-				int shape = Level1Slope(dx, dy);
-				if ((Level1Slope(dx-1, dy) == 223 || Level1Slope(dx-1, dy) == 207) && (Level1Slope(dx, dy+1) == 223 || Level1Slope(dx, dy+1) == 95))
-				{
-					shape = 77;
-				}
-				else if ((Level1Slope(dx+1, dy) == FX(223) || Level1Slope(dx+1, dy) == FX(207)) && (Level1Slope(dx, dy+1) == FX(223) || Level1Slope(dx, dy+1) == FX(95)))
-				{
-					shape = 142;
-				}
-				else if ((Level1Slope(dx-1, dy) == FY(223) || Level1Slope(dx-1, dy) == FY(207)) && (Level1Slope(dx, dy-1) == FY(223) || Level1Slope(dx, dy-1) == FY(95)))
-				{
-					shape = FY(77);
-				}
-				else if ((Level1Slope(dx+1, dy) == FX(FY(223)) || Level1Slope(dx+1, dy) == FX(FY(207))) && (Level1Slope(dx, dy-1) == FX(FY(223)) || Level1Slope(dx, dy-1) == FX(FY(95))))
-				{
-					shape = FX(FY(77));
-				}
-				if (shape != 0)
-				{
 					chunk.block[x][y][z].color = GetColor(dx, dy);
-					chunk.block[x][y][z].shape = shape;
+					break;
 				}
+				chunk.block[x][y][z].shape = 255;
+				chunk.block[x][y][z].color = 50;
+			}
+		}
+
+		// slope on top
+		int z = height + 1 - cpos.z * ChunkSize;
+		if (z >= 0 && z < ChunkSize)
+		{
+			int shape = Level1Slope(dx, dy);
+			if ((Level1Slope(dx-1, dy) == 223 || Level1Slope(dx-1, dy) == 207) && (Level1Slope(dx, dy+1) == 223 || Level1Slope(dx, dy+1) == 95))
+			{
+				shape = 77;
+			}
+			else if ((Level1Slope(dx+1, dy) == FX(223) || Level1Slope(dx+1, dy) == FX(207)) && (Level1Slope(dx, dy+1) == FX(223) || Level1Slope(dx, dy+1) == FX(95)))
+			{
+				shape = 142;
+			}
+			else if ((Level1Slope(dx-1, dy) == FY(223) || Level1Slope(dx-1, dy) == FY(207)) && (Level1Slope(dx, dy-1) == FY(223) || Level1Slope(dx, dy-1) == FY(95)))
+			{
+				shape = FY(77);
+			}
+			else if ((Level1Slope(dx+1, dy) == FX(FY(223)) || Level1Slope(dx+1, dy) == FX(FY(207))) && (Level1Slope(dx, dy-1) == FX(FY(223)) || Level1Slope(dx, dy-1) == FX(FY(95))))
+			{
+				shape = FX(FY(77));
+			}
+			if (shape != 0)
+			{
+				chunk.block[x][y][z].color = GetColor(dx, dy);
+				chunk.block[x][y][z].shape = shape;
 			}
 		}
 	}
@@ -473,17 +443,17 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool)
 	}
 
 	// moon
-	for (int x = 0; x < ChunkSize; x++)
+	FOR(x, ChunkSize)
 	{
 		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - MoonCenter.x) - sqr<int64_t>(MoonRadius);
 		if (sx > 0) continue;
 
-		for (int y = 0; y < ChunkSize; y++)
+		FOR(y, ChunkSize)
 		{
 			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - MoonCenter.y);
 			if (sy > 0) continue;
 
-			for (int z = 0; z < ChunkSize; z++)
+			FOR(z, ChunkSize)
 			{
 				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize - MoonCenter.z);
 				if (sz > 0) continue;
@@ -495,17 +465,17 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk, bool)
 	}
 
 	// crater
-	for (int x = 0; x < ChunkSize; x++)
+	FOR(x, ChunkSize)
 	{
 		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - CraterCenter.x) - sqr<int64_t>(CraterRadius);
 		if (sx > 0) continue;
 
-		for (int y = 0; y < ChunkSize; y++)
+		FOR(y, ChunkSize)
 		{
 			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - CraterCenter.y);
 			if (sy > 0) continue;
 
-			for (int z = 0; z < ChunkSize; z++)
+			FOR(z, ChunkSize)
 			{
 				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize - CraterCenter.z);
 				if (sz > 0) continue;
@@ -593,7 +563,7 @@ struct Map
 	void Print()
 	{
 		int m = 0, c = 0, nz = 0;
-		for (int i = 0; i < MapSize; i++)
+		FOR(i, MapSize)
 		{
 			int n = 0;
 			for (MapChunk* p = m_map[i]; p; p=p->next)
@@ -644,87 +614,63 @@ Map::Map() : m_cpos(0x80000000, 0, 0)
 	InitColorCodes();
 
 	// sphere test
-	for (int x = -1; x <= 1; x++)
+	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1)
 	{
-		for (int y = -1; y <= 1; y++)
+		int dx = (x == 1) ? 1 : 0;
+		int dy = (y == 1) ? 2 : 0;
+		int dz = (z == 1) ? 4 : 0;
+
+		unsigned char shape = 255;
+		if (x == 0 && y != 0 && z != 0)
 		{
-			for (int z = -1; z <= 1; z++)
-			{
-				int dx = (x == 1) ? 1 : 0;
-				int dy = (y == 1) ? 2 : 0;
-				int dz = (z == 1) ? 4 : 0;
-
-				unsigned char shape = 255;
-				if (x == 0 && y != 0 && z != 0)
-				{
-					shape = 255 - S(0 + dy + dz) - S(1 + dy + dz);
-				}
-				if (x != 0 && y == 0 && z != 0)
-				{
-					shape = 255 - S(0 + dx + dz) - S(2 + dx + dz);
-				}
-				if (x != 0 && y != 0 && z == 0)
-				{
-					shape = 255 - S(0 + dx + dy) - S(4 + dx + dy);
-				}
-				if (x != 0 && y != 0 && z != 0)
-				{
-					int f = 0;
-					if (x == -1) f ^= 1;
-					if (y == -1) f ^= 2;
-					if (z == -1) f ^= 4;
-					shape = S(0^f) + S(1^f) + S(2^f) + S(4^f);
-				}
-
-				Set(glm::ivec3(x+1, y-10, z+30), shape, glm::vec3(1, 1, 0));
-			}
+			shape = 255 - S(0 + dy + dz) - S(1 + dy + dz);
 		}
+		if (x != 0 && y == 0 && z != 0)
+		{
+			shape = 255 - S(0 + dx + dz) - S(2 + dx + dz);
+		}
+		if (x != 0 && y != 0 && z == 0)
+		{
+			shape = 255 - S(0 + dx + dy) - S(4 + dx + dy);
+		}
+		if (x != 0 && y != 0 && z != 0)
+		{
+			int f = 0;
+			if (x == -1) f ^= 1;
+			if (y == -1) f ^= 2;
+			if (z == -1) f ^= 4;
+			shape = S(0^f) + S(1^f) + S(2^f) + S(4^f);
+		}
+
+		Set(glm::ivec3(x+1, y-10, z+30), shape, glm::vec3(1, 1, 0));
 	}
 
 	// all colors
-	for (int x = 0; x < 4; x++)
-		for (int y = 0; y < 4; y++)
-			for (int z = 0; z < 4; z++)
-			{
-				Set(glm::ivec3(x*2, y*2, z*2+45), 255, glm::vec3(x*0.3333f, y*0.3333f, z*0.3333f));
-			}
+	FOR(x, 4) FOR(y, 4) FOR(z, 4) Set(glm::ivec3(x*2, y*2, z*2+45), 255, glm::vec3(x*0.3333f, y*0.3333f, z*0.3333f));
 
 	// all blocks test
-	for (int a = 0; a < 16; a++)
-	{
-		Set(glm::ivec3(-2, 0, 10 + a * 2), 255, glm::vec3(1, 1, 0));
-	}
+	FOR(a, 16) Set(glm::ivec3(-2, 0, 10 + a * 2), 255, glm::vec3(1, 1, 0));
 
-	for (int a = 0; a < 8; a++)
-	{
-		Set(glm::ivec3(0, 0, 10 + a * 2), 255 - S(a), glm::vec3(1, 0, 0));
-	}
-
-	for (int a = 0; a < 8; a++)
-	{
-		Set(glm::ivec3(0, 0, 10 + a * 2 + 16), S(a) + S(a^1) + S(a^2) + S(a^4), glm::vec3(0, 0, 1));
-	}
+	FOR(a, 8) Set(glm::ivec3(0, 0, 10 + a * 2), 255 - S(a), glm::vec3(1, 0, 0));
+	FOR(a, 8) Set(glm::ivec3(0, 0, 10 + a * 2 + 16), S(a) + S(a^1) + S(a^2) + S(a^4), glm::vec3(0, 0, 1));
 
 	int q = 0;
-	for (int a = 0; a < 8; a += 1)
+	FOR(a, 8) FOR2(b, 0, a-1)
 	{
-		for (int b = 0; b < a; b += 1)
+		if ((a ^ b) == 1)
 		{
-			if ((a ^ b) == 1)
-			{
-				Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 6) - S(b ^ 6), glm::vec3(0, 1, 0));
-				q += 2;
-			}
-			if ((a ^ b) == 2)
-			{
-				Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 5) - S(b ^ 5), glm::vec3(.5, .5, 1));
-				q += 2;
-			}
-			if ((a ^ b) == 4)
-			{
-				Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 3) - S(b ^ 3), glm::vec3(1, 0.5, 0));
-				q += 2;
-			}
+			Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 6) - S(b ^ 6), glm::vec3(0, 1, 0));
+			q += 2;
+		}
+		if ((a ^ b) == 2)
+		{
+			Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 5) - S(b ^ 5), glm::vec3(.5, .5, 1));
+			q += 2;
+		}
+		if ((a ^ b) == 4)
+		{
+			Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 3) - S(b ^ 3), glm::vec3(1, 0.5, 0));
+			q += 2;
 		}
 	}
 }
@@ -1099,9 +1045,9 @@ int NextShape(int shape)
 	if (shape == slope_shapes[11]) return pyramid_shapes[0];
 	if (shape == pyramid_shapes[7]) return anti_pyramid_shapes[0];
 	if (shape == anti_pyramid_shapes[7]) return 255;
-	for (int i = 0; i < 11; i++) if (shape == slope_shapes[i]) return slope_shapes[i+1];
-	for (int i = 0; i < 7; i++) if (shape == pyramid_shapes[i]) return pyramid_shapes[i+1];
-	for (int i = 0; i < 7; i++) if (shape == anti_pyramid_shapes[i]) return anti_pyramid_shapes[i+1];
+	FOR(i, 11) if (shape == slope_shapes[i]) return slope_shapes[i+1];
+	FOR(i, 7) if (shape == pyramid_shapes[i]) return pyramid_shapes[i+1];
+	FOR(i, 7) if (shape == anti_pyramid_shapes[i]) return anti_pyramid_shapes[i+1];
 	return 0;
 }
 
@@ -1111,9 +1057,9 @@ int PrevShape(int shape)
 	if (shape == slope_shapes[0]) return 255;
 	if (shape == pyramid_shapes[0]) return slope_shapes[11];
 	if (shape == anti_pyramid_shapes[0]) return pyramid_shapes[7];
-	for (int i = 1; i < 12; i++) if (shape == slope_shapes[i]) return slope_shapes[i-1];
-	for (int i = 1; i < 8; i++) if (shape == pyramid_shapes[i]) return pyramid_shapes[i-1];
-	for (int i = 1; i < 8; i++) if (shape == anti_pyramid_shapes[i]) return anti_pyramid_shapes[i-1];
+	FOR(i, 11) if (shape == slope_shapes[i+1]) return slope_shapes[i];
+	FOR(i, 7) if (shape == pyramid_shapes[i+1]) return pyramid_shapes[i];
+	FOR(i, 7) if (shape == anti_pyramid_shapes[i+1]) return anti_pyramid_shapes[i];
 	return 0;
 }
 
@@ -1421,17 +1367,11 @@ int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube, uint neighbor
 uint CubeNeighbors(glm::ivec3 cube)
 {
 	uint neighbors = 0;
-	for (int dx = -1; dx <= 1; dx++)
+	FOR2(dx, -1, 1) FOR2(dy, -1, 1) FOR2(dz, -1, 1)
 	{
-		for (int dy = -1; dy <= 1; dy++)
+		if (map_get(glm::ivec3(cube.x + dx, cube.y + dy, cube.z + dz)) != 0)
 		{
-			for (int dz = -1; dz <= 1; dz++)
-			{
-				if (map_get(glm::ivec3(cube.x + dx, cube.y + dy, cube.z + dz)) != 0)
-				{
-					neighbors |= NeighborBit(dx, dy, dz);
-				}
-			}
+			neighbors |= NeighborBit(dx, dy, dz);
 		}
 	}
 	return neighbors;
@@ -1723,7 +1663,7 @@ float simplex2(glm::vec2 p, int octaves, float persistence)
 {
 	float freq = 1.0f, amp = 1.0f, max = amp;
 	float total = glm::simplex(p);
-	for (int i = 1; i < octaves; i++)
+	FOR(i, octaves - 1)
 	{
 	    freq /= sqrt(2);
 	    amp *= persistence;
@@ -1736,39 +1676,36 @@ float simplex2(glm::vec2 p, int octaves, float persistence)
 void load_noise_texture(int size)
 {
 	GLubyte* image = new GLubyte[size * size * 3];
-	for (int x = 0; x < size; x++)
+	FOR(x, size) FOR(y, size)
 	{
-		for (int y = 0; y < size; y++)
-		{
-			glm::vec2 p = glm::vec2(x+32131, y+908012) * (1.0f / size);
-			float f = simplex2(p * 32.f, 10, 1) * 3;
-			f = fabs(f);
-			f = std::min<float>(f, 1);
-			f = std::max<float>(f, -1);
-			//f = (f + 1) / 2;
-			GLubyte a = (int) std::min<float>(255, floorf(f * 256));
-			image[(x + y * size) * 3] = a;
+		glm::vec2 p = glm::vec2(x+32131, y+908012) * (1.0f / size);
+		float f = simplex2(p * 32.f, 10, 1) * 3;
+		f = fabs(f);
+		f = std::min<float>(f, 1);
+		f = std::max<float>(f, -1);
+		//f = (f + 1) / 2;
+		GLubyte a = (int) std::min<float>(255, floorf(f * 256));
+		image[(x + y * size) * 3] = a;
 
 
-			p = glm::vec2(x+9420234, y+9808312) * (1.0f / size);
-			f = simplex2(p * 32.f, 10, 1) * 3;
-			f = fabs(f);
-			f = std::min<float>(f, 1);
-			f = std::max<float>(f, -1);
-			//f = (f + 1) / 2;
-			a = (int) std::min<float>(255, floorf(f * 256));
-			image[(x + y * size) * 3 + 1] = a;
+		p = glm::vec2(x+9420234, y+9808312) * (1.0f / size);
+		f = simplex2(p * 32.f, 10, 1) * 3;
+		f = fabs(f);
+		f = std::min<float>(f, 1);
+		f = std::max<float>(f, -1);
+		//f = (f + 1) / 2;
+		a = (int) std::min<float>(255, floorf(f * 256));
+		image[(x + y * size) * 3 + 1] = a;
 
 
-			p = glm::vec2(x+983322, y+1309329) * (1.0f / size);
-			f = simplex2(p * 32.f, 10, 1) * 3;
-			f = fabs(f);
-			f = std::min<float>(f, 1);
-			f = std::max<float>(f, -1);
-			//f = (f + 1) / 2;
-			a = (int) std::min<float>(255, floorf(f * 256));
-			image[(x + y * size) * 3 + 2] = a;
-		}
+		p = glm::vec2(x+983322, y+1309329) * (1.0f / size);
+		f = simplex2(p * 32.f, 10, 1) * 3;
+		f = fabs(f);
+		f = std::min<float>(f, 1);
+		f = std::max<float>(f, -1);
+		//f = (f + 1) / 2;
+		a = (int) std::min<float>(255, floorf(f * 256));
+		image[(x + y * size) * 3 + 2] = a;
 	}
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, size, size, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
 	delete[] image;
@@ -1814,10 +1751,7 @@ void render_init()
 	line_position_loc = glGetAttribLocation(line_program, "position");
 
 	glGenQueries(OcclusionQueryCount, occlusion_query);
-	for (int i = 0; i < OcclusionQueryCount; i++)
-	{
-		free_queries.push_back(occlusion_query[i]);
-	}
+	FOR(i, OcclusionQueryCount) free_queries.push_back(occlusion_query[i]);
 
 	block_program = load_program("block");
 	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
@@ -2136,10 +2070,7 @@ void Frustum::Init(const glm::mat4& matrix)
 	frustum[3][2] = clip[11] - clip[ 9];
 	frustum[3][3] = clip[15] - clip[13];
 
-	for (int i = 0; i < 4; i++)
-	{
-		frustum[i] *= glm::fastInverseSqrt(sqr(frustum[i].xyz()));
-	}
+	FOR(i, 4) frustum[i] *= glm::fastInverseSqrt(sqr(frustum[i].xyz()));
 }
 
 bool Frustum::IsSphereCompletelyOutside(glm::vec3 p, float radius) const
@@ -2348,15 +2279,12 @@ void render_block_selection(const glm::mat4& matrix)
 
 	glm::vec3* vline = reinterpret_cast<glm::vec3*>(line_data);
 	glm::vec3 c = glm::vec3(sel_cube) + 0.5f;
-	for (int i = 0; i <= 1; i++)
+	FOR(i, 2) FOR(j, 2)
 	{
-		for (int j = 0; j <= 1; j++)
-		{
-			glm::ivec3 sel = sel_cube;
-			*vline++ = Q(sel + i*iy + j*iz, c); *vline++ = Q(sel + ix + i*iy + j*iz, c);
-			*vline++ = Q(sel + i*ix + j*iz, c); *vline++ = Q(sel + iy + i*ix + j*iz, c);
-			*vline++ = Q(sel + i*ix + j*iy, c); *vline++ = Q(sel + iz + i*ix + j*iy, c);
-		}
+		glm::ivec3 sel = sel_cube;
+		*vline++ = Q(sel + i*iy + j*iz, c); *vline++ = Q(sel + ix + i*iy + j*iz, c);
+		*vline++ = Q(sel + i*ix + j*iz, c); *vline++ = Q(sel + iy + i*ix + j*iz, c);
+		*vline++ = Q(sel + i*ix + j*iy, c); *vline++ = Q(sel + iz + i*ix + j*iy, c);
 	}
 
 	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 3 * 24, line_data, GL_STREAM_DRAW);
