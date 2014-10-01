@@ -202,6 +202,24 @@ struct Block
 
 // ============================
 
+struct Cube
+{
+	static glm::ivec3 corner[8];
+	static const int faces[6][4];
+
+	Cube()
+	{
+		FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1);
+	}
+};
+
+glm::ivec3 Cube::corner[8];
+const int Cube::faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
+
+Cube x_dummy;
+
+// ============================
+
 struct MapChunk
 {
 	glm::ivec3 cpos;
@@ -329,6 +347,8 @@ const glm::ivec3 CraterCenter(CraterRadius * -0.8, CraterRadius * -0.8, 0);
 const int MoonRadius = 500;
 const glm::ivec3 MoonCenter(MoonRadius * 0.8, MoonRadius * 0.8, 0);
 
+uint8_t shape_class[256];
+
 void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 {
 	memset(chunk.block, 0, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
@@ -352,26 +372,35 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 			if (dz <= height)
 			{
 				// ground and caves
-				chunk.block[x][y][z].shape = 255;
 				chunk.block[x][y][z].color = GetColor(dx, dy);
 				if (height - dz <= 200)
 				{
-					float q = SimplexNoise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
-					if (q < -0.2)
+					int shape = 0;
+					FOR(i, 8)
 					{
-						chunk.block[x][y][z].shape = 0;
+						double q = SimplexNoise(glm::vec3(pos + Cube::corner[i]) * 0.03f, 4, 0.5f, 0.5f, false);
+						if (q >= -0.2) shape |= 1 << i;
 					}
+					if (shape_class[shape] == 255) shape = 0;
+					chunk.block[x][y][z].shape = shape;
+				}
+				else
+				{
+					chunk.block[x][y][z].shape = 255;
 				}
 			}
 			else if (dz > 100 && dz < 200)
 			{
 				// clouds
-				float q = SimplexNoise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
-				if (q < -0.4)
+				int shape = 0;
+				FOR(i, 8)
 				{
-					chunk.block[x][y][z].shape = 255;
-					chunk.block[x][y][z].color = 1 + 4*2 + 16*3; 
+					double q = SimplexNoise(glm::vec3(pos + Cube::corner[i]) * 0.03f, 4, 0.5f, 0.5f, false);
+					if (q < -0.3) shape |= 1 << i;
 				}
+				if (shape_class[shape] == 255) shape = 0;
+				chunk.block[x][y][z].shape = shape;
+				chunk.block[x][y][z].color = 1 + 4*2 + 16*3;
 			}
 		}
 
@@ -637,12 +666,31 @@ private:
 	}
 };
 
+// ============================
+
 int S(int a) { return 1 << a; }
+
+// Block tools:
+// 1) cube 8
+// 2) prism 6
+// 3) tetra 4
+// 4) xtetra 7
+// 5) pyramid 5 (quarter pyramid)
+// 6) screw 6 (cube - two tetrahedrons)
+
+const int prism_shapes[]   = { 63, 252, 207, 243, 175, 245, 95, 250, 221, 187, 238, 119 };
+const int tetra_shapes[]   = { 23, 43, 77, 142, 113, 178, 212, 232 };
+const int xtetra_shapes[]  = { 254, 253, 251, 247, 239, 223, 191, 127 };
+const int pyramid_shapes[] = { 31, 47, 79, 143, 241, 242, 244, 248 }; // TODO: only third of all pyramids
+const int screw_shapes[]   = { 159, 111, 249, 246 }; // TODO: only half
+
+void init_shape_class();
 
 Map::Map() : m_cpos(0x80000000, 0, 0)
 {
 	FOR(i, MapSize) m_map[i] = nullptr;
 	InitColorCodes();
+	init_shape_class();
 
 	// sphere test
 	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1)
@@ -680,49 +728,12 @@ Map::Map() : m_cpos(0x80000000, 0, 0)
 	FOR(x, 4) FOR(y, 4) FOR(z, 4) Set(glm::ivec3(x*2, y*2, z*2+45), 255, glm::vec3(x*0.3333f, y*0.3333f, z*0.3333f));
 
 	// all blocks test
-	FOR(a, 16) Set(glm::ivec3(-2, 0, 10 + a * 2), 255, glm::vec3(1, 1, 0));
-
-	FOR(a, 8) Set(glm::ivec3(0, 0, 10 + a * 2), 255 - S(a), glm::vec3(1, 0, 0));
-	FOR(a, 8) Set(glm::ivec3(0, 0, 10 + a * 2 + 16), S(a) + S(a^1) + S(a^2) + S(a^4), glm::vec3(0, 0, 1));
-
-	int q = 0;
-	FOR(a, 8) FOR2(b, 0, a-1)
-	{
-		if ((a ^ b) == 1)
-		{
-			Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 6) - S(b ^ 6), glm::vec3(0, 1, 0));
-			q += 2;
-		}
-		if ((a ^ b) == 2)
-		{
-			Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 5) - S(b ^ 5), glm::vec3(.5, .5, 1));
-			q += 2;
-		}
-		if ((a ^ b) == 4)
-		{
-			Set(glm::ivec3(-4, 0, 10 + q), 255 - S(a ^ 3) - S(b ^ 3), glm::vec3(1, 0.5, 0));
-			q += 2;
-		}
-	}
+	FOR(i, 12) Set(glm::ivec3(0, 0, 10 + i * 2), prism_shapes[i], glm::vec3(1, 0.66, 0.33));
+	FOR(i, 8) Set(glm::ivec3(-2, 0, 10 + i * 2), tetra_shapes[i], glm::vec3(0.66, 0.33, 1));
+	FOR(i, 8) Set(glm::ivec3(-4, 0, 10 + i * 2), xtetra_shapes[i], glm::vec3(1, 0, 1));
+	FOR(i, 8) Set(glm::ivec3(-6, 0, 10 + i * 2), pyramid_shapes[i], glm::vec3(0, 1, 1));
+	FOR(i, 4) Set(glm::ivec3(-8, 0, 10 + i * 2), screw_shapes[i], glm::vec3(1, 1, 0));
 }
-
-// ============================
-
-struct Cube
-{
-	static glm::ivec3 corner[8];
-	static const int faces[6][4];
-
-	Cube()
-	{
-		FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1);
-	}
-};
-
-glm::ivec3 Cube::corner[8];
-const int Cube::faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
-
-Cube x_dummy;
 
 // ============================
 
@@ -1099,34 +1110,32 @@ bool selection = false;
 
 bool wireframe = false;
 bool occlusion = false;
-int pvs = 2;
+int pvs = 0;
+int block_tool = 0;
+const int block_tool_shape[] = { 255, 63, 23, 254, 31, 159};
+const char* block_tool_name[] = { "cube", "prism", "tetra", "xtetra", "pyramid", "screw"};
 
-const int slope_shapes[]        = { 63, 252, 207, 243, 175, 245, 95, 250, 221, 187, 238, 119 };
-const int pyramid_shapes[]      = { 23, 43, 77, 142, 113, 178, 212, 232 };
-const int anti_pyramid_shapes[] = { 254, 253, 251, 247, 239, 223, 191, 127 };
-
-int NextShape(int shape)
+void init_shape_class()
 {
-	if (shape == 255) return slope_shapes[0];
-	if (shape == slope_shapes[11]) return pyramid_shapes[0];
-	if (shape == pyramid_shapes[7]) return anti_pyramid_shapes[0];
-	if (shape == anti_pyramid_shapes[7]) return 255;
-	FOR(i, 11) if (shape == slope_shapes[i]) return slope_shapes[i+1];
-	FOR(i, 7) if (shape == pyramid_shapes[i]) return pyramid_shapes[i+1];
-	FOR(i, 7) if (shape == anti_pyramid_shapes[i]) return anti_pyramid_shapes[i+1];
-	return 0;
+	memset(shape_class, 255, sizeof(shape_class));
+	shape_class[255] = 0;
+	FOR(i, 12) shape_class[prism_shapes[i]]  = 1;
+	FOR(i, 8) shape_class[tetra_shapes[i]]   = 2;
+	FOR(i, 8) shape_class[xtetra_shapes[i]]  = 3;
+	FOR(i, 8) shape_class[pyramid_shapes[i]] = 4;
+	FOR(i, 4) shape_class[screw_shapes[i]]   = 5;
 }
 
-int PrevShape(int shape)
+int NextShape(int shape, int dir)
 {
-	if (shape == 255) return anti_pyramid_shapes[7];
-	if (shape == slope_shapes[0]) return 255;
-	if (shape == pyramid_shapes[0]) return slope_shapes[11];
-	if (shape == anti_pyramid_shapes[0]) return pyramid_shapes[7];
-	FOR(i, 11) if (shape == slope_shapes[i+1]) return slope_shapes[i];
-	FOR(i, 7) if (shape == pyramid_shapes[i+1]) return pyramid_shapes[i];
-	FOR(i, 7) if (shape == anti_pyramid_shapes[i+1]) return anti_pyramid_shapes[i];
-	return 0;
+	if (shape == 255) return 255;
+	FOR(i, 12) if (shape == prism_shapes[i]) return prism_shapes[(i + dir + 12) % 12];
+	FOR(i, 8) if (shape == tetra_shapes[i]) return tetra_shapes[(i + dir + 8) % 8];
+	FOR(i, 8) if (shape == xtetra_shapes[i]) return xtetra_shapes[(i + dir + 8) % 8];
+	FOR(i, 8) if (shape == pyramid_shapes[i]) return pyramid_shapes[(i + dir + 8) % 8];
+	FOR(i, 4) if (shape == screw_shapes[i]) return screw_shapes[(i + dir + 4) % 4];
+	assert(false);
+	return -1;
 }
 
 std::vector<GLuint> free_queries;
@@ -1180,12 +1189,12 @@ void OnEditKey(int key)
 	}
 	if (key == GLFW_KEY_V)
 	{
-		block.shape = NextShape(block.shape);
+		block.shape = NextShape(block.shape, 1);
 		EditBlock(sel_cube, block);
 	}
 	if (key == GLFW_KEY_B)
 	{
-		block.shape = PrevShape(block.shape);
+		block.shape = NextShape(block.shape, -1);
 		EditBlock(sel_cube, block);
 	}
 }
@@ -1215,7 +1224,31 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 	}
 	else if (action == GLFW_PRESS)
 	{
-		if (key == GLFW_KEY_F2)
+		if (key == GLFW_KEY_1)
+		{
+			block_tool = 0;
+		}
+		else if (key == GLFW_KEY_2)
+		{
+			block_tool = 1;
+		}
+		else if (key == GLFW_KEY_3)
+		{
+			block_tool = 2;
+		}
+		else if (key == GLFW_KEY_4)
+		{
+			block_tool = 3;
+		}
+		else if (key == GLFW_KEY_5)
+		{
+			block_tool = 4;
+		}
+		else if (key == GLFW_KEY_6)
+		{
+			block_tool = 5;
+		}
+		else if (key == GLFW_KEY_F2)
 		{
 			console.Show();
 		}
@@ -1267,7 +1300,10 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int mods)
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
 	{
 		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
-		EditBlock(sel_cube + dir[sel_face], map_get_block(sel_cube));
+		Block block;
+		block.shape = block_tool_shape[block_tool];
+		block.color = map_get_block(sel_cube).color;
+		EditBlock(sel_cube + dir[sel_face], block);
 	}
 }
 
@@ -1474,7 +1510,7 @@ void Simulate(float dt, glm::vec3 dir)
 	{
 		player::velocity += Gravity(player::position) * dt;
 	}
-	player::position += dir * ((player::flying ? 20 : 4) * dt) + player::velocity * dt;
+	player::position += dir * ((player::flying ? 15 : 6) * dt) + player::velocity * dt;
 	ResolveCollisionsWithBlocks();
 }
 
@@ -1906,119 +1942,53 @@ void BlockRenderer::render(glm::ivec3 pos, Block bs)
 	if (Visible(MaxZ(map_get(pos - iz)), MinZ(block))) draw_face(block, 0, 2, 3, 1);
 	if (Visible(MinZ(map_get(pos + iz)), MaxZ(block))) draw_face(block, 4, 5, 7, 6);
 
-	// prism faces
 	switch (block)
 	{
+	// prism faces
 	case  63: draw_quad(2, 4, 5, 3); break;
 	case 252: draw_quad(4, 2, 3, 5); break;
-	}
-	if (block == 255 - 32 - 16)
-	{
-		draw_quad(1, 7, 6, 0);
-	}
-	if (block == 255 - 8 - 4)
-	{
-		draw_quad(7, 1, 0, 6);
-	}
-	if (block == 255 - 64 - 16)
-	{
-		draw_quad(0, 5, 7, 2);
-	}
-	if (block == 255 - 8 - 2)
-	{
-		draw_quad(5, 0, 2, 7);
-	}
-	if (block == 255 - 128 - 32)
-	{
-		draw_quad(3, 6, 4, 1);
-	}
-	if (block == 255 - 4 - 1)
-	{
-		draw_quad(6, 3, 1, 4);
-	}
-	if (block == 255 - 32 - 2)
-	{
-		draw_quad(0, 3, 7, 4);
-	}
-	if (block == 255 - 64 - 4)
-	{
-		draw_quad(3, 0, 4, 7);
-	}
-	if (block == 255 - 16 - 1)
-	{
-		draw_quad(5, 6, 2, 1);
-	}
-	if (block == 255 - 128 - 8)
-	{
-		draw_quad(6, 5, 1, 2);
-	}
-
-	// pyramid faces
-	if (block == 23)
-	{
-		draw_triangle(1, 2, 4);
-	}
-	if (block == 43)
-	{
-		draw_triangle(0, 5, 3);
-	}
-	if (block == 13 + 64)
-	{
-		draw_triangle(3, 6, 0);
-	}
-	if (block == 142)
-	{
-		draw_triangle(2, 1, 7);
-	}
-	if (block == 16 + 32 + 64 + 1)
-	{
-		draw_triangle(5, 0, 6);
-	}
-	if (block == 32 + 16 + 128 + 2)
-	{
-		draw_triangle(4, 7, 1);
-	}
-	if (block == 64 + 128 + 16 + 4)
-	{
-		draw_triangle(7, 4, 2);
-	}
-	if (block == 128 + 64 + 32 + 8)
-	{
-		draw_triangle(6, 3, 5);
-	}
-
-	// anti-pyramid faces
-	if (block == 254)
-	{
-		draw_triangle(1, 4, 2);
-	}
-	if (block == 253)
-	{
-		draw_triangle(0, 3, 5);
-	}
-	if (block == 251)
-	{
-		draw_triangle(3, 0, 6);
-	}
-	if (block == 247)
-	{
-		draw_triangle(2, 7, 1);
-	}
-	if (block == 255 - 16)
-	{
-		draw_triangle(5, 6, 0);
-	}
-	if (block == 255 - 32)
-	{
-		draw_triangle(4, 1, 7);
-	}
-	if (block == 255 - 64)
-	{
-		draw_triangle(7, 2, 4);
-	}
-	if (block == 127)
-	{
-		draw_triangle(6, 5, 3);
+	case 207: draw_quad(1, 7, 6, 0); break;
+	case 243: draw_quad(7, 1, 0, 6); break;
+	case 175: draw_quad(0, 5, 7, 2); break;
+	case 245: draw_quad(5, 0, 2, 7); break;
+	case  95: draw_quad(3, 6, 4, 1); break;
+	case 250: draw_quad(6, 3, 1, 4); break;
+	case 221: draw_quad(0, 3, 7, 4); break;
+	case 187: draw_quad(3, 0, 4, 7); break;
+	case 238: draw_quad(5, 6, 2, 1); break;
+	case 119: draw_quad(6, 5, 1, 2); break;
+	// tetra faces
+	case 23: draw_triangle(1, 2, 4); break;
+	case 43: draw_triangle(0, 5, 3); break;
+	case 77: draw_triangle(3, 6, 0); break;
+	case 142: draw_triangle(2, 1, 7); break;
+	case 113: draw_triangle(5, 0, 6); break;
+	case 178: draw_triangle(4, 7, 1); break;
+	case 212: draw_triangle(7, 4, 2); break;
+	case 232: draw_triangle(6, 3, 5); break;
+	// xtetra faces
+	case 254: draw_triangle(1, 4, 2); break;
+	case 253: draw_triangle(0, 3, 5); break;
+	case 251: draw_triangle(3, 0, 6); break;
+	case 247: draw_triangle(2, 7, 1); break;
+	case 239: draw_triangle(5, 6, 0); break;
+	case 223: draw_triangle(4, 1, 7); break;
+	case 191: draw_triangle(7, 2, 4); break;
+	case 127: draw_triangle(6, 5, 3); break;
+	// pyramid faces TODO: more
+	case 47: draw_triangle(5, 3, 2); draw_triangle(5, 2, 0); break;
+	case 31: draw_triangle(4, 1, 3); draw_triangle(4, 3, 2); break;
+	case 79: draw_triangle(6, 0, 1); draw_triangle(6, 1, 3); break;
+	case 143: draw_triangle(7, 2, 0); draw_triangle(7, 0, 1); break;
+	case 241: draw_triangle(6, 7, 0); draw_triangle(7, 5, 0); break;
+	case 242: draw_triangle(4, 6, 1); draw_triangle(6, 7, 1); break;
+	case 244: draw_triangle(7, 5, 2); draw_triangle(5, 4, 2); break;
+	case 248: draw_triangle(5, 4, 3); draw_triangle(4, 6, 3); break;
+	// screw faces TODO: more
+	case 159: draw_triangle(4, 7, 2); draw_triangle(4, 1, 7); break;
+	case 111: draw_triangle(5, 6, 0); draw_triangle(6, 5, 3); break;
+	case 246: draw_triangle(7, 1, 2); draw_triangle(1, 4, 2); break;
+	case 249: draw_triangle(6, 3, 0); draw_triangle(3, 5, 0); break;
 	}
 }
 
@@ -2251,7 +2221,7 @@ void render_block_selection(const glm::mat4& matrix)
 		*vline++ = Q(sel + i*ix + j*iy, c); *vline++ = Q(sel + iz + i*ix + j*iy, c);
 	}
 
-	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 3 * 24, line_data, GL_STREAM_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * 3 * 24, line_data, GL_STREAM_DRAW);
 	glDrawArrays(GL_LINES, 0, 24);
 
 	glDisableVertexAttribArray(line_position_loc);
@@ -2290,8 +2260,8 @@ void render_gui()
 
 	text->Reset(width, height, matrix);
 	if (show_counters)
-	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.1f model:%1.1f pvs:%2.1f_%luk render %2.1f",
-			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count / 3000,
+	text->Printf("[%.1f %.1f %.1f] tool:%s C:%4d T:%3dk frame:%2.1f model:%1.1f pvs:%2.1f_%luk render %2.1f",
+			 player::position.x, player::position.y, player::position.z, block_tool_name[block_tool], stats::chunk_count, stats::triangle_count / 3000,
 			 stats::frame_time_ms, stats::model_time_ms, stats::pvc_time_ms, pvcs_computed / 1000, stats::block_render_time_ms);
 	stats::triangle_count = 0;
 	stats::chunk_count = 0;
@@ -2304,7 +2274,10 @@ void render_gui()
 			int red = block.color % 4;
 			int green = (block.color / 4) % 4;
 			int blue = block.color / 16;
-			text->Printf("selected: cube [%d %d %d], shape %u, color [%u %u %u]", sel_cube.x, sel_cube.y, sel_cube.z, (uint)block.shape, red, green, blue);
+			const char* name = "###";
+			int c = shape_class[block.shape];
+			if (0 <= c && c <= 5) name = block_tool_name[c];
+			text->Printf("selected: [%d %d %d], %s, shape %u, color [%u %u %u]", sel_cube.x, sel_cube.y, sel_cube.z, name, (uint)block.shape, red, green, blue);
 		}
 		else
 		{
@@ -2346,6 +2319,8 @@ void OnError(int error, const char* message)
 
 int main(int argc, char** argv)
 {
+	init_shape_class();
+
 	if (!glfwInit())
 	{
 		return 0;
