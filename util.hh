@@ -60,6 +60,7 @@ public:
 	void push_back(Type elem) { assert(m_size < Capacity); m_array[m_size++] = elem; }
 	Type* begin() { return m_array.begin(); }
 	Type* end() { return m_array.begin() + m_size; }
+	void clear() { m_size = 0; }
 private:
 	std::array<Type, Capacity> m_array;
 	size_t m_size;
@@ -101,6 +102,7 @@ inline bool is_unit_length(glm::vec3 a) { return std::abs(glm::length2(a) - 1) <
 inline glm::vec3 random_vec3() { return glm::vec3(glm::linearRand(0.0f, 1.0f), glm::linearRand(0.0f, 1.0f), glm::linearRand(0.0f, 1.0f)); }
 template<typename T> T sqr(T a) { return a * a; }
 float sqr(glm::vec3 a) { return glm::dot(a, a); }
+int sqr(glm::ivec3 a) { return glm::dot(a, a); }
 
 #define FOR(I, N) for(int (I)=0; (I)<(N); (I)++)
 #define FOR2(I, A, B) for(auto (I)=A; (I)<=(B); (I)++)
