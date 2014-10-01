@@ -1560,13 +1560,13 @@ void model_move_player(GLFWwindow* window, float dt)
 	}
 	while (dt > 0)
 	{
-		if (dt <= 0.005)
+		if (dt <= 0.008)
 		{
 			Simulate(dt, dir);
 			break;
 		}
-		Simulate(0.005, dir);
-		dt -= 0.005;
+		Simulate(0.008, dir);
+		dt -= 0.008;
 	}
 	if (p != player::position)
 	{
