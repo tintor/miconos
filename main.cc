@@ -194,11 +194,7 @@ unsigned char ColorToCode(glm::vec3 color)
 	return code;
 }
 
-struct Block
-{
-	unsigned char shape;
-	unsigned char color; // 0-63
-};
+typedef unsigned char Block;
 
 // ============================
 
@@ -226,13 +222,10 @@ struct MapChunk
 	MapChunk* next;
 	Block block[ChunkSize][ChunkSize][ChunkSize];
 
-	void Set(int x, int y, int z, unsigned char shape, unsigned char color)
+	void Set(int x, int y, int z, Block b)
 	{
-		if (x >= 0 && x < ChunkSize && y >= 0 && y < ChunkSize && z >= 0 && z < ChunkSize)
-		{
-			block[x][y][z].shape = shape;
-			block[x][y][z].color = color;
-		}
+		assert(x >= 0 && x < ChunkSize && y >= 0 && y < ChunkSize && z >= 0 && z < ChunkSize);
+		block[x][y][z] = b;
 	}
 };
 
@@ -258,9 +251,9 @@ int GetHeight(int x, int y)
 	return q * q * q * q * 200;
 }
 
-int GetColor(int x, int y)
+Block GetColor(int x, int y)
 {
-	return floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.024f, 6, 0.5f, 0.5f, false)) * 8);
+	return std::min<int>(63, floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.024f, 6, 0.5f, 0.5f, false)) * 8)) + 64 * 3;
 }
 
 float Tree(int x, int y)
@@ -341,28 +334,26 @@ int FY(int a)
 	return a;
 }
 
+Block Color(int r, int g, int b, int a)
+{
+	assert(0 <= r && r < 4);
+	assert(0 <= g && g < 4);
+	assert(0 <= b && b < 4);
+	assert(0 <= a && a < 4);
+	return r + g * 4 + b * 16 + a * 64;
+}
+
+Block Empty = Color(3, 3, 3, 0);
+
 const int CraterRadius = 500;
 const glm::ivec3 CraterCenter(CraterRadius * -0.8, CraterRadius * -0.8, 0);
 
 const int MoonRadius = 500;
 const glm::ivec3 MoonCenter(MoonRadius * 0.8, MoonRadius * 0.8, 0);
 
-uint8_t shape_class[256];
-
-int SmoothShape(int x, int y, int z)
-{
-	int shape = 0;
-	FOR(i, 8)
-	{
-		if (GetHeight(x + Cube::corner[i].x, y + Cube::corner[i].y) > z + Cube::corner[i].z) shape |= 1 << i;
-	}
-	if (shape_class[shape] == 255) shape = 0;
-	return shape;
-}
-
 void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 {
-	memset(chunk.block, 0, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
+	memset(chunk.block, Empty, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
 
 	heightmap->Populate(cpos.x, cpos.y);
 	heightmap->Populate(cpos.x-1, cpos.y);
@@ -383,65 +374,15 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 			if (dz > 100 && dz < 200)
 			{
 				// clouds
-				int shape = 0;
-				FOR(i, 8)
-				{
-					double q = SimplexNoise(glm::vec3(pos + Cube::corner[i]) * 0.03f, 4, 0.5f, 0.5f, false);
-					if (q < -0.3) shape |= 1 << i;
-				}
-				if (shape_class[shape] == 255) shape = 0;
-				chunk.block[x][y][z].shape = shape;
-				chunk.block[x][y][z].color = 1 + 4*2 + 16*3;
+				double q = SimplexNoise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
+				if (q < -0.35) chunk.block[x][y][z] = Color(3, 3, 3, 3);
 			}
 			else if (dz <= GetHeight(dx, dy))
 			{			
-				chunk.block[x][y][z].shape = SmoothShape(dx, dy, dz);
-				if (chunk.block[x][y][z].shape != 0)
-				{
-					// ground and caves
-					chunk.block[x][y][z].color = GetColor(dx, dy);
-					int shape = 0;
-					FOR(i, 8)
-					{
-						double q = SimplexNoise(glm::vec3(pos + Cube::corner[i]) * 0.03f, 4, 0.5f, 0.5f, false);
-						if (q >= -0.2) shape |= 1 << i;
-					}
-					if (shape_class[shape] == 255) shape = 0;
-					if (shape != 255 || z < GetHeight(x, y))
-					{
-						chunk.block[x][y][z].shape = shape;
-					}
-				}
-			}
-		}
-
-		// slope on top
-		int z = height + 1 - cpos.z * ChunkSize;
-		if (false && z >= 0 && z < ChunkSize)
-		{
-			if (z > 0 && chunk.block[x][y][z-1].shape == 0) break;
-			
-			int shape = Level1Slope(dx, dy);
-			if ((Level1Slope(dx-1, dy) == 223 || Level1Slope(dx-1, dy) == 207) && (Level1Slope(dx, dy+1) == 223 || Level1Slope(dx, dy+1) == 95))
-			{
-				shape = 77;
-			}
-			else if ((Level1Slope(dx+1, dy) == FX(223) || Level1Slope(dx+1, dy) == FX(207)) && (Level1Slope(dx, dy+1) == FX(223) || Level1Slope(dx, dy+1) == FX(95)))
-			{
-				shape = 142;
-			}
-			else if ((Level1Slope(dx-1, dy) == FY(223) || Level1Slope(dx-1, dy) == FY(207)) && (Level1Slope(dx, dy-1) == FY(223) || Level1Slope(dx, dy-1) == FY(95)))
-			{
-				shape = FY(77);
-			}
-			else if ((Level1Slope(dx+1, dy) == FX(FY(223)) || Level1Slope(dx+1, dy) == FX(FY(207))) && (Level1Slope(dx, dy-1) == FX(FY(223)) || Level1Slope(dx, dy-1) == FX(FY(95))))
-			{
-				shape = FX(FY(77));
-			}
-			if (shape != 0)
-			{
-				chunk.block[x][y][z].color = GetColor(dx, dy);
-				chunk.block[x][y][z].shape = shape;
+				// ground and caves
+				chunk.block[x][y][z] = GetColor(dx, dy);
+				double q = SimplexNoise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
+				if (q < -0.2) chunk.block[x][y][z] = Empty;
 			}
 		}
 	}
@@ -453,62 +394,61 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 
 		if (heightmap->HasTree(dx, dy))
 		{
-			int height = heightmap->Height(dx, dy) - 2;
+			int height = heightmap->Height(dx, dy);
 			FOR(z, ChunkSize)
 			{
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height && dz < height + 6)
 				{
-					// trunk
-					chunk.block[x][y][z] = { 255, 3*16 };
+					chunk.block[x][y][z] = Color(0, 0, 3, 3);
 				}
 			}
 		}
 		if (heightmap->HasTree(dx, dy-1))
 		{
-			int height = heightmap->Height(dx, dy-1) - 2;
+			int height = heightmap->Height(dx, dy-1);
 			FOR(z, ChunkSize)
 			{
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = { 255, 3*4 };
+					chunk.block[x][y][z] = Color(0, 3, 0, 3);
 				}
 			}
 		}
 		if (heightmap->HasTree(dx, dy+1))
 		{
-			int height = heightmap->Height(dx, dy+1) - 2;
+			int height = heightmap->Height(dx, dy+1);
 			FOR(z, ChunkSize)
 			{
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = { 255, 3*4 };
+					chunk.block[x][y][z] = Color(0, 3, 0, 3);
 				}
 			}
 		}
 		if (heightmap->HasTree(dx+1, dy))
 		{
-			int height = heightmap->Height(dx+1, dy) - 2;
+			int height = heightmap->Height(dx+1, dy);
 			FOR(z, ChunkSize)
 			{
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = { 255, 3*4 };
+					chunk.block[x][y][z] = Color(0, 3, 0, 3);
 				}
 			}
 		}
 		if (heightmap->HasTree(dx-1, dy))
 		{
-			int height = heightmap->Height(dx-1, dy) - 2;
+			int height = heightmap->Height(dx-1, dy);
 			FOR(z, ChunkSize)
 			{
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = { 255, 3*4 };
+					chunk.block[x][y][z] = Color(0, 3, 0, 3);
 				}
 			}
 		}
@@ -530,8 +470,7 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize - MoonCenter.z);
 				if (sz > 0) continue;
 
-				chunk.block[x][y][z].shape = 255;
-				chunk.block[x][y][z].color = 21*2;
+				chunk.block[x][y][z] = Color(2, 2, 2, 3);
 			}
 		}
 	}
@@ -550,10 +489,9 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 			FOR(z, ChunkSize)
 			{
 				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize - CraterCenter.z);
-				if (sz > 0) continue;
+				if (sz > 0 || z + ChunkSize * cpos.z >= 100) continue;
 
-				chunk.block[x][y][z].shape = 0;
-				chunk.block[x][y][z].color = 0;
+				chunk.block[x][y][z] = Empty;
 			}
 		}
 	}
@@ -667,41 +605,16 @@ private:
 	//std::mutex m_lock[64];
 	
 	glm::ivec3 m_cpos;
-
-	void Set(glm::ivec3 pos, unsigned char shape, glm::vec3 color)
-	{
-		Block block;
-		block.shape = shape;
-		block.color = ColorToCode(color);
-		Set(pos, block);
-	}
 };
 
 // ============================
 
 int S(int a) { return 1 << a; }
 
-// Block tools:
-// 1) cube 8
-// 2) prism 6
-// 3) tetra 4
-// 4) xtetra 7
-// 5) pyramid 5 (quarter pyramid)
-// 6) screw 6 (cube - two tetrahedrons)
-
-const int prism_shapes[]   = { 63, 252, 207, 243, 175, 245, 95, 250, 221, 187, 238, 119 };
-const int tetra_shapes[]   = { 23, 43, 77, 142, 113, 178, 212, 232 };
-const int xtetra_shapes[]  = { 254, 253, 251, 247, 239, 223, 191, 127 };
-const int pyramid_shapes[] = { 31, 47, 79, 143, 241, 242, 244, 248, /**/115, 179, 55, 59, 220, 236, 205, 206, /**/117, 87, 213, 93, 186, 171, 234, 174 };
-const int screw_shapes[]   = { 159, 111, 249, 246, 123, 183, 222, 237, 125, 215, 190, 235 };
-
-void init_shape_class();
-
 Map::Map() : m_cpos(0x80000000, 0, 0)
 {
 	FOR(i, MapSize) m_map[i] = nullptr;
 	InitColorCodes();
-	init_shape_class();
 
 	// sphere test
 	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1)
@@ -732,31 +645,21 @@ Map::Map() : m_cpos(0x80000000, 0, 0)
 			shape = S(0^f) + S(1^f) + S(2^f) + S(4^f);
 		}
 
-		Set(glm::ivec3(x+1, y-10, z+30), shape, glm::vec3(1, 1, 0));
+		Set(glm::ivec3(x+1, y-10, z+30), Color(3, 3, 0, 3));
 	}
 
 	// all colors
-	FOR(x, 4) FOR(y, 4) FOR(z, 4) Set(glm::ivec3(x*2, y*2, z*2+45), 255, glm::vec3(x/3.0f, y/3.0f, z/3.0f));
-
-	// all blocks test
-	FOR(i, 12) Set(glm::ivec3(0, 0, 10 + i * 2), prism_shapes[i], glm::vec3(1, 0.66, 0.33));
-	FOR(i, 8) Set(glm::ivec3(-2, 0, 10 + i * 2), tetra_shapes[i], glm::vec3(0.66, 0.33, 1));
-	FOR(i, 8) Set(glm::ivec3(-4, 0, 10 + i * 2), xtetra_shapes[i], glm::vec3(1, 0, 1));
-	FOR(i, 24) Set(glm::ivec3(-6, 0, 10 + i * 2), pyramid_shapes[i], glm::vec3(0, 1, 1));
-	FOR(i, 12) Set(glm::ivec3(-8, 0, 10 + i * 2), screw_shapes[i], glm::vec3(1, 1, 0));
+	FOR(x, 4) FOR(y, 4) FOR(z, 4) Set(glm::ivec3(x*2, y*2, z*2+45), Color(x, y, z, 3));
 }
 
 // ============================
 
 Map* map = new Map;
 
-Block& map_get_block(glm::ivec3 pos)
+Block& map_get(glm::ivec3 pos)
 {
 	return map->Get(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask];
 }
-
-unsigned char map_get(glm::ivec3 pos) { return map_get_block(pos).shape; }
-unsigned char map_get_color(glm::ivec3 pos) { return map_get_block(pos).color; }
 
 // ============================
 
@@ -803,8 +706,6 @@ struct BlockRenderer
 
 	void vertex(GLubyte light, GLubyte uv, int c);
 	void draw_quad(int a, int b, int c, int d);
-	void draw_triangle(int a, int b, int c);
-	void draw_face(int block, int a, int b, int c, int d);
 	void render(glm::ivec3 pos, Block bs);
 
 	glm::ivec3 unpack(int i)
@@ -813,6 +714,11 @@ struct BlockRenderer
 		return glm::ivec3(pos[0], pos[1], pos[2]);
 	}
 };
+
+bool is_solid(Block block)
+{
+	return (block / 64) == 3;
+}
 
 struct Chunk
 {
@@ -845,9 +751,9 @@ struct Chunk
 		MapChunk& mc = map->Get(cpos);
 		FOR(a, ChunkSize) FOR(b, ChunkSize)
 		{
-			if (MinX(mc.block[0][a][b].shape) != MinX(255) || MaxX(mc.block[ChunkSize-1][a][b].shape) != MaxX(255)) return false;
-			if (MinY(mc.block[a][0][b].shape) != MinY(255) || MaxX(mc.block[a][ChunkSize-1][b].shape) != MaxY(255)) return false;
-			if (MinZ(mc.block[a][b][0].shape) != MinZ(255) || MaxX(mc.block[a][b][ChunkSize-1].shape) != MaxZ(255)) return false;
+			if (is_solid(mc.block[0][a][b]) || is_solid(mc.block[ChunkSize-1][a][b])) return false;
+			if (is_solid(mc.block[a][0][b]) || is_solid(mc.block[a][ChunkSize-1][b])) return false;
+			if (is_solid(mc.block[a][b][0]) || is_solid(mc.block[a][b][ChunkSize-1])) return false;
 		}
 		return true;
 	}
@@ -880,22 +786,15 @@ struct Chunk
 	
 	void init_planes()
 	{
-		FOR(i, vertices.size() / 3)
+		FOR(i, vertices.size() / 6)
 		{
-			glm::ivec3 a = unpack(i * 3);
-			glm::ivec3 b = unpack(i * 3 + 1);
-			glm::ivec3 c = unpack(i * 3 + 2);
+			glm::ivec3 a = unpack(i * 6);
+			glm::ivec3 b = unpack(i * 6 + 1);
+			glm::ivec3 c = unpack(i * 6 + 2);
 
 			glm::ivec3 normal = glm::cross(c - b, a - b);
-			bool xy = (normal.x == 0 || normal.y == 0 || abs(normal.x) == abs(normal.y));
-			bool xz = (normal.x == 0 || normal.z == 0 || abs(normal.x) == abs(normal.z));
-			bool yz = (normal.y == 0 || normal.z == 0 || abs(normal.y) == abs(normal.z));
-			if (!xy || !xz || !yz || (normal.x == 0 && normal.y == 0 && normal.z == 0))
-			{
-				fprintf(stderr, "normal %s, a %s, b %s, c %s\n", str(normal), str(a), str(b), str(c));
-				assert(false);
-			}
 			normal /= glm::max(abs(normal.x), abs(normal.y), abs(normal.z));
+			assert(abs(normal.x) + abs(normal.y) + abs(normal.z) == 1);
 			int w = glm::dot(normal, a + (cpos * ChunkSize)); // Overflow?
 
 			glm::ivec4 plane(normal, w);
@@ -1120,37 +1019,8 @@ int sel_face;
 bool selection = false;
 
 bool wireframe = false;
-bool occlusion = false;
 int pvs = 0;
-int block_tool = 0;
-const int block_tool_shape[] = { 255, 63, 23, 254, 31, 159};
-const char* block_tool_name[] = { "cube", "prism", "tetra", "xtetra", "pyramid", "kapa"};
 
-void init_shape_class()
-{
-	memset(shape_class, 255, sizeof(shape_class));
-	shape_class[255] = 0;
-	FOR(i, 12) shape_class[prism_shapes[i]]  = 1;
-	FOR(i, 8) shape_class[tetra_shapes[i]]   = 2;
-	FOR(i, 8) shape_class[xtetra_shapes[i]]  = 3;
-	FOR(i, 24) shape_class[pyramid_shapes[i]] = 4;
-	FOR(i, 12) shape_class[screw_shapes[i]]   = 5;
-}
-
-int NextShape(int shape, int dir)
-{
-	if (shape == 255) return 255;
-	FOR(i, 12) if (shape == prism_shapes[i]) return prism_shapes[(i + dir + 12) % 12];
-	FOR(i, 8) if (shape == tetra_shapes[i]) return tetra_shapes[(i + dir + 8) % 8];
-	FOR(i, 8) if (shape == xtetra_shapes[i]) return xtetra_shapes[(i + dir + 8) % 8];
-	FOR(i, 24) if (shape == pyramid_shapes[i]) return pyramid_shapes[(i + dir + 24) % 24];
-	FOR(i, 12) if (shape == screw_shapes[i]) return screw_shapes[(i + dir + 12) % 12];
-	assert(false);
-	return -1;
-}
-
-std::vector<GLuint> free_queries;
-int current_query_version = 0;
 BlockRenderer g_renderer;
 
 void EditBlock(glm::ivec3 pos, Block block)
@@ -1158,7 +1028,7 @@ void EditBlock(glm::ivec3 pos, Block block)
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
 	glm::ivec3 p(pos.x & ChunkSizeMask, pos.y & ChunkSizeMask, pos.z & ChunkSizeMask);
 
-	Block prev_block = map_get_block(sel_cube);
+	Block prev_block = map_get(sel_cube);
 	map->Set(pos, block);
 	g_chunks(cpos).reset(g_renderer);
 
@@ -1169,43 +1039,35 @@ void EditBlock(glm::ivec3 pos, Block block)
 	if (p.y == ChunkSizeMask) g_chunks(cpos + iy).reset(g_renderer);
 	if (p.z == ChunkSizeMask) g_chunks(cpos + iz).reset(g_renderer);
 
-	if (block.shape != prev_block.shape && block.shape != 255)
-	{
-		current_query_version += 1;
-	}
 	// TODO: recompute pvc of surrounding chunks
 }
 
 void OnEditKey(int key)
 {
-	Block block = map_get_block(sel_cube);
-	int red = block.color % 4;
-	int green = (block.color / 4) % 4;
-	int blue = block.color / 16;
+	Block block = map_get(sel_cube);
+	int r = block % 4;
+	int g = (block / 4) % 4;
+	int b = (block / 16) % 4;
+	int a = block % 64;
 
 	if (key == GLFW_KEY_Z)
 	{
-		block.color = ((red + 1) % 4) + green * 4 + blue * 16;
+		block = Color((r + 1) % 4, g, b, a);
 		EditBlock(sel_cube, block);
 	}
 	if (key == GLFW_KEY_X)
 	{
-		block.color = red + ((green + 1) % 4) * 4 + blue * 16;
+		block = Color(r, (g + 1) % 4, b, a);
 		EditBlock(sel_cube, block);
 	}
 	if (key == GLFW_KEY_C)
 	{
-		block.color = red + green * 4 + ((blue + 1) % 4) * 16;
+		block = Color(r, g, (b + 1) % 4, a);
 		EditBlock(sel_cube, block);
 	}
 	if (key == GLFW_KEY_V)
 	{
-		block.shape = NextShape(block.shape, 1);
-		EditBlock(sel_cube, block);
-	}
-	if (key == GLFW_KEY_B)
-	{
-		block.shape = NextShape(block.shape, -1);
+		block = Color(r, g, b, (a + 1) % 4);
 		EditBlock(sel_cube, block);
 	}
 }
@@ -1235,41 +1097,13 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 	}
 	else if (action == GLFW_PRESS)
 	{
-		if (key == GLFW_KEY_1)
-		{
-			block_tool = 0;
-		}
-		else if (key == GLFW_KEY_2)
-		{
-			block_tool = 1;
-		}
-		else if (key == GLFW_KEY_3)
-		{
-			block_tool = 2;
-		}
-		else if (key == GLFW_KEY_4)
-		{
-			block_tool = 3;
-		}
-		else if (key == GLFW_KEY_5)
-		{
-			block_tool = 4;
-		}
-		else if (key == GLFW_KEY_6)
-		{
-			block_tool = 5;
-		}
-		else if (key == GLFW_KEY_F2)
+		if (key == GLFW_KEY_F2)
 		{
 			console.Show();
 		}
 		else if (key == GLFW_KEY_F3)
 		{
 			wireframe = !wireframe;
-		}
-		else if (key == GLFW_KEY_F4)
-		{
-			occlusion = !occlusion;
 		}
 		else if (key == GLFW_KEY_F5)
 		{
@@ -1302,19 +1136,13 @@ void OnMouseButton(GLFWwindow* window, int button, int action, int mods)
 {
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection)
 	{
-		Block block;
-		block.shape = 0;
-		block.color = 0;
-		EditBlock(sel_cube, block);
+		EditBlock(sel_cube, Empty);
 	}
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
 	{
 		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
-		Block block;
-		block.shape = block_tool_shape[block_tool];
-		block.color = map_get_block(sel_cube).color;
-		EditBlock(sel_cube + dir[sel_face], block);
+		EditBlock(sel_cube + dir[sel_face], map_get(sel_cube));
 	}
 }
 
@@ -1328,9 +1156,9 @@ void model_init(GLFWwindow* window)
 	glfwSetCursorPos(window, 0, 0);
 }
 
-uint NeighborBit(int dx, int dy, int dz)
+int NeighborBit(int dx, int dy, int dz)
 {
-	return 1u << ((dx + 1) + (dy + 1) * 3 + (dz + 1) * 9);
+	return 1 << ((dx + 1) + (dy + 1) * 3 + (dz + 1) * 9);
 }
 
 bool IsVertexFree(uint neighbors, int dx, int dy, int dz)
@@ -1363,7 +1191,7 @@ int Resolve(glm::vec3& center, float k, float x, float y, float z)
 //
 // Neighbors is 3x3x3 matrix of 27 bits representing nearby cubes.
 // Used to turn off vertices and edges that are not exposed.
-int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube, uint neighbors)
+int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbors)
 {
 	float e = 0.5;
 	float x = center.x - cube.x - e;
@@ -1461,12 +1289,12 @@ int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube, uint neighbor
 	return 1;
 }
 
-uint CubeNeighbors(glm::ivec3 cube)
+int CubeNeighbors(glm::ivec3 cube)
 {
-	uint neighbors = 0;
+	int neighbors = 0;
 	FOR2(dx, -1, 1) FOR2(dy, -1, 1) FOR2(dz, -1, 1)
 	{
-		if (map_get(glm::ivec3(cube.x + dx, cube.y + dy, cube.z + dz)) != 0)
+		if (map_get(glm::ivec3(cube.x + dx, cube.y + dy, cube.z + dz)) != Empty)
 		{
 			neighbors |= NeighborBit(dx, dy, dz);
 		}
@@ -1485,7 +1313,7 @@ void ResolveCollisionsWithBlocks()
 		FOR2(x, p.x - 3, p.x + 3) FOR2(y, p.y - 3, p.y + 3) FOR2(z, p.z - 3, p.z + 3)
 		{
 			glm::ivec3 cube(x, y, z);
-			if (map_get(cube) != 0 && 1 == SphereVsCube(player::position, 1.6f, cube, CubeNeighbors(cube)))
+			if (map_get(cube) != Empty && 1 == SphereVsCube(player::position, 1.6f, cube, CubeNeighbors(cube)))
 			{
 				sum += player::position;
 				c += 1;
@@ -1568,10 +1396,6 @@ void model_move_player(GLFWwindow* window, float dt)
 		Simulate(0.008, dir);
 		dt -= 0.008;
 	}
-	if (p != player::position)
-	{
-		current_query_version += 1;
-	}
 }
 
 float intersect_line_plane(glm::vec3 orig, glm::vec3 dir, glm::vec4 plane)
@@ -1646,7 +1470,7 @@ bool SelectCube(glm::ivec3& sel_cube, int& sel_face)
 	for (glm::i8vec3 d : select_sphere)
 	{
 		glm::ivec3 cube = p + glm::ivec3(d);
-		if (map_get(cube) != 0 && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
+		if (map_get(cube) != Empty && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
 		{
 			sel_cube = cube;
 			return true;
@@ -1684,8 +1508,6 @@ void model_frame(GLFWwindow* window)
 		perspective_rotation = glm::rotate(perspective, player::pitch, glm::vec3(1, 0, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, player::yaw, glm::vec3(0, 1, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
-
-		current_query_version += 1;
 	}
 	
 	if (!console.IsVisible())
@@ -1741,9 +1563,6 @@ Text* text = nullptr;
 int line_program;
 GLuint line_matrix_loc;
 GLuint line_position_loc;
-
-const int OcclusionQueryCount = 32 * 32 * 32;
-GLuint occlusion_query[OcclusionQueryCount];
 
 int block_program;
 GLuint block_matrix_loc;
@@ -1807,23 +1626,6 @@ void load_noise_texture(int size)
 	delete[] image;
 }
 
-GLuint GetFreeQuery()
-{
-	if (free_queries.size() == 0)
-	{
-		tracelog << "Panic: Out of free queries!" << std::endl;
-		exit(1);
-	}
-	GLuint query = free_queries[free_queries.size() - 1];
-	if (query == (GLuint)-1)
-	{
-		tracelog << "Panic: query == -1" << std::endl;
-		exit(1);
-	}
-	free_queries.pop_back();
-	return query;
-}
-
 void render_init()
 {
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
@@ -1845,9 +1647,6 @@ void render_init()
 	line_program = load_program("line");
 	line_matrix_loc = glGetUniformLocation(line_program, "matrix");
 	line_position_loc = glGetAttribLocation(line_program, "position");
-
-	glGenQueries(OcclusionQueryCount, occlusion_query);
-	FOR(i, OcclusionQueryCount) free_queries.push_back(occlusion_query[i]);
 
 	block_program = load_program("block");
 	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
@@ -1892,138 +1691,23 @@ void BlockRenderer::draw_quad(int a, int b, int c, int d)
 	vertex(light, 1, b);
 	vertex(light, 3, c);
 	vertex(light, 0, a);
-	vertex(light, 3, c);
-	vertex(light, 2, d);
+      vertex(light, 3, c);
+      vertex(light, 2, d);
 }
-
-void BlockRenderer::draw_triangle(int a, int b, int c)
-{
-	GLubyte light = light_cache[a][b][c];
-	vertex(light, 0, a);
-	vertex(light, 1, b);
-	vertex(light, 3, c);
-}
-
-int B(int a, int i) { return (a & (1 << i)) >> i; }
-
-void BlockRenderer::draw_face(int block, int a, int b, int c, int d)
-{
-	int n = B(block, a) + B(block, b) + B(block, c) + B(block, d);
-	if (n == 4)
-	{
-		draw_quad(a, b, c, d);
-	}
-	else if (n == 3)
-	{
-		GLubyte light = light_cache[a][b][c];
-		if (block & (1 << a)) vertex(light, 0, a);
-		if (block & (1 << b)) vertex(light, 1, b);
-		if (block & (1 << c)) vertex(light, 3, c);
-		if (block & (1 << d)) vertex(light, 2, d);
-	}
-}
-
-bool Visible(int a, int b) { return (a | b) != a; }
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
-void BlockRenderer::render(glm::ivec3 pos, Block bs)
+void BlockRenderer::render(glm::ivec3 pos, Block block)
 {
-	if (bs.shape == 0) return;
+	if (block == Empty) return;
 	m_pos = pos;
-	m_color = bs.color;
-	int block = bs.shape;
+	m_color = block % 64;
 
-	if (block == 255)
-	{
-		if (Visible(MaxX(map_get(pos - ix)), MinX(block))) draw_quad(0, 4, 6, 2);
-		if (Visible(MinX(map_get(pos + ix)), MaxX(block))) draw_quad(1, 3, 7, 5);
-		if (Visible(MaxY(map_get(pos - iy)), MinY(block))) draw_quad(0, 1, 5, 4);
-		if (Visible(MinY(map_get(pos + iy)), MaxY(block))) draw_quad(2, 6, 7, 3);
-		if (Visible(MaxZ(map_get(pos - iz)), MinZ(block))) draw_quad(0, 2, 3, 1);
-		if (Visible(MinZ(map_get(pos + iz)), MaxZ(block))) draw_quad(4, 5, 7, 6);
-		return;		
-	}
-
-	// common faces
-	if (Visible(MaxX(map_get(pos - ix)), MinX(block))) draw_face(block, 0, 4, 6, 2);
-	if (Visible(MinX(map_get(pos + ix)), MaxX(block))) draw_face(block, 1, 3, 7, 5);
-	if (Visible(MaxY(map_get(pos - iy)), MinY(block))) draw_face(block, 0, 1, 5, 4);
-	if (Visible(MinY(map_get(pos + iy)), MaxY(block))) draw_face(block, 2, 6, 7, 3);
-	if (Visible(MaxZ(map_get(pos - iz)), MinZ(block))) draw_face(block, 0, 2, 3, 1);
-	if (Visible(MinZ(map_get(pos + iz)), MaxZ(block))) draw_face(block, 4, 5, 7, 6);
-
-	switch (block)
-	{
-	// prism faces
-	case  63: draw_quad(2, 4, 5, 3); break;
-	case 252: draw_quad(4, 2, 3, 5); break;
-	case 207: draw_quad(1, 7, 6, 0); break;
-	case 243: draw_quad(7, 1, 0, 6); break;
-	case 175: draw_quad(0, 5, 7, 2); break;
-	case 245: draw_quad(5, 0, 2, 7); break;
-	case  95: draw_quad(3, 6, 4, 1); break;
-	case 250: draw_quad(6, 3, 1, 4); break;
-	case 221: draw_quad(0, 3, 7, 4); break;
-	case 187: draw_quad(3, 0, 4, 7); break;
-	case 238: draw_quad(5, 6, 2, 1); break;
-	case 119: draw_quad(6, 5, 1, 2); break;
-	// tetra faces
-	case  23: draw_triangle(1, 2, 4); break;
-	case  43: draw_triangle(0, 5, 3); break;
-	case  77: draw_triangle(3, 6, 0); break;
-	case 142: draw_triangle(2, 1, 7); break;
-	case 113: draw_triangle(5, 0, 6); break;
-	case 178: draw_triangle(4, 7, 1); break;
-	case 212: draw_triangle(7, 4, 2); break;
-	case 232: draw_triangle(6, 3, 5); break;
-	// xtetra faces
-	case 254: draw_triangle(1, 4, 2); break;
-	case 253: draw_triangle(0, 3, 5); break;
-	case 251: draw_triangle(3, 0, 6); break;
-	case 247: draw_triangle(2, 7, 1); break;
-	case 239: draw_triangle(5, 6, 0); break;
-	case 223: draw_triangle(4, 1, 7); break;
-	case 191: draw_triangle(7, 2, 4); break;
-	case 127: draw_triangle(6, 5, 3); break;
-	// pyramid faces
-	case  31: draw_triangle(4, 1, 3); draw_triangle(4, 3, 2); break;
-	case  47: draw_triangle(5, 3, 2); draw_triangle(5, 2, 0); break;
-	case  79: draw_triangle(6, 0, 1); draw_triangle(6, 1, 3); break;
-	case 143: draw_triangle(7, 2, 0); draw_triangle(7, 0, 1); break;
-	case 241: draw_triangle(6, 7, 0); draw_triangle(7, 5, 0); break;
-	case 242: draw_triangle(4, 6, 1); draw_triangle(6, 7, 1); break;
-	case 244: draw_triangle(7, 5, 2); draw_triangle(5, 4, 2); break;
-	case 248: draw_triangle(5, 4, 3); draw_triangle(4, 6, 3); break;
-	case 115: draw_triangle(6, 5, 1); draw_triangle(6, 1, 0); break;
-	case 179: draw_triangle(7, 1, 0); draw_triangle(7, 0, 4); break;
-	case  55: draw_triangle(2, 4, 5); draw_triangle(2, 5, 1); break;
-	case  59: draw_triangle(3, 0, 4); draw_triangle(3, 4, 5); break;
-	case 220: draw_triangle(2, 3, 4); draw_triangle(3, 7, 4); break;
-	case 236: draw_triangle(6, 2, 5); draw_triangle(2, 3, 5); break;
-	case 205: draw_triangle(3, 7, 0); draw_triangle(7, 6, 0); break;
-	case 206: draw_triangle(7, 6, 1); draw_triangle(6, 2, 1); break;
-	case 117: draw_triangle(5, 0, 2); draw_triangle(5, 2, 6); break;
-	case  87: draw_triangle(1, 2, 6); draw_triangle(1, 6, 4); break;
-	case 213: draw_triangle(7, 4, 0); draw_triangle(7, 0, 2); break;
-	case  93: draw_triangle(3, 6, 4); draw_triangle(3, 4, 0); break;
-	case 186: draw_triangle(7, 3, 4); draw_triangle(3, 1, 4); break;
-	case 171: draw_triangle(5, 7, 0); draw_triangle(7, 3, 0); break;
-	case 234: draw_triangle(3, 1, 6); draw_triangle(1, 5, 6); break;
-	case 174: draw_triangle(1, 5, 2); draw_triangle(5, 7, 2); break;
-	// kapa faces
-	case 159: draw_triangle(4, 7, 2); draw_triangle(4, 1, 7); break;
-	case 111: draw_triangle(5, 6, 0); draw_triangle(6, 5, 3); break;
-	case 246: draw_triangle(7, 1, 2); draw_triangle(1, 4, 2); break;
-	case 249: draw_triangle(6, 3, 0); draw_triangle(3, 5, 0); break;
-	case 123: draw_triangle(6, 3, 0); draw_triangle(6, 5, 3); break;
-	case 183: draw_triangle(7, 2, 4); draw_triangle(2, 7, 1); break;
-	case 237: draw_triangle(3, 5, 0); draw_triangle(5, 6, 0); break;
-	case 222: draw_triangle(2, 1, 4); draw_triangle(1, 7, 4); break;
-	case 125: draw_triangle(5, 3, 6); draw_triangle(5, 0, 3); break;
-	case 215: draw_triangle(1, 7, 4); draw_triangle(7, 1, 2); break;
-	case 235: draw_triangle(3, 0, 6); draw_triangle(0, 5, 6); break;
-	case 190: draw_triangle(7, 2, 4); draw_triangle(2, 1, 4); break;
-	}
+	if (!is_solid(map_get(pos - ix))) draw_quad(0, 4, 6, 2);
+	if (!is_solid(map_get(pos + ix))) draw_quad(1, 3, 7, 5);
+	if (!is_solid(map_get(pos - iy))) draw_quad(0, 1, 5, 4);
+	if (!is_solid(map_get(pos + iy))) draw_quad(2, 6, 7, 3);
+	if (!is_solid(map_get(pos - iz))) draw_quad(0, 2, 3, 1);
+	if (!is_solid(map_get(pos + iz))) draw_quad(4, 5, 7, 6);
 }
 
 struct Frustum
@@ -2080,13 +1764,9 @@ bool chunk_renderable(Chunk& chunk, const Frustum& frustum)
 
 void render_chunk(Chunk& chunk)
 {
-	stats::triangle_count += chunk.vertices.size();
-	stats::chunk_count += 1;
-
 	glm::ivec3 pos = chunk.cpos * ChunkSize;
 	glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * chunk.vertices.size(), &chunk.vertices[0], GL_STREAM_DRAW);
-
 	glDrawArrays(GL_TRIANGLES, 0, chunk.vertices.size());
 }
 
@@ -2172,15 +1852,13 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 
 	if (g_chunks.loaded(cplayer))
 	{
-	Chunk& chunk0 = g_chunks(cplayer);
-	render_chunk(chunk0);
-
-	std::vector<glm::i8vec3>& filter = pvs ? chunk0.visible.chunks : render_sphere;
+		Chunk& chunk0 = g_chunks(cplayer);
+		render_chunk(chunk0);
 	
-	bool back_to_front = true;
-
-	if (occlusion == 0)
-	{
+		std::vector<glm::i8vec3>& filter = pvs ? chunk0.visible.chunks : render_sphere;
+		
+		bool back_to_front = true;
+	
 		if (back_to_front)
 		{
 			render_list.clear();
@@ -2192,6 +1870,8 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 					if (chunk_renderable(chunk, frustum))
 					{
 						render_list.push_back(&chunk);
+						stats::triangle_count += chunk.vertices.size();
+						stats::chunk_count += 1;
 						if (stats::triangle_count > MaxTriangles * 3)
 							break;
 					}
@@ -2209,44 +1889,14 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 					if (chunk_renderable(chunk, frustum))
 					{
 						render_chunk(chunk);
+						stats::triangle_count += chunk.vertices.size();
+						stats::chunk_count += 1;
 						if (stats::triangle_count > MaxTriangles * 3)
 							break;
 					}
 				}
 			}
 		}
-	}
-	else
-	{
-		for (glm::i8vec3 d : filter)
-		{
-			Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
-			if (!chunk_renderable(chunk, frustum))
-				continue;
-
-			if (chunk.query_version != current_query_version || chunk.query == (GLuint)(-1))
-			{
-				if (chunk.query == (GLuint)(-1)) chunk.query = GetFreeQuery();
-				chunk.query_version = current_query_version;
-				glBeginQuery(GL_SAMPLES_PASSED, chunk.query);
-				render_chunk(chunk);
-				glEndQuery(GL_SAMPLES_PASSED);
-				if (stats::triangle_count > MaxTriangles * 3)
-					break;
-			}
-			else
-			{
-				GLuint samples = GetQueryResult(chunk.query);
-
-				if (samples > 0)
-				{
-					render_chunk(chunk);
-					if (stats::triangle_count > MaxTriangles * 3)
-						break;
-				}
-			}
-		}
-	}
 	}
 
 	glUseProgram(0);
@@ -2320,8 +1970,8 @@ void render_gui()
 
 	text->Reset(width, height, matrix);
 	if (show_counters)
-	text->Printf("[%.1f %.1f %.1f] tool:%s C:%4d T:%3dk frame:%2.1f model:%1.1f pvs:%2.1f_%luk render %2.1f",
-			 player::position.x, player::position.y, player::position.z, block_tool_name[block_tool], stats::chunk_count, stats::triangle_count / 3000,
+	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.1f model:%1.1f pvs:%2.1f_%luk render %2.1f",
+			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count / 3000,
 			 stats::frame_time_ms, stats::model_time_ms, stats::pvc_time_ms, pvcs_computed / 1000, stats::block_render_time_ms);
 	stats::triangle_count = 0;
 	stats::chunk_count = 0;
@@ -2330,14 +1980,12 @@ void render_gui()
 	{
 		if (selection)
 		{
-			Block block = map_get_block(sel_cube);
-			int red = block.color % 4;
-			int green = (block.color / 4) % 4;
-			int blue = block.color / 16;
-			const char* name = "###";
-			int c = shape_class[block.shape];
-			if (0 <= c && c <= 5) name = block_tool_name[c];
-			text->Printf("selected: [%d %d %d], %s, shape %u, color [%u %u %u]", sel_cube.x, sel_cube.y, sel_cube.z, name, (uint)block.shape, red, green, blue);
+			Block block = map_get(sel_cube);
+			int r = block % 4;
+			int g = (block / 4) % 4;
+			int b = (block / 16) % 4;
+			int a = block / 64;
+			text->Printf("selected: [%d %d %d], color [%u %u %u %u]", sel_cube.x, sel_cube.y, sel_cube.z, r, g, b, a);
 		}
 		else
 		{
@@ -2379,8 +2027,6 @@ void OnError(int error, const char* message)
 
 int main(int argc, char** argv)
 {
-	init_shape_class();
-
 	if (!glfwInit())
 	{
 		return 0;
