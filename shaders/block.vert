@@ -23,7 +23,7 @@ const float pi = 3.14159265f;
 void main() {
     vec3 p = pos + position;
 
-    /*material = color;
+    //material = color;
     if (color == 255u)
     {
         fragment_color = vec3(0, 3, 0) * light / (3.0f * 255.0f);
@@ -40,9 +40,8 @@ void main() {
     }
     else
     {
-    }*/
-        
-    fragment_color = vec3(color & 0x3u, (color >> 2) & 0x3u, (color >> 4) & 0x3u) * light / (3.0f * 255.0f);
+        fragment_color = vec3(color & 0x3u, (color >> 2) & 0x3u, (color >> 4) & 0x3u) * light / (3.0f * 255.0f);
+    }
 
     gl_Position = matrix * vec4(p, 1);
 
