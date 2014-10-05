@@ -132,21 +132,22 @@ float SimplexNoise(glm::vec3 p, int octaves, float freqf, float ampf, bool turbu
 	return total / max;
 }
 
-bool Closer(glm::i8vec3 a, glm::i8vec3 b) { return glm::length2(glm::ivec3(a)) < glm::length2(glm::ivec3(b)); }
+struct Closer
+{
+	glm::ivec3 origin;
+	bool operator()(glm::ivec3 a, glm::ivec3 b) { return glm::distance2(a, origin) < glm::distance2(b, origin); }
+};
 
-struct Sphere : public std::vector<glm::i8vec3>
+struct Sphere : public std::vector<glm::ivec3>
 {
 	Sphere(int size)
 	{
 		FOR2(x, -size, size) FOR2(y, -size, size) FOR2(z, -size, size)
 		{
 			glm::ivec3 d(x, y, z);
-			if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size)
-			{
-				push_back(glm::i8vec3(d));
-			}
+			if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size) push_back(d);
 		}
-		std::sort(begin(), end(), Closer);
+		std::sort(begin(), end(), Closer{glm::ivec3(0,0,0)});
 	}
 };
 
@@ -632,20 +633,51 @@ struct Vertex
 	GLubyte pos[3];
 };
 
+struct Frustum
+{
+	std::array<glm::vec4, 4> frustum;
+	void init(const glm::mat4& matrix);
+
+	bool contains_point(glm::vec3 p) const;
+
+	bool is_sphere_outside(glm::vec3 p, float radius) const
+	{
+		FOR(i, 4) if (glm::dot(p, frustum[i].xyz()) + frustum[i].w < -radius) return true;
+		return false;
+	}
+};
+
+const float BlockRadius = sqrtf(3) / 2;
+
 struct VisibleChunks
 {
-	BitCube<-RenderDistance, RenderDistance> set;
-	std::vector<glm::i8vec3> array;
+	BitCube<MapSize> set;
+	std::vector<glm::ivec3> array;	
 
-	void clear()
-	{
-		set.clear();
-		release(array);
-	}
+	VisibleChunks() { set.clear(); }
 
 	void add(glm::ivec3 v)
 	{
-		if (set.xset(v)) array.push_back(glm::i8vec3(v));
+		if (set.xset(v & MapSizeMask)) array.push_back(v);
+	}
+
+	void cleanup(glm::ivec3 center, Frustum& frustum)
+	{
+		int w = 0;
+		for (glm::ivec3 c : array)
+		{
+			glm::vec3 sphere(c * ChunkSize + ChunkSize / 2);
+			if (frustum.is_sphere_outside(sphere, ChunkSize * BlockRadius) || glm::distance2(c, center) > sqr(RenderDistance))
+			{
+				assert(set[c & MapSizeMask]);
+				set.clear(c & MapSizeMask);
+			}
+			else
+			{
+				array[w++] = c;
+			}
+		}
+		array.resize(w);
 	}
 };
 
@@ -869,25 +901,21 @@ struct Directions : public std::vector<glm::ivec3>
 
 int ray_count = 0;
 
-struct Frustum
-{
-	std::array<glm::vec4, 4> frustum;
-	void init(const glm::mat4& matrix);
-	bool contains_point(glm::vec3 p) const;
-};
+VisibleChunks visible_chunks;
 
 // which chunks must be rendered from the center chunk?
-void update_render_list(glm::ivec3 cpos, VisibleChunks& visible, Frustum& frustum)
+void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 {
+	if (ray_count == directions.size()) return;
 	MapChunk& mc = map->get(cpos);
 	const int D = Directions::Bits;
 	int MaxDist = RenderDistance * ChunkSize;
-	int size = visible.array.size();
-	
+	int size = visible_chunks.array.size();
+
 	float k = 1 << D;
 	glm::ivec3 origin = glm::ivec3(glm::floor(player::position * k));
 
-	int budget = 4000000;
+	int budget = 3000000;
 	while (budget > 0 && ray_count < directions.size())
 	{
 		glm::ivec3 dir = directions[ray_count++];
@@ -909,13 +937,13 @@ void update_render_list(glm::ivec3 cpos, VisibleChunks& visible, Frustum& frustu
 				if (!pmc) break;
 			}
 			Block block = (*pmc)[voxel & ChunkSizeMask];
-			if (block != Empty) visible.add(cvoxel - cpos);
+			if (block != Empty) visible_chunks.add(cvoxel);
 			if (!can_see_through(block)) break;
 		}
 		budget -= dist;
 	}
 
-	if (visible.array.size() != size) std::sort(visible.array.begin(), visible.array.end(), Closer);
+	if (visible_chunks.array.size() != size) std::sort(visible_chunks.array.begin(), visible_chunks.array.end(), Closer{cpos});
 }
 
 namespace stats
@@ -1267,8 +1295,6 @@ void Simulate(float dt, glm::vec3 dir)
 	ResolveCollisionsWithBlocks();
 }
 
-VisibleChunks visible_chunks;
-
 void model_move_player(GLFWwindow* window, float dt)
 {
 	glm::vec3 dir(0, 0, 0);
@@ -1315,7 +1341,6 @@ void model_move_player(GLFWwindow* window, float dt)
 	if (p != player::position)
 	{
 		ray_count = 0;
-		visible_chunks.clear();
 	}		
 }
 
@@ -1325,8 +1350,6 @@ float intersect_line_plane(glm::vec3 orig, glm::vec3 dir, glm::vec4 plane)
 	assert(is_unit_length(plane.xyz()));
 	return (-plane.w - glm::dot(orig, plane.xyz())) / glm::dot(dir, plane.xyz());
 }
-
-const float BlockRadius = sqrtf(3) / 2;
 
 // Find cube face that contains closest point of intersection with the ray.
 // No results if ray's origin is inside the cube
@@ -1388,9 +1411,9 @@ bool SelectCube(glm::ivec3& sel_cube, int& sel_face)
 	glm::vec3 dir(ma[4], ma[5], ma[6]);
 	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
 
-	for (glm::i8vec3 d : select_sphere)
+	for (glm::ivec3 d : select_sphere)
 	{
-		glm::ivec3 cube = p + glm::ivec3(d);
+		glm::ivec3 cube = p + d;
 		if (map_get(cube) != Empty && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
 		{
 			sel_cube = cube;
@@ -1431,7 +1454,6 @@ void model_frame(GLFWwindow* window)
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
 
 		ray_count = 0;
-		visible_chunks.clear();
 	}
 	
 	if (!console.IsVisible())
@@ -1715,13 +1737,13 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 		auto it = visible_chunks.array.begin();
 		for (; it != visible_chunks.array.end() && stats::triangle_count < MaxTriangles * 3; it++)
 		{
-			glm::ivec3 cpos = cplayer + glm::ivec3(*it);
+			glm::ivec3 cpos = glm::ivec3(*it);
 			if (g_chunks.loaded(cpos)) stats::triangle_count += g_chunks(cpos).vertices.size();
 			stats::chunk_count += 1;
 		}
 		for (it--; it != visible_chunks.array.begin() - 1; it--)
 		{
-			glm::ivec3 cpos = cplayer + glm::ivec3(*it);
+			glm::ivec3 cpos = glm::ivec3(*it);
 			if (g_chunks.loaded(cpos)) render_chunk(g_chunks(cpos));
 		}
 	}
@@ -1772,8 +1794,9 @@ void render_world()
 
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
 	
-	float time_start = glfwGetTime();	
-	update_render_list(cplayer, visible_chunks, frustum);
+	float time_start = glfwGetTime();
+	if (ray_count == 0) visible_chunks.cleanup(cplayer, frustum);
+	update_render_list(cplayer, frustum);
 	float time = std::max<float>(0, (glfwGetTime() - time_start) * 1000);
 	stats::raytrace_time_ms = stats::raytrace_time_ms * 0.75f + time * 0.25f;
 

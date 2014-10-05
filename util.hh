@@ -70,29 +70,31 @@ private:
 
 // ==========
 
-template<int Min, int Max>
+template<int N>
 struct BitCube
 {
-	void clear() { memset(&m_words[0], 0, Z * sizeof(uint32_t)); }
-	void operator=(const BitCube<Min, Max>& q) { memcpy(&m_words[0], q.m_words[0], Z * sizeof(uint32_t)); }
-	void set(glm::ivec3 a) { int i = index(a); m_words[i / 32] |= mask(i); }
-	bool operator[](glm::ivec3 a) { int i = index(a); return (m_words[i / 32] & mask(i)) != 0; }	
+	void clear() { memset(&m_words[0], 0, Z * sizeof(Word)); }
+	void operator=(const BitCube<N>& q) { memcpy(&m_words[0], q.m_words[0], Z * sizeof(Word)); }
+	void set(glm::ivec3 a) { int i = index(a); m_words[i / W] |= mask(i); }
+	void clear(glm::ivec3 a) { int i = index(a); m_words[i / W] &= ~mask(i); }
+	bool operator[](glm::ivec3 a) { int i = index(a); return (m_words[i / W] & mask(i)) != 0; }	
 
 	bool xset(glm::ivec3 a)
 	{
 		int i = index(a);
-		uint32_t w = m_words[i / 32] | mask(i);
-		if (m_words[i / 32] == w) return false;
-		m_words[i / 32] = w;
+		Word w = m_words[i / W] | mask(i);
+		if (m_words[i / W] == w) return false;
+		m_words[i / W] = w;
 		return true; 
 	}
 private:
-	static unsigned int mask(int index) { return 1u << (index % 32); }
-	int index(glm::ivec3 a) { a -= Min; return (a.x*N + a.y)*N + a.z; }
+	static uint mask(int index) { return 1u << (index % W); }
+	int index(glm::ivec3 a) { return (a.x*N + a.y)*N + a.z; }
 private:
-	static const int N = Max - Min + 1;
-	static const int Z = (N * N * N + 31) / 32;
-	std::array<uint32_t, Z> m_words;
+	typedef uint64_t Word;
+	static const int W = sizeof(Word) * 8;
+	static const int Z = (N * N * N + W - 1) / W;
+	std::array<Word, Z> m_words;
 };
 
 // ==========
