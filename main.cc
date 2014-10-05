@@ -899,14 +899,15 @@ struct Directions : public std::vector<glm::ivec3>
 	}
 } directions;
 
-int ray_count = 0;
+int ray_it = 0;
+int rays_remaining = 0;
 
 VisibleChunks visible_chunks;
 
 // which chunks must be rendered from the center chunk?
 void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 {
-	if (ray_count == directions.size()) return;
+	if (rays_remaining == 0) return;
 	MapChunk& mc = map->get(cpos);
 	const int D = Directions::Bits;
 	int MaxDist = RenderDistance * ChunkSize;
@@ -916,9 +917,11 @@ void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 	glm::ivec3 origin = glm::ivec3(glm::floor(player::position * k));
 
 	int budget = 3000000;
-	while (budget > 0 && ray_count < directions.size())
+	while (budget > 0 && rays_remaining > 0)
 	{
-		glm::ivec3 dir = directions[ray_count++];
+		glm::ivec3 dir = directions[ray_it++];
+		if (ray_it == directions.size()) ray_it = 0;
+		rays_remaining -= 1;
 		if (!frustum.contains_point(player::position + glm::vec3(dir))) continue;
 
 		glm::ivec3 photon = origin;
@@ -1338,10 +1341,7 @@ void model_move_player(GLFWwindow* window, float dt)
 		Simulate(0.008, dir);
 		dt -= 0.008;
 	}
-	if (p != player::position)
-	{
-		ray_count = 0;
-	}		
+	if (p != player::position) rays_remaining = directions.size();
 }
 
 float intersect_line_plane(glm::vec3 orig, glm::vec3 dir, glm::vec4 plane)
@@ -1453,7 +1453,7 @@ void model_frame(GLFWwindow* window)
 		perspective_rotation = glm::rotate(perspective_rotation, player::yaw, glm::vec3(0, 1, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
 
-		ray_count = 0;
+		rays_remaining = directions.size();		
 	}
 	
 	if (!console.IsVisible())
@@ -1795,7 +1795,7 @@ void render_world()
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
 	
 	float time_start = glfwGetTime();
-	if (ray_count == 0) visible_chunks.cleanup(cplayer, frustum);
+	if (rays_remaining == directions.size()) visible_chunks.cleanup(cplayer, frustum);
 	update_render_list(cplayer, frustum);
 	float time = std::max<float>(0, (glfwGetTime() - time_start) * 1000);
 	stats::raytrace_time_ms = stats::raytrace_time_ms * 0.75f + time * 0.25f;
@@ -1814,7 +1814,7 @@ void render_gui()
 	if (show_counters)
 	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.1f model:%1.1f raytrace:%2.1f %.0f%% render %2.1f",
 			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count / 3000,
-			 stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, 100.0f * ray_count / directions.size(), stats::block_render_time_ms);
+			 stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, 100.0f * (directions.size() - rays_remaining) / directions.size(), stats::block_render_time_ms);
 	stats::triangle_count = 0;
 	stats::chunk_count = 0;
 
