@@ -58,6 +58,7 @@ public:
 	Type& operator[](size_t index) { assert(index < m_size); return m_array[index]; }
 	size_t size() const { return m_size; }
 	void push_back(Type elem) { assert(m_size < Capacity); m_array[m_size++] = elem; }
+	Type pop_back() { assert(m_size > 0); return m_array[--m_size]; }
 	Type* begin() { return m_array.begin(); }
 	Type* end() { return m_array.begin() + m_size; }
 	void clear() { m_size = 0; }
@@ -69,16 +70,27 @@ private:
 
 // ==========
 
-template<size_t N>
+template<int Min, int Max>
 struct BitCube
 {
 	void clear() { memset(&m_words[0], 0, Z * sizeof(uint32_t)); }
+	void operator=(const BitCube<Min, Max>& q) { memcpy(&m_words[0], q.m_words[0], Z * sizeof(uint32_t)); }
 	void set(glm::ivec3 a) { int i = index(a); m_words[i / 32] |= mask(i); }
 	bool operator[](glm::ivec3 a) { int i = index(a); return (m_words[i / 32] & mask(i)) != 0; }	
+
+	bool xset(glm::ivec3 a)
+	{
+		int i = index(a);
+		uint32_t w = m_words[i / 32] | mask(i);
+		if (m_words[i / 32] == w) return false;
+		m_words[i / 32] = w;
+		return true; 
+	}
 private:
 	static unsigned int mask(int index) { return 1u << (index % 32); }
-	int index(glm::ivec3 a) { return (a.x*N + a.y)*N + a.z; }
+	int index(glm::ivec3 a) { a -= Min; return (a.x*N + a.y)*N + a.z; }
 private:
+	static const int N = Max - Min + 1;
 	static const int Z = (N * N * N + 31) / 32;
 	std::array<uint32_t, Z> m_words;
 };

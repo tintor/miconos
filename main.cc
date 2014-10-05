@@ -157,7 +157,7 @@ const int ChunkSizeBits = 4, MapSizeBits = 7;
 const int ChunkSize = 1 << ChunkSizeBits, MapSize = 1 << MapSizeBits;
 const int ChunkSizeMask = ChunkSize - 1, MapSizeMask = MapSize - 1;
 
-static const int RenderDistance = 40;
+static const int RenderDistance = 63;
 Sphere render_sphere(RenderDistance);
 static_assert(RenderDistance < MapSize / 2, "");
 
@@ -222,10 +222,10 @@ struct MapChunk
 	MapChunk* next;
 	Block block[ChunkSize][ChunkSize][ChunkSize];
 
-	void Set(int x, int y, int z, Block b)
+	Block& operator[](glm::ivec3 a)
 	{
-		assert(x >= 0 && x < ChunkSize && y >= 0 && y < ChunkSize && z >= 0 && z < ChunkSize);
-		block[x][y][z] = b;
+		assert(a.x >= 0 && a.x < ChunkSize && a.y >= 0 && a.y < ChunkSize && a.z >= 0 && a.z < ChunkSize);
+		return block[a.x][a.y][a.z];
 	}
 };
 
@@ -233,6 +233,7 @@ struct Heightmap
 {
 	int height[ChunkSize * MapSize][ChunkSize * MapSize];
 	bool hasTree[ChunkSize * MapSize][ChunkSize * MapSize];
+	Block color[ChunkSize * MapSize][ChunkSize * MapSize];
 	glm::ivec2 last[MapSize][MapSize];
 
 	Heightmap()
@@ -243,6 +244,7 @@ struct Heightmap
 	void Populate(int cx, int cy);
 	int& Height(int x, int y) { return height[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
 	bool& HasTree(int x, int y) { return hasTree[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
+	Block& Color(int x, int y) { return color[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
 };
 
 int GetHeight(int x, int y)
@@ -258,7 +260,7 @@ Block GetColor(int x, int y)
 
 float Tree(int x, int y)
 {
-	return SimplexNoise(glm::vec2(x+321398, y+8901) * 0.005f, 4, 2.0f, 0.5f, true);
+	return SimplexNoise(glm::vec2(x+321398, y+8901) * 0.002f, 4, 2.0f, 0.5f, true);
 }
 
 bool GetHasTree(int x, int y)
@@ -280,59 +282,13 @@ void Heightmap::Populate(int cx, int cy)
 		{
 			Height(x + cx * ChunkSize, y + cy * ChunkSize) = GetHeight(x + cx * ChunkSize, y + cy * ChunkSize);
 			HasTree(x + cx * ChunkSize, y + cy * ChunkSize) = GetHasTree(x + cx * ChunkSize, y + cy * ChunkSize);
+			Color(x + cx * ChunkSize, y + cy * ChunkSize) = GetColor(x + cx * ChunkSize, y + cy * ChunkSize);
 		}
 		last[cx & MapSizeMask][cy & MapSizeMask] = glm::ivec2(cx, cy);
 	}
 }
 
 Heightmap* heightmap = new Heightmap;
-
-int Level1Slope(int dx, int dy)
-{
-	int height = heightmap->Height(dx, dy);
-
-	bool xa = heightmap->Height(dx-1, dy) > height;
-	bool xb = heightmap->Height(dx+1, dy) > height;
-	bool ya = heightmap->Height(dx, dy-1) > height;
-	bool yb = heightmap->Height(dx, dy+1) > height;
-
-	if ( xa && !xb &&  ya && !yb) return 127;
-	if (!xa &&  xb &&  ya && !yb) return 191;
-	if ( xa && !xb && !ya &&  yb) return 223;
-	if (!xa &&  xb && !ya &&  yb) return 239;
-
-	if (ya && !yb) return 63;
-	if (yb && !ya) return 207;
-	if (xa && !xb) return 95;
-	if (xb && !xa) return 175;
-	return 0;
-}
-
-// Swap bits P and Q in A
-int BS(int a, int p, int q)
-{
-	return (a & ~(1 << p) & ~(1 << q)) | (((a >> p) & 1) << q) | (((a >> q) & 1) << p);
-}
-
-// Flip shape on X axis
-int FX(int a)
-{
-	a = BS(a, 0, 1);
-	a = BS(a, 2, 3);
-	a = BS(a, 4, 5);
-	a = BS(a, 6, 7);
-	return a;
-}
-
-// Flip shape on Y axis
-int FY(int a)
-{
-	a = BS(a, 0, 2);
-	a = BS(a, 1, 3);
-	a = BS(a, 4, 6);
-	a = BS(a, 5, 7);
-	return a;
-}
 
 Block Color(int r, int g, int b, int a)
 {
@@ -344,6 +300,7 @@ Block Color(int r, int g, int b, int a)
 }
 
 Block Empty = Color(3, 3, 3, 0);
+Block Leaves = 255;
 
 const int CraterRadius = 500;
 const glm::ivec3 CraterCenter(CraterRadius * -0.8, CraterRadius * -0.8, 0);
@@ -356,10 +313,6 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 	memset(chunk.block, Empty, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
 
 	heightmap->Populate(cpos.x, cpos.y);
-	heightmap->Populate(cpos.x-1, cpos.y);
-	heightmap->Populate(cpos.x+1, cpos.y);
-	heightmap->Populate(cpos.x, cpos.y-1);
-	heightmap->Populate(cpos.x, cpos.y+1);
 
 	FOR(x, ChunkSize) FOR(y, ChunkSize)
 	{
@@ -375,14 +328,14 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 			{
 				// clouds
 				double q = SimplexNoise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
-				if (q < -0.35) chunk.block[x][y][z] = Color(3, 3, 3, 3);
+				if (q < -0.35) chunk.block[x][y][z] = Color(3, 3, 3, 2);
 			}
-			else if (dz <= GetHeight(dx, dy))
+			else if (dz <= heightmap->Height(dx, dy))
 			{			
 				// ground and caves
-				chunk.block[x][y][z] = GetColor(dx, dy);
+				chunk.block[x][y][z] = heightmap->Color(dx, dy);
 				double q = SimplexNoise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
-				if (q < -0.2) chunk.block[x][y][z] = Empty;
+				if (q < -0.25) chunk.block[x][y][z] = Empty;
 			}
 		}
 	}
@@ -412,7 +365,7 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = Color(0, 3, 0, 3);
+					chunk.block[x][y][z] = Leaves;
 				}
 			}
 		}
@@ -424,7 +377,7 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = Color(0, 3, 0, 3);
+					chunk.block[x][y][z] = Leaves;
 				}
 			}
 		}
@@ -436,7 +389,7 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = Color(0, 3, 0, 3);
+					chunk.block[x][y][z] = Leaves;
 				}
 			}
 		}
@@ -448,7 +401,7 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 				int dz = z + cpos.z * ChunkSize;
 				if (dz > height + 2 && dz < height + 6)
 				{
-					chunk.block[x][y][z] = Color(0, 3, 0, 3);
+					chunk.block[x][y][z] = Leaves;
 				}
 			}
 		}
@@ -531,7 +484,7 @@ struct Map
 {
 	Map();
 
-	MapChunk& Get(glm::ivec3 cpos)
+	MapChunk& get(glm::ivec3 cpos)
 	{
 		int h = KeyHash()(cpos) % MapSize;
 		MapChunk* head = m_map[h].load(std::memory_order_relaxed);
@@ -564,9 +517,20 @@ struct Map
 		return *p;
 	}
 
+	MapChunk* try_get(glm::ivec3 cpos)
+	{
+		int h = KeyHash()(cpos) % MapSize;
+		MapChunk* head = m_map[h].load(std::memory_order_relaxed);
+		for (MapChunk* i = head; i; i = i->next)
+		{
+			if (i->cpos == cpos) return i;
+		}
+		return nullptr;
+	}
+	
 	void Set(glm::ivec3 pos, Block block)
 	{
-		Get(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask] = block;
+		get(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask] = block;
 	}
 
 	void Print()
@@ -656,10 +620,7 @@ Map::Map() : m_cpos(0x80000000, 0, 0)
 
 Map* map = new Map;
 
-Block& map_get(glm::ivec3 pos)
-{
-	return map->Get(pos >> ChunkSizeBits).block[pos.x & ChunkSizeMask][pos.y & ChunkSizeMask][pos.z & ChunkSizeMask];
-}
+Block& map_get(glm::ivec3 pos) { return map->get(pos >> ChunkSizeBits)[pos & ChunkSizeMask]; }
 
 // ============================
 
@@ -673,30 +634,20 @@ struct Vertex
 
 struct VisibleChunks
 {
-	std::vector<glm::i8vec3>::iterator it; // are visible chunks fully computed or partially?
-	std::vector<glm::i8vec3> chunks;
-	bool dirty_plus; // list might contain some unnecessary chunk
-	bool dirty_minus; // list might be missing some chunk
-
-	VisibleChunks(): it(render_sphere.begin()), dirty_plus(false), dirty_minus(false) { }
+	BitCube<-RenderDistance, RenderDistance> set;
+	std::vector<glm::i8vec3> array;
 
 	void clear()
 	{
-		it = render_sphere.begin();
-		release(chunks);
-		dirty_plus = false;
-		dirty_minus = false;
+		set.clear();
+		release(array);
+	}
+
+	void add(glm::ivec3 v)
+	{
+		if (set.xset(v)) array.push_back(glm::i8vec3(v));
 	}
 };
-
-int MinX(int a) { return a & 85; }
-int MaxX(int a) { return (a >> 1) & 85; }
-
-int MinY(int a) { return a & 51; }
-int MaxY(int a) { return (a >> 2) & 51; }
-
-int MinZ(int a) { return a & 15; }
-int MaxZ(int a) { return (a >> 4) & 15; }
 
 struct BlockRenderer
 {
@@ -707,35 +658,19 @@ struct BlockRenderer
 	void vertex(GLubyte light, GLubyte uv, int c);
 	void draw_quad(int a, int b, int c, int d);
 	void render(glm::ivec3 pos, Block bs);
-
-	glm::ivec3 unpack(int i)
-	{
-		auto pos = m_vertices[i].pos;
-		return glm::ivec3(pos[0], pos[1], pos[2]);
-	}
 };
-
-bool is_solid(Block block)
-{
-	return (block / 64) == 3;
-}
 
 struct Chunk
 {
 	std::mutex mutex;
 	glm::ivec3 cpos; // TODO -> should be atomic -> pack into uint64 -> 21 bit per coordinate -> 25 effective
 	std::vector<Vertex> vertices;
-	std::vector<glm::ivec4> planes; // Overflow? // TODO: compress as normals are 5bits
-	GLuint query;
-	int query_version;
-
-	bool obstructor;
-	VisibleChunks visible;
+	int render_size;
 
 	void buffer(BlockRenderer& renderer)
 	{
 		renderer.m_vertices.clear();
-		MapChunk& mc = map->Get(cpos);
+		MapChunk& mc = map->get(cpos);
 		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
 		{
 			renderer.render(cpos * ChunkSize + glm::ivec3(x, y, z), mc.block[x][y][z]);
@@ -744,108 +679,34 @@ struct Chunk
 		vertices.resize(renderer.m_vertices.size());
 		std::copy(renderer.m_vertices.begin(), renderer.m_vertices.end(), vertices.begin());
 		assert(vertices.size() == vertices.capacity());
+		render_size = vertices.size();
 	}
 
-	bool is_obstructor()
-	{
-		MapChunk& mc = map->Get(cpos);
-		FOR(a, ChunkSize) FOR(b, ChunkSize)
-		{
-			if (is_solid(mc.block[0][a][b]) || is_solid(mc.block[ChunkSize-1][a][b])) return false;
-			if (is_solid(mc.block[a][0][b]) || is_solid(mc.block[a][ChunkSize-1][b])) return false;
-			if (is_solid(mc.block[a][b][0]) || is_solid(mc.block[a][b][ChunkSize-1])) return false;
-		}
-		return true;
-	}
-	
-	void init(glm::ivec3 _cpos, BlockRenderer& renderer)
+	bool init(glm::ivec3 _cpos, BlockRenderer& renderer)
 	{
 		mutex.lock();
-		if (cpos == _cpos) { mutex.unlock(); return; }
+		if (cpos == _cpos) { mutex.unlock(); return true; }
 		cpos = _cpos;
 		release(vertices);
-		release(planes);
-		visible.clear();
 		buffer(renderer);
-		init_planes();
-		obstructor = is_obstructor();
 		mutex.unlock();
+		return false;
 	}
 
 	void reset(BlockRenderer& renderer)
 	{
 		mutex.lock();
 		release(vertices);
-		release(planes);
-		visible.clear();
 		buffer(renderer);
-		init_planes();
-		obstructor = is_obstructor();
 		mutex.unlock();
 	}
-	
-	void init_planes()
+
+	void sort_relative_to(glm::ivec3 cpos)
 	{
-		FOR(i, vertices.size() / 6)
-		{
-			glm::ivec3 a = unpack(i * 6);
-			glm::ivec3 b = unpack(i * 6 + 1);
-			glm::ivec3 c = unpack(i * 6 + 2);
-
-			glm::ivec3 normal = glm::cross(c - b, a - b);
-			normal /= glm::max(abs(normal.x), abs(normal.y), abs(normal.z));
-			assert(abs(normal.x) + abs(normal.y) + abs(normal.z) == 1);
-			int w = glm::dot(normal, a + (cpos * ChunkSize)); // Overflow?
-
-			glm::ivec4 plane(normal, w);
-			if (!contains(planes, plane)) planes.push_back(plane);
-		}
-		compress(planes);
+		// TODO: move visible quads
 	}
 
-	glm::ivec3 unpack(int i)
-	{
-		auto pos = vertices[i].pos;
-		return glm::ivec3(pos[0], pos[1], pos[2]);
-	}
-
-	// at least one of the points
-	bool contains_face_visible_from(const glm::ivec3 point[], int count)
-	{
-		switch (count)
-		{
-		case 1:
-			for(auto p : planes) if (glm::dot(point[0], p.xyz()) >= p.w) return true;
-			return false;
-		case 2:
-			for(auto p : planes) if (glm::dot(point[0], p.xyz()) >= p.w || glm::dot(point[1], p.xyz()) >= p.w) return true;
-			return false;
-		case 4:
-			for(auto p : planes) if (glm::dot(point[0], p.xyz()) >= p.w || glm::dot(point[1], p.xyz()) >= p.w || glm::dot(point[2], p.xyz()) >= p.w || glm::dot(point[3], p.xyz()) >= p.w) return true;
-			return false;
-		}
-		assert(false);
-		return false;
-	}
-	
-	bool contains_face_visible_from_chunk(glm::ivec3 cpos2)
-	{
-		if (vertices.size() == 0) return false;
-
-		assert(cpos != cpos2);
-		glm::ivec3 d = cpos - cpos2;
-		std::ivector<glm::ivec3, 8> points;
-		FOR(x, 2) FOR(y, 2) FOR(z, 2)
-		{
-			unless(d.x == 0 || (x == 0 && d.x < 0) || (x == 1 && d.x > 0)) continue;
-			unless(d.y == 0 || (y == 0 && d.y < 0) || (y == 1 && d.y > 0)) continue;
-			unless(d.z == 0 || (z == 0 && d.z < 0) || (z == 1 && d.z > 0)) continue;
-			points.push_back((cpos2 << ChunkSize) + glm::ivec3(x, y, z) * ChunkSize);
-		}
-		return contains_face_visible_from(points.begin(), points.size());
-	}
-	
-	Chunk() : obstructor(false), cpos(0x80000000, 0, 0), query(-1), query_version(-1) { }
+	Chunk() : cpos(0x80000000, 0, 0), render_size(0) { }
 };
 
 Console console;
@@ -904,11 +765,16 @@ public:
 				continue;
 			}
 
-			if (owner(cpos) == k) chunks->get(cpos).init(cpos, renderer);
+			int q = 0;
+			if (owner(cpos) == k && chunks->get(cpos).init(cpos, renderer)) q += 1;
 			for (int i = 0; i < render_sphere.size(); i++)
 			{
 				glm::ivec3 c = cpos + glm::ivec3(render_sphere[i]);
-				if (owner(c) == k) chunks->get(c).init(c, renderer);
+				if (owner(c) == k && chunks->get(c).init(c, renderer))
+				{
+					q += 1;
+					if (q >= 1000) { last_cpos.x = 0x80000000; break; }
+				}
 			}
 			last_cpos = cpos;
 		}
@@ -946,16 +812,6 @@ float distance2_point_and_line(glm::vec3 point, glm::vec3 orig, glm::vec3 dir)
 	return glm::distance2(point, orig + dir * glm::dot(point - orig, dir));
 }
 
-class LineOfSight
-{
-public:
-	int chunk_visible_fast(glm::ivec3 a, glm::ivec3 d);
-
-private:
-	BitCube<RenderDistance + 1> m_marked;
-	std::vector<glm::ivec3> m_stack;
-};
-
 template<int size>
 bool intersects_line_polygon(Plucker line, const Plucker edges[size])
 {
@@ -963,37 +819,103 @@ bool intersects_line_polygon(Plucker line, const Plucker edges[size])
 	return true;
 }
 
-// Is there any empty block in chunk A from which at least one face from chunk A+D is visible?
-int LineOfSight::chunk_visible_fast(glm::ivec3 a, glm::ivec3 d)
+struct BoundaryBlocks : public std::vector<glm::ivec3>
 {
-	std::ivector<glm::ivec3, 3> moves;
-	FOR(i, 3) if (d[i] < 0) moves.push_back(Axis[i]); else if (d[i] > 0) moves.push_back(-Axis[i]);
-	
-	glm::vec3 orig = glm::vec3(d << ChunkSizeBits) + ChunkSize * 0.5f;
-	glm::vec3 dir = glm::normalize(-orig + ChunkSize * 0.5f); 
-	float D2 = sqr(ChunkSize + ChunkSize) * 0.75f;
-
-	m_marked.clear();		
-	m_stack.clear();
-	m_stack.push_back(d);	
-	while (!m_stack.empty())
+	BoundaryBlocks()
 	{
-		glm::ivec3 p = m_stack.back();
-		m_stack.pop_back();
-		for (glm::ivec3 m : moves)
+		const int M = ChunkSize - 1;
+		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
+			if (x == 0 || x == M || y == 0 || y == M || z == 0 || z == M)
+				push_back(glm::ivec3(x, y, z));
+	}
+} boundary_blocks;
+
+bool can_move_through(Block block) { return block == Empty; }
+bool can_see_through(Block block) { return block == Empty; }
+
+struct Directions : public std::vector<glm::ivec3>
+{
+	static const int Bits = 9;
+	Directions()
+	{
+		const int M = 1 << Bits, N = M - 1;
+		FOR2(x, static_cast<int>(1), M) FOR2(y, static_cast<int>(1), M) FOR2(z, static_cast<int>(1), M)
 		{
-			glm::ivec3 q = p + m;
-			if (q == glm::ivec3(0, 0, 0)) return 1;
-			if (!between(d, q, glm::ivec3(0, 0, 0))) continue;
-			if (m_marked[glm::abs(q)]) continue;
-			if (!g_chunks.loaded(a + q)) return -1;
-			if (g_chunks(a + q).obstructor) continue;
-			if (distance2_point_and_line(glm::vec3(q) + glm::vec3(0.5, 0.5, 0.5), orig, dir) > D2) continue;
-			m_stack.push_back(q);
-			m_marked.set(glm::abs(q));
+			int d2 = x*x + y*y + z*z;
+			if (N*N < d2 && d2 <= M*M)
+			{
+				push_back(glm::ivec3( x,  y,  z));
+				push_back(glm::ivec3( x,  y, -z));
+				push_back(glm::ivec3( x, -y,  z));
+				push_back(glm::ivec3( x, -y, -z));
+				push_back(glm::ivec3(-x,  y,  z));
+				push_back(glm::ivec3(-x,  y, -z));
+				push_back(glm::ivec3(-x, -y,  z));
+				push_back(glm::ivec3(-x, -y, -z));
+			}
+		}
+		push_back(glm::ivec3( M, 0, 0));
+		push_back(glm::ivec3(-M, 0, 0));
+		push_back(glm::ivec3(0,  M, 0));
+		push_back(glm::ivec3(0, -M, 0));
+		push_back(glm::ivec3(0, 0,  M));
+		push_back(glm::ivec3(0, 0, -M));
+		for (int i = 0; i < size(); i++)
+		{
+			std::swap(operator[](std::rand() % size()), operator[](i));
 		}
 	}
-	return 0;
+} directions;
+
+int ray_count = 0;
+
+struct Frustum
+{
+	std::array<glm::vec4, 4> frustum;
+	void init(const glm::mat4& matrix);
+	bool contains_point(glm::vec3 p) const;
+};
+
+// which chunks must be rendered from the center chunk?
+void update_render_list(glm::ivec3 cpos, VisibleChunks& visible, Frustum& frustum)
+{
+	MapChunk& mc = map->get(cpos);
+	const int D = Directions::Bits;
+	int MaxDist = RenderDistance * ChunkSize;
+	int size = visible.array.size();
+	
+	float k = 1 << D;
+	glm::ivec3 origin = glm::ivec3(glm::floor(player::position * k));
+
+	int budget = 4000000;
+	while (budget > 0 && ray_count < directions.size())
+	{
+		glm::ivec3 dir = directions[ray_count++];
+		if (!frustum.contains_point(player::position + glm::vec3(dir))) continue;
+
+		glm::ivec3 photon = origin;
+		int dist = 0;
+		MapChunk* pmc = &mc;
+		while (true)
+		{
+			photon += dir;
+			dist += 1;
+			if (dist > MaxDist) break;
+			glm::ivec3 voxel = (photon >> D);
+			glm::ivec3 cvoxel = voxel >> ChunkSizeBits;
+			if (pmc->cpos != cvoxel)
+			{
+				pmc = map->try_get(cvoxel);
+				if (!pmc) break;
+			}
+			Block block = (*pmc)[voxel & ChunkSizeMask];
+			if (block != Empty) visible.add(cvoxel - cpos);
+			if (!can_see_through(block)) break;
+		}
+		budget -= dist;
+	}
+
+	if (visible.array.size() != size) std::sort(visible.array.begin(), visible.array.end(), Closer);
 }
 
 namespace stats
@@ -1004,7 +926,7 @@ namespace stats
 	float frame_time_ms = 0;
 	float block_render_time_ms = 0;
 	float model_time_ms = 0;
-	float pvc_time_ms = 0;
+	float raytrace_time_ms = 0;
 }
 
 // Model
@@ -1017,9 +939,7 @@ glm::mat4 perspective_rotation;
 glm::ivec3 sel_cube;
 int sel_face;
 bool selection = false;
-
 bool wireframe = false;
-int pvs = 0;
 
 BlockRenderer g_renderer;
 
@@ -1038,8 +958,6 @@ void EditBlock(glm::ivec3 pos, Block block)
 	if (p.x == ChunkSizeMask) g_chunks(cpos + ix).reset(g_renderer);
 	if (p.y == ChunkSizeMask) g_chunks(cpos + iy).reset(g_renderer);
 	if (p.z == ChunkSizeMask) g_chunks(cpos + iz).reset(g_renderer);
-
-	// TODO: recompute pvc of surrounding chunks
 }
 
 void OnEditKey(int key)
@@ -1104,10 +1022,6 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 		else if (key == GLFW_KEY_F3)
 		{
 			wireframe = !wireframe;
-		}
-		else if (key == GLFW_KEY_F5)
-		{
-			pvs = (pvs + 1) % 3;
 		}
 		else if (key == GLFW_KEY_F6)
 		{
@@ -1353,6 +1267,8 @@ void Simulate(float dt, glm::vec3 dir)
 	ResolveCollisionsWithBlocks();
 }
 
+VisibleChunks visible_chunks;
+
 void model_move_player(GLFWwindow* window, float dt)
 {
 	glm::vec3 dir(0, 0, 0);
@@ -1396,6 +1312,11 @@ void model_move_player(GLFWwindow* window, float dt)
 		Simulate(0.008, dir);
 		dt -= 0.008;
 	}
+	if (p != player::position)
+	{
+		ray_count = 0;
+		visible_chunks.clear();
+	}		
 }
 
 float intersect_line_plane(glm::vec3 orig, glm::vec3 dir, glm::vec4 plane)
@@ -1508,6 +1429,9 @@ void model_frame(GLFWwindow* window)
 		perspective_rotation = glm::rotate(perspective, player::pitch, glm::vec3(1, 0, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, player::yaw, glm::vec3(0, 1, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
+
+		ray_count = 0;
+		visible_chunks.clear();
 	}
 	
 	if (!console.IsVisible())
@@ -1568,6 +1492,7 @@ int block_program;
 GLuint block_matrix_loc;
 GLuint block_sampler_loc;
 GLuint block_pos_loc;
+GLuint block_tick_loc;
 GLuint block_eye_loc;
 GLuint block_position_loc;
 GLuint block_color_loc;
@@ -1652,6 +1577,7 @@ void render_init()
 	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
 	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
 	block_pos_loc = glGetUniformLocation(block_program, "pos");
+	block_tick_loc = glGetUniformLocation(block_program, "tick");
 	block_eye_loc = glGetUniformLocation(block_program, "eye");
 	block_position_loc = glGetAttribLocation(block_program, "position");
 	block_color_loc = glGetAttribLocation(block_program, "color");
@@ -1700,24 +1626,17 @@ void BlockRenderer::render(glm::ivec3 pos, Block block)
 {
 	if (block == Empty) return;
 	m_pos = pos;
-	m_color = block % 64;
+	m_color = block;
 
-	if (!is_solid(map_get(pos - ix))) draw_quad(0, 4, 6, 2);
-	if (!is_solid(map_get(pos + ix))) draw_quad(1, 3, 7, 5);
-	if (!is_solid(map_get(pos - iy))) draw_quad(0, 1, 5, 4);
-	if (!is_solid(map_get(pos + iy))) draw_quad(2, 6, 7, 3);
-	if (!is_solid(map_get(pos - iz))) draw_quad(0, 2, 3, 1);
-	if (!is_solid(map_get(pos + iz))) draw_quad(4, 5, 7, 6);
+	if (can_see_through(map_get(pos - ix))) draw_quad(0, 4, 6, 2);
+	if (can_see_through(map_get(pos + ix))) draw_quad(1, 3, 7, 5);
+	if (can_see_through(map_get(pos - iy))) draw_quad(0, 1, 5, 4);
+	if (can_see_through(map_get(pos + iy))) draw_quad(2, 6, 7, 3);
+	if (can_see_through(map_get(pos - iz))) draw_quad(0, 2, 3, 1);
+	if (can_see_through(map_get(pos + iz))) draw_quad(4, 5, 7, 6);
 }
 
-struct Frustum
-{
-	std::array<glm::vec4, 4> frustum;
-	void Init(const glm::mat4& matrix);
-	bool IsSphereCompletelyOutside(glm::vec3 p, float radius) const;
-};
-
-void Frustum::Init(const glm::mat4& matrix)
+void Frustum::init(const glm::mat4& matrix)
 {
 	const float* clip = glm::value_ptr(matrix);
 	// left
@@ -1744,93 +1663,30 @@ void Frustum::Init(const glm::mat4& matrix)
 	FOR(i, 4) frustum[i] *= glm::fastInverseSqrt(sqr(frustum[i].xyz()));
 }
 
-bool Frustum::IsSphereCompletelyOutside(glm::vec3 p, float radius) const
+bool Frustum::contains_point(glm::vec3 p) const
 {
-	FOR(i, 4) if (glm::dot(p, frustum[i].xyz()) + frustum[i].w < -radius) return true;
-	return false;
+	FOR(i, 4) if (glm::dot(p, frustum[i].xyz()) + frustum[i].w < 0) return false;
+	return true;
 }
 
-int buffer_budget = 0;
-
-bool chunk_renderable(Chunk& chunk, const Frustum& frustum)
-{
-	// Empty and underground chunks have no triangles to render
-	if (chunk.vertices.size() == 0)
-		return false;
-
-	glm::ivec3 p = chunk.cpos * ChunkSize + (ChunkSize / 2);
-	return !frustum.IsSphereCompletelyOutside(glm::vec3(p), ChunkSize * BlockRadius);
-}
+int g_tick;
 
 void render_chunk(Chunk& chunk)
 {
+	if (chunk.render_size == 0) return;
 	glm::ivec3 pos = chunk.cpos * ChunkSize;
 	glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * chunk.vertices.size(), &chunk.vertices[0], GL_STREAM_DRAW);
-	glDrawArrays(GL_TRIANGLES, 0, chunk.vertices.size());
+	glDrawArrays(GL_TRIANGLES, 0, chunk.render_size);
 }
-
-GLuint GetQueryResult(GLuint query)
-{
-	GLuint result = 0;
-	glGetQueryObjectuiv(query, GL_QUERY_RESULT, &result);
-	return result;
-}
-
-LineOfSight losa;
-int64_t pvcs_computed = 0;
-
-int precompute_potentially_visible_chunks(Chunk& chunk, int budget)
-{
-	if (chunk.visible.it == render_sphere.end()) return budget;
-	if (chunk.obstructor)
-	{
-		chunk.visible.it = render_sphere.end();
-		return budget;
-	}
-	do
-	{
-		glm::ivec3 b = chunk.cpos + glm::ivec3(*chunk.visible.it);
-		if (!g_chunks.loaded(b)) break;
-
-		if (g_chunks(b).contains_face_visible_from_chunk(chunk.cpos))
-		{
-			int ret = losa.chunk_visible_fast(chunk.cpos, b - chunk.cpos);
-			if (ret == 1) chunk.visible.chunks.push_back(*chunk.visible.it); else if (ret == -1) break;
-			pvcs_computed += 1;
-			if (--budget <= 0) return 0;
-		}		
-		chunk.visible.it++;
-	}
-	while (chunk.visible.it != render_sphere.end());
-	return budget;
-}
-
-void precompute_potentially_visible_chunks(glm::ivec3 cplayer, int budget=5000)
-{
-	if (!g_chunks.loaded(cplayer)) return;
-	budget = precompute_potentially_visible_chunks(g_chunks(cplayer), budget);
-	if (budget <= 0) return;
-
-	if (pvs != 2) return;
-	for (glm::i8vec3 d : render_sphere)
-	{
-		if (!g_chunks.loaded(cplayer + glm::ivec3(d))) break;
-		Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
-		budget = precompute_potentially_visible_chunks(chunk, budget);
-		if (budget <= 0) return;
-	}
-}
-
-std::vector<Chunk*> render_list;
 
 void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frustum& frustum)
 {
 	float time_start = glfwGetTime();
 	glBindTexture(GL_TEXTURE_2D, block_texture);
 
-	float* ma = glm::value_ptr(player::orientation);
-	glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
+	//float* ma = glm::value_ptr(player::orientation);
+	//glm::ivec3 direction(ma[4] * (1 << 20), ma[5] * (1 << 20), ma[6] * (1 << 20));
 
 	if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
@@ -1850,52 +1706,23 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
+	glUniform1i(block_tick_loc, g_tick++);
 	if (g_chunks.loaded(cplayer))
 	{
 		Chunk& chunk0 = g_chunks(cplayer);
 		render_chunk(chunk0);
-	
-		std::vector<glm::i8vec3>& filter = pvs ? chunk0.visible.chunks : render_sphere;
-		
-		bool back_to_front = true;
-	
-		if (back_to_front)
+
+		auto it = visible_chunks.array.begin();
+		for (; it != visible_chunks.array.end() && stats::triangle_count < MaxTriangles * 3; it++)
 		{
-			render_list.clear();
-			for (glm::i8vec3 d : filter)
-			{
-				if (g_chunks.loaded(cplayer + glm::ivec3(d)))
-				{
-					Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
-					if (chunk_renderable(chunk, frustum))
-					{
-						render_list.push_back(&chunk);
-						stats::triangle_count += chunk.vertices.size();
-						stats::chunk_count += 1;
-						if (stats::triangle_count > MaxTriangles * 3)
-							break;
-					}
-				}
-			}
-			FOR(i, render_list.size()) render_chunk(*render_list[render_list.size() - 1 - i]);
+			glm::ivec3 cpos = cplayer + glm::ivec3(*it);
+			if (g_chunks.loaded(cpos)) stats::triangle_count += g_chunks(cpos).vertices.size();
+			stats::chunk_count += 1;
 		}
-		else
+		for (it--; it != visible_chunks.array.begin() - 1; it--)
 		{
-			for (glm::i8vec3 d : filter)
-			{
-				if (g_chunks.loaded(cplayer + glm::ivec3(d)))
-				{
-					Chunk& chunk = g_chunks(cplayer + glm::ivec3(d));
-					if (chunk_renderable(chunk, frustum))
-					{
-						render_chunk(chunk);
-						stats::triangle_count += chunk.vertices.size();
-						stats::chunk_count += 1;
-						if (stats::triangle_count > MaxTriangles * 3)
-							break;
-					}
-				}
-			}
+			glm::ivec3 cpos = cplayer + glm::ivec3(*it);
+			if (g_chunks.loaded(cpos)) render_chunk(g_chunks(cpos));
 		}
 	}
 
@@ -1939,25 +1766,17 @@ void render_block_selection(const glm::mat4& matrix)
 
 void render_world()
 {
-	// TODO - avoid recomputing if same
 	glm::mat4 matrix = glm::translate(perspective_rotation, -player::position);
 	Frustum frustum;
-	frustum.Init(matrix);
+	frustum.init(matrix);
 
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
 	
-	if (pvs > 0)
-	{
-		float time_start = glfwGetTime();
-		precompute_potentially_visible_chunks(cplayer);
-		float time = std::max<float>(0, (glfwGetTime() - time_start) * 1000);
-		stats::pvc_time_ms = stats::pvc_time_ms * 0.75f + time * 0.25f;
-	}
-	else
-	{
-		stats::pvc_time_ms = 0;
-	}
-	
+	float time_start = glfwGetTime();	
+	update_render_list(cplayer, visible_chunks, frustum);
+	float time = std::max<float>(0, (glfwGetTime() - time_start) * 1000);
+	stats::raytrace_time_ms = stats::raytrace_time_ms * 0.75f + time * 0.25f;
+
 	glEnable(GL_DEPTH_TEST);
 	render_world_blocks(cplayer, matrix, frustum);
 	if (selection) render_block_selection(matrix);
@@ -1970,9 +1789,9 @@ void render_gui()
 
 	text->Reset(width, height, matrix);
 	if (show_counters)
-	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.1f model:%1.1f pvs:%2.1f_%luk render %2.1f",
+	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.1f model:%1.1f raytrace:%2.1f %.0f%% render %2.1f",
 			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count / 3000,
-			 stats::frame_time_ms, stats::model_time_ms, stats::pvc_time_ms, pvcs_computed / 1000, stats::block_render_time_ms);
+			 stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, 100.0f * ray_count / directions.size(), stats::block_render_time_ms);
 	stats::triangle_count = 0;
 	stats::chunk_count = 0;
 
@@ -2025,26 +1844,19 @@ void OnError(int error, const char* message)
 	fprintf(stderr, "GLFW error %d: %s\n", error, message);
 }
 
-int main(int argc, char** argv)
+int main(int, char**)
 {
-	if (!glfwInit())
-	{
-		return 0;
-	}
+	if (!glfwInit()) return 0;
 
 	glfwSetErrorCallback(OnError);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
 	const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
 	GLFWwindow* window = glfwCreateWindow(mode->width*2, mode->height*2, "Arena", glfwGetPrimaryMonitor(), NULL);
-	if (!window)
-	{
-		glfwTerminate();
-		return 0;
-	}
+	if (!window) { glfwTerminate(); return 0; }
 	glfwMakeContextCurrent(window);
 	glfwSwapInterval(VSYNC);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
