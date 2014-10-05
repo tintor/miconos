@@ -1,30 +1,26 @@
 // TODO:
-// BUG - stray long distorted triangles
-// BUG - PVC incorrectly filters some chunks in crater boundary
 // - slowly blend-in newly buffered chunks so that they are less noticable
+// - Raytracer when moving: clear set only, and not array. Deduplicate array when sorting. Remove stale array elements when raytracing is complete!
+// - newly buffered chunks should re-start raytracer
+// - persist map-chunks for faster loading!
 
 // # more proceduraly generated stuff!
-// - smooth 3d tunnels
 // - diffuse/reduce process
 
 // # eye-candy
-// - grass!
-// - iregular grid (just a bit) - affects collision testing
+// - grass with wind effect!
+// - nicer textures!
 
-// # async computation
-// - pvc computation in separate threads
-// - more agressive pvc!
-
-// # large spherical world
-// - print lat-long-alt coordinates
-// - use quaternions for orientation + adjust UP vector using gravity
-// - spherical terrain generation
+// # gravity mode: planar (2 degrees of freedom orientation), spherical (2 degrees of freedom orientation), zero-g (3 degrees of freedom orientation)
 
 // # PERF level-of-detail rendering
-// - use lower resultion buffers (ie. less triangles) of chunks for rendering in the distance
-// - convert chunk to cube with low resolution generated texture?
+// - combine consecutive quads to reduce number of triangles (loosless)
+// - mesh reduction for far away chunks:
+//	- remove interior quads not visible from far outside
+//    - remove small lone blocks, fill small lone holes
+//    - two concave quads at 90 degrees can be converted into slope (even if not far!) 
+// - combine 2x2x2 chunks that are far to be able to optimize their quads better and to reduce the total number of chunks as render distances are increasing
 
-// # render blocks back to front
 // - semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
 // - need to re-sort triangles inside chunk buffer (for nearby chunks only) as player moves
 // - textures with transparent pixels
@@ -36,53 +32,31 @@
 // - client sends: edits, player commands
 
 // multi-player:
-// - render other players
+// - render simple avatars
 // - login users
 // - chat
 
-// permanent server
-// - where to host?
-// - hostname / domain name?
-
 // sky:
 // - day/night cycle
-// - static cloud voxels (+ transparency)
-// - nice sun with lens flare
+// - sun with bloom effect (shaders)
 
 // # advanced editor:
-// # - [partial] color and shape pallete as part of GUI
 // # - free mouse (but fixed camera) mode for editing
 // # - flood fill tool
 // # - cut/copy/paste/move tool
 // # - drawing shapes
 // # - wiki / user change tracking
 
-// # more support for slopes:
-// # - integrate original marching cubes algo (will be usefull for water rendering!)
-// # - [partial] hidden triangle elimination between two slopes
-// # - [partial] slope generation
-// # - collision detection with slopes
-// # - light and shadows
-
 // # water:
-// # - animated surface
-// # - simple water (minecraft) with darker light in depth (flood fill ocean!)
+// # - animated / reflective surface (shaders)
+// # - simple water (minecraft) with darker light in depth (flood fill lake!)
 
-// # shadows:
-// # - real shadows from sun (no bounce)
-// # - point lights with shadows (for caves)?
+// # ambient lighting and shadows
 
-// # portals (there is nice youtube demo and open source project!)
+// # portals!
 
-// # more basic shapes: cones, cylinders (with level-of-detail!)
-
-// # PERF multi-threaded chunk array buffer construction
-
-// # real world elevation data
-// # translating blocks ?
-// # psysics: moving objects / vehicles ?
-// # texture mipmaps?
-// # procedural textures
+// # bots / critters
+// # python scripting integration
 
 #include "util.hh"
 #include "callstack.hh"
