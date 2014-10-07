@@ -3,12 +3,16 @@
 #include <cstdint>
 #include <cmath>
 #include <string>
-#include <iostream>
-#include <fstream>
 #include <vector>
-#include <unordered_map>
-#include <unordered_set>
 #include <array>
+#include <thread>
+#include <mutex>
+#include <functional>
+#include <atomic>
+
+typedef uint32_t uint;
+#define FOR(I, N) for(int (I)=0; (I)<(N); (I)++)
+#define FOR2(I, A, B) for(auto (I)=A; (I)<=(B); (I)++)
 
 #define GLM_SWIZZLE
 #define GLM_FORCE_RADIANS
@@ -27,29 +31,6 @@
 
 // ==========
 
-template<typename T>
-bool between(T a, T b, T c)
-{
-	return (a <= b && b <= c) || (a >= b && b >= c);
-}
-
-template<typename T, glm::precision P>
-bool between(glm::detail::tvec3<T, P> a, glm::detail::tvec3<T, P> b, glm::detail::tvec3<T, P> c)
-{
-	return between(a.x, b.x, c.x) && between(a.y, b.y, c.y) && between(a.z, b.z, c.z);
-}
-
-// ==========
-
-template<> struct std::hash<glm::ivec3>
-{
-	std::size_t operator()(glm::ivec3 a) const { return a.x * 7 + a.y * 3341 + a.z * 543523; }
-};
-
-// ==========
-
-namespace std
-{
 template<typename Type, size_t Capacity>
 class ivector
 {
@@ -66,7 +47,6 @@ private:
 	std::array<Type, Capacity> m_array;
 	size_t m_size;
 };
-}
 
 // ==========
 
@@ -118,26 +98,166 @@ template<typename T> T sqr(T a) { return a * a; }
 float sqr(glm::vec3 a) { return glm::dot(a, a); }
 int sqr(glm::ivec3 a) { return glm::dot(a, a); }
 
-#define FOR(I, N) for(int (I)=0; (I)<(N); (I)++)
-#define FOR2(I, A, B) for(auto (I)=A; (I)<=(B); (I)++)
-#define unless(A) if(!(A))
+inline float distance2_point_and_line(glm::vec3 point, glm::vec3 orig, glm::vec3 dir)
+{
+	assert(is_unit_length(dir));
+	return glm::distance2(point, orig + dir * glm::dot(point - orig, dir));
+}
+
+template<int size>
+bool intersects_line_polygon(Plucker line, const Plucker edges[size])
+{
+	FOR(i, size) if (line_crossing(line, edges[i]) > 0) return false;
+	return true;
+}
+
+static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
 
 template<typename T>
 void release(std::vector<T>& a) { std::vector<T> v; std::swap(a, v); }
 template<typename T>
 bool contains(const std::vector<T>& p, T a) { return std::find(p.begin(), p.end(), a) != p.end(); }
-
 template<typename T>
-void compress(std::vector<T>& a) { if (a.capacity() > a.size()) { std::vector<T> b(a); std::swap(a, b); assert(a.size() == a.capacity()); } }
+void compress(std::vector<T>& a) { if (a.capacity() > a.size()) { std::vector<T> b(a); std::swap(a, b); } }
 
-// =============
+// ==============
 
-struct IVec2Hash
+inline const char* str(glm::ivec3 a)
 {
-	size_t operator()(glm::ivec2 a) const { return a.x * 7919 + a.y * 7537; }
+	char buffer[100];
+	snprintf(buffer, 100, "[%d %d %d]", a.x, a.y, a.z);
+	int size = strlen(buffer);
+	char* p = new char[size + 1];
+	memcpy(p, buffer, size + 1);
+	return p;
+}
+
+inline const char* str(glm::dvec3 a)
+{
+	char buffer[100];
+	snprintf(buffer, sizeof(buffer), "[%lf %lf %lf]", a.x, a.y, a.z);
+	int size = strlen(buffer);
+	char* p = new char[size + 1];
+	memcpy(buffer, p, size + 1);
+	return p;
+}
+
+inline const char* str(glm::vec3 a)
+{
+	char buffer[100];
+	snprintf(buffer, sizeof(buffer), "[%f %f %f]", a.x, a.y, a.z);
+	int size = strlen(buffer);
+	char* p = new char[size + 1];
+	memcpy(buffer, p, size + 1);
+	return p;
+}
+
+// ===============
+
+float SimplexNoise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbulent)
+{
+	float freq = 1.0f, amp = 1.0f, max = amp;
+	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
+	FOR(i, octaves - 1)
+	{
+		freq *= freqf;
+		amp *= ampf;
+		max += amp;
+		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
+	}
+	return total / max;
+}
+
+float SimplexNoise(glm::vec3 p, int octaves, float freqf, float ampf, bool turbulent)
+{
+	float freq = 1.0f, amp = 1.0f, max = amp;
+	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
+	FOR(i, octaves - 1)
+	{
+		freq *= freqf;
+		amp *= ampf;
+		max += amp;
+		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
+	}
+	return total / max;
+}
+
+// ===============
+
+struct Sphere : public std::vector<glm::ivec3>
+{
+	Sphere(int size)
+	{
+		FOR2(x, -size, size) FOR2(y, -size, size) FOR2(z, -size, size)
+		{
+			glm::ivec3 d(x, y, z);
+			if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size) push_back(d);
+		}
+		std::sort(begin(), end(), [](glm::ivec3 a, glm::ivec3 b) { return glm::length2(a) < glm::length2(b); });
+	}
 };
 
-struct IVec3Hash
+// ================
+
+struct Frustum
 {
-	size_t operator()(glm::ivec3 a) const { return a.x * 7919 + a.y * 7537 + a.z * 7687; }
+	Frustum(const glm::mat4& matrix)
+	{
+		const float* m = glm::value_ptr(matrix);
+		glm::vec4 a(m[0], m[4], m[8], m[12]);
+		glm::vec4 b(m[1], m[5], m[9], m[13]);
+		glm::vec4 d(m[3], m[7], m[11], m[15]);
+
+		m_plane[0] = d - a; // left
+		m_plane[1] = d + a; // right
+		m_plane[2] = d + b; // bottom
+		m_plane[3] = d - b; // top
+
+		FOR(i, 4) m_plane[i] *= glm::fastInverseSqrt(sqr(m_plane[i].xyz()));
+	}
+
+	bool contains_point(glm::vec3 p) const
+	{
+		FOR(i, 4) if (glm::dot(p, m_plane[i].xyz()) + m_plane[i].w < 0) return false;
+		return true;
+	}
+
+	bool is_sphere_outside(glm::vec3 p, float radius) const
+	{
+		FOR(i, 4) if (glm::dot(p, m_plane[i].xyz()) + m_plane[i].w < -radius) return true;
+		return false;
+	}
+
+private:
+	std::array<glm::vec4, 4> m_plane;
+};
+
+// ===============
+
+inline int64_t rdtsc()
+{
+	uint lo, hi;
+	__asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
+	return (static_cast<uint64_t>(hi) << 32) | lo;
+}
+
+struct Timestamp
+{
+	Timestamp() : m_ticks(rdtsc()) { }
+
+	int64_t elapsed(Timestamp a = Timestamp()) { return a.m_ticks - m_ticks; }
+	double elapsed_ms(Timestamp a = Timestamp()) { return elapsed(a) * milisec_per_tick; }
+
+	static void init(glm::dvec3 a, glm::i64vec3 b, glm::dvec3 c, glm::i64vec3 d)
+	{
+		glm::dvec3 q = (c - a) / glm::dvec3(d - b);
+		if (q.x > q.y) std::swap(q.x, q.y);
+		if (q.y > q.z) std::swap(q.y, q.z);
+		if (q.x > q.y) std::swap(q.x, q.y);
+		milisec_per_tick = q.y * 1000;
+	}
+
+	static double milisec_per_tick;
+private:
+	int64_t m_ticks;
 };

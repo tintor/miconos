@@ -1,11 +1,18 @@
 // TODO:
 // - slowly blend-in newly buffered chunks so that they are less noticable
+// - persist map-chunks for faster loading!
+// - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance and raytracing budget based on frame time
+
+// # Raytracing:
 // - Raytracer when moving: clear set only, and not array. Deduplicate array when sorting. Remove stale array elements when raytracing is complete!
 // - newly buffered chunks should re-start raytracer
-// - persist map-chunks for faster loading!
+// - generate ray in screen space (avoids testing all directions against frustum + adapts to different resolutions)
+// - sky/ambient chunk cubes (generated when ray goes out of render distance), this allows us to avoid clearing the buffer (and makes holes when raycasting less noticable)
 
 // # more proceduraly generated stuff!
-// - diffuse/reduce process
+// - nicer generated trees! palms!
+// - water / sand / snow!
+// - diffuse/reduce process?
 
 // # eye-candy
 // - grass with wind effect!
@@ -18,7 +25,7 @@
 // - mesh reduction for far away chunks:
 //	- remove interior quads not visible from far outside
 //    - remove small lone blocks, fill small lone holes
-//    - two concave quads at 90 degrees can be converted into slope (even if not far!) 
+//    - two concave quads at 90 degrees can be converted into slope (even if not far!)
 // - combine 2x2x2 chunks that are far to be able to optimize their quads better and to reduce the total number of chunks as render distances are increasing
 
 // - semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
@@ -42,9 +49,12 @@
 
 // # advanced editor:
 // # - free mouse (but fixed camera) mode for editing
+// # - orbit camera mode for editing
 // # - flood fill tool
+// # - selection tool
 // # - cut/copy/paste/move tool
-// # - drawing shapes
+// # - drawing shapes (line / wall)
+// # - undo / redo
 // # - wiki / user change tracking
 
 // # water:
@@ -53,156 +63,47 @@
 
 // # ambient lighting and shadows
 
-// # portals!
+// # portals! inside world and between worlds
 
 // # bots / critters
-// # python scripting integration
+// # python scripting integration (sandbox)
 
 #include "util.hh"
 #include "callstack.hh"
 #include "rendering.hh"
-#include <thread>
-#include <mutex>
-
-// Config
-
-const int VSYNC = 1;
+#include "auto.hh"
+#include "unistd.h"
 
 // GUI
 
 int width;
 int height;
 
-// Util
-
-static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
-static const glm::ivec3 Axis[3] = { ix, iy, iz };
-
-float SimplexNoise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbulent)
-{
-	float freq = 1.0f, amp = 1.0f, max = amp;
-	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
-	FOR(i, octaves - 1)
-	{
-		freq *= freqf;
-		amp *= ampf;
-		max += amp;
-		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
-	}
-	return total / max;
-}
-
-float SimplexNoise(glm::vec3 p, int octaves, float freqf, float ampf, bool turbulent)
-{
-	float freq = 1.0f, amp = 1.0f, max = amp;
-	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
-	FOR(i, octaves - 1)
-	{
-		freq *= freqf;
-		amp *= ampf;
-		max += amp;
-		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
-	}
-	return total / max;
-}
-
-struct Closer
-{
-	glm::ivec3 origin;
-	bool operator()(glm::ivec3 a, glm::ivec3 b) { return glm::distance2(a, origin) < glm::distance2(b, origin); }
-};
-
-struct NotCloser
-{
-	glm::ivec3 origin;
-	bool operator()(glm::ivec3 a, glm::ivec3 b) { return glm::distance2(a, origin) > glm::distance2(b, origin); }
-};
-
-struct Sphere : public std::vector<glm::ivec3>
-{
-	Sphere(int size)
-	{
-		FOR2(x, -size, size) FOR2(y, -size, size) FOR2(z, -size, size)
-		{
-			glm::ivec3 d(x, y, z);
-			if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size) push_back(d);
-		}
-		std::sort(begin(), end(), Closer{glm::ivec3(0,0,0)});
-	}
-};
-
-
-// ============================
+// Map
 
 const int ChunkSizeBits = 4, MapSizeBits = 7;
 const int ChunkSize = 1 << ChunkSizeBits, MapSize = 1 << MapSizeBits;
 const int ChunkSizeMask = ChunkSize - 1, MapSizeMask = MapSize - 1;
 
-static const int RenderDistance = 63;
-Sphere render_sphere(RenderDistance);
+const int RenderDistance = 63;
 static_assert(RenderDistance < MapSize / 2, "");
 
-// ============================
-
-// Log
-
-std::ofstream tracelog("tracelog");
-
-// Map
-
-// ===========================
-
-glm::vec3 color_codes[64];
-
-void InitColorCodes()
-{
-	FOR(r, 4) FOR(g, 4) FOR(b, 4) color_codes[r + g * 4 + b * 16] = glm::vec3(r / 3.0f, g / 3.0f, b / 3.0f);
-}
-
-unsigned char ColorToCode(glm::vec3 color)
-{
-	int code = 0;
-	float err = sqr(color_codes[code] - color);
-	FOR2(i, 1, 63)
-	{
-		float e = sqr(color_codes[i] - color);
-		if (e < err)
-		{
-			err = e;
-			code = i;
-		}
-	}
-	return code;
-}
+Sphere render_sphere(RenderDistance);
 
 typedef unsigned char Block;
 
-// ============================
-
-struct Cube
+namespace Cube
 {
-	static glm::ivec3 corner[8];
-	static const int faces[6][4];
-
-	Cube()
-	{
-		FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1);
-	}
-};
-
-glm::ivec3 Cube::corner[8];
-const int Cube::faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
-
-Cube x_dummy;
+	glm::ivec3 corner[8];
+	const int faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
+	Initialize { FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1); }
+}
 
 // ============================
 
 Block Color(int r, int g, int b, int a)
 {
-	assert(0 <= r && r < 4);
-	assert(0 <= g && g < 4);
-	assert(0 <= b && b < 4);
-	assert(0 <= a && a < 4);
+	assert(0 <= r && r < 4 && 0 <= g && g < 4 && 0 <= b && b < 4 && 0 <= a && a < 4);
 	return r + g * 4 + b * 16 + a * 64;
 }
 
@@ -225,7 +126,7 @@ public:
 	}
 
 	Block operator[](glm::ivec3 a) { return block[index(a)]; }
-	
+
 	void set(glm::ivec3 a, Block b)
 	{
 		int i = index(a);
@@ -320,121 +221,128 @@ const glm::ivec3 CraterCenter(CraterRadius * -0.8, CraterRadius * -0.8, 0);
 const int MoonRadius = 500;
 const glm::ivec3 MoonCenter(MoonRadius * 0.8, MoonRadius * 0.8, 0);
 
-void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
+void GenerateTree(MapChunk& mc, int x, int y)
 {
-	heightmap->Populate(cpos.x, cpos.y);
+	int dx = x + mc.cpos.x * ChunkSize;
+	int dy = y + mc.cpos.y * ChunkSize;
+
+	if (heightmap->HasTree(dx, dy))
+	{
+		int height = heightmap->Height(dx, dy);
+		FOR(z, ChunkSize)
+		{
+			int dz = z + mc.cpos.z * ChunkSize;
+			if (dz > height && dz < height + 6)
+			{
+				mc.set(glm::ivec3(x, y, z), Color(0, 0, 3, 3));
+			}
+		}
+		return;
+	}
+	if (heightmap->HasTree(dx, dy-1))
+	{
+		int height = heightmap->Height(dx, dy-1);
+		FOR(z, ChunkSize)
+		{
+			int dz = z + mc.cpos.z * ChunkSize;
+			if (dz > height + 2 && dz < height + 6)
+			{
+				mc.set(glm::ivec3(x, y, z), Leaves);
+			}
+		}
+		return;
+	}
+	if (heightmap->HasTree(dx, dy+1))
+	{
+		int height = heightmap->Height(dx, dy+1);
+		FOR(z, ChunkSize)
+		{
+			int dz = z + mc.cpos.z * ChunkSize;
+			if (dz > height + 2 && dz < height + 6)
+			{
+				mc.set(glm::ivec3(x, y, z), Leaves);
+			}
+		}
+		return;
+	}
+	if (heightmap->HasTree(dx+1, dy))
+	{
+		int height = heightmap->Height(dx+1, dy);
+		FOR(z, ChunkSize)
+		{
+			int dz = z + mc.cpos.z * ChunkSize;
+			if (dz > height + 2 && dz < height + 6)
+			{
+				mc.set(glm::ivec3(x, y, z), Leaves);
+			}
+		}
+		return;
+	}
+	if (heightmap->HasTree(dx-1, dy))
+	{
+		int height = heightmap->Height(dx-1, dy);
+		FOR(z, ChunkSize)
+		{
+			int dz = z + mc.cpos.z * ChunkSize;
+			if (dz > height + 2 && dz < height + 6)
+			{
+				mc.set(glm::ivec3(x, y, z), Leaves);
+			}
+		}
+		return;
+	}
+}
+
+void GenerateTerrain(MapChunk& mc)
+{
+	heightmap->Populate(mc.cpos.x, mc.cpos.y); // TODO: not thread safe!
 
 	FOR(x, ChunkSize) FOR(y, ChunkSize)
 	{
-		int dx = x + cpos.x * ChunkSize;
-		int dy = y + cpos.y * ChunkSize;
+		int dx = x + mc.cpos.x * ChunkSize;
+		int dy = y + mc.cpos.y * ChunkSize;
 
 		FOR(z, ChunkSize)
 		{
-			int dz = z + cpos.z * ChunkSize;
+			int dz = z + mc.cpos.z * ChunkSize;
 			glm::ivec3 pos(dx, dy, dz);
 
 			if (dz > 100 && dz < 200)
 			{
 				// clouds
 				double q = SimplexNoise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
-				if (q < -0.35) chunk.set(glm::ivec3(x, y, z), Color(3, 3, 3, 2));
+				if (q < -0.35) mc.set(glm::ivec3(x, y, z), Color(3, 3, 3, 2));
 			}
 			else if (dz <= heightmap->Height(dx, dy))
-			{			
+			{
 				// ground and caves
 				double q = SimplexNoise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
-				chunk.set(glm::ivec3(x, y, z), q < -0.25 ? Empty : heightmap->Color(dx, dy));
+				mc.set(glm::ivec3(x, y, z), q < -0.25 ? Empty : heightmap->Color(dx, dy));
 			}
 		}
 	}
 
-	FOR(x, ChunkSize) FOR(y, ChunkSize)
-	{
-		int dx = x + cpos.x * ChunkSize;
-		int dy = y + cpos.y * ChunkSize;
-
-		if (heightmap->HasTree(dx, dy))
-		{
-			int height = heightmap->Height(dx, dy);
-			FOR(z, ChunkSize)
-			{
-				int dz = z + cpos.z * ChunkSize;
-				if (dz > height && dz < height + 6)
-				{
-					chunk.set(glm::ivec3(x, y, z), Color(0, 0, 3, 3));
-				}
-			}
-		}
-		if (heightmap->HasTree(dx, dy-1))
-		{
-			int height = heightmap->Height(dx, dy-1);
-			FOR(z, ChunkSize)
-			{
-				int dz = z + cpos.z * ChunkSize;
-				if (dz > height + 2 && dz < height + 6)
-				{
-					chunk.set(glm::ivec3(x, y, z), Leaves);
-				}
-			}
-		}
-		if (heightmap->HasTree(dx, dy+1))
-		{
-			int height = heightmap->Height(dx, dy+1);
-			FOR(z, ChunkSize)
-			{
-				int dz = z + cpos.z * ChunkSize;
-				if (dz > height + 2 && dz < height + 6)
-				{
-					chunk.set(glm::ivec3(x, y, z), Leaves);
-				}
-			}
-		}
-		if (heightmap->HasTree(dx+1, dy))
-		{
-			int height = heightmap->Height(dx+1, dy);
-			FOR(z, ChunkSize)
-			{
-				int dz = z + cpos.z * ChunkSize;
-				if (dz > height + 2 && dz < height + 6)
-				{
-					chunk.set(glm::ivec3(x, y, z), Leaves);
-				}
-			}
-		}
-		if (heightmap->HasTree(dx-1, dy))
-		{
-			int height = heightmap->Height(dx-1, dy);
-			FOR(z, ChunkSize)
-			{
-				int dz = z + cpos.z * ChunkSize;
-				if (dz > height + 2 && dz < height + 6)
-				{
-					chunk.set(glm::ivec3(x, y, z), Leaves);
-				}
-			}
-		}
-	}
+	FOR(x, ChunkSize) FOR(y, ChunkSize) GenerateTree(mc, x, y);
 
 	// moon
 	FOR(x, ChunkSize)
 	{
-		int dx = x + cpos.x * ChunkSize;
+		int dx = x + mc.cpos.x * ChunkSize;
 		int64_t sx = sqr<int64_t>(dx - MoonCenter.x) - sqr<int64_t>(MoonRadius);
 		if (sx > 0) continue;
 
 		FOR(y, ChunkSize)
 		{
-			int dy = y + cpos.y * ChunkSize;
+			int dy = y + mc.cpos.y * ChunkSize;
 			int64_t sy = sx + sqr<int64_t>(dy - MoonCenter.y);
 			if (sy > 0) continue;
 
 			FOR(z, ChunkSize)
 			{
-				int dz = z + cpos.z * ChunkSize;
+				int dz = z + mc.cpos.z * ChunkSize;
 				int64_t sz = sy + sqr<int64_t>(dz - MoonCenter.z);
 				if (sz > 0) continue;
-				chunk.set(glm::ivec3(x, y, z), heightmap->Color(dx, dy));
+				mc.set(glm::ivec3(x, y, z), heightmap->Color(dx, dy));
 			}
 		}
 	}
@@ -442,19 +350,19 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 	// crater
 	FOR(x, ChunkSize)
 	{
-		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - CraterCenter.x) - sqr<int64_t>(CraterRadius);
+		int64_t sx = sqr<int64_t>(x + mc.cpos.x * ChunkSize - CraterCenter.x) - sqr<int64_t>(CraterRadius);
 		if (sx > 0) continue;
 
 		FOR(y, ChunkSize)
 		{
-			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - CraterCenter.y);
+			int64_t sy = sx + sqr<int64_t>(y + mc.cpos.y * ChunkSize - CraterCenter.y);
 			if (sy > 0) continue;
 
 			FOR(z, ChunkSize)
 			{
-				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize - CraterCenter.z);
-				if (sz > 0 || z + ChunkSize * cpos.z >= 100) continue;
-				chunk.set(glm::ivec3(x, y, z), Empty);
+				int64_t sz = sy + sqr<int64_t>(z + mc.cpos.z * ChunkSize - CraterCenter.z);
+				if (sz > 0 || z + ChunkSize * mc.cpos.z >= 100) continue;
+				mc.set(glm::ivec3(x, y, z), Empty);
 			}
 		}
 	}
@@ -462,41 +370,17 @@ void GenerateTerrain(glm::ivec3 cpos, MapChunk& chunk)
 
 // ============================
 
-const char* str(glm::ivec3 a)
-{
-	char buffer[100];
-	snprintf(buffer, 100, "[%d %d %d]", a.x, a.y, a.z);
-	int size = strlen(buffer);
-	char* p = new char[size + 1];
-	memcpy(p, buffer, size + 1);
-	return p;
-}
-const char* str(glm::dvec3 a)
-{
-	char buffer[100];
-	snprintf(buffer, sizeof(buffer), "[%lf %lf %lf]", a.x, a.y, a.z);
-	int size = strlen(buffer);
-	char* p = new char[size + 1];
-	memcpy(buffer, p, size + 1);
-	return p;
-}
-const char* str(glm::vec3 a)
-{
-	char buffer[100];
-	snprintf(buffer, sizeof(buffer), "[%f %f %f]", a.x, a.y, a.z);
-	int size = strlen(buffer);
-	char* p = new char[size + 1];
-	memcpy(buffer, p, size + 1);
-	return p;
-}
-
 struct Map
 {
-	Map();
+	Map()
+	{
+		FOR(i, MapSize) m_map[i] = nullptr;
+		FOR(x, 4) FOR(y, 4) FOR(z, 4) set(glm::ivec3(x*2, y*2, z*2+45), Color(x, y, z, 3));
+	}
 
 	MapChunk& get(glm::ivec3 cpos)
 	{
-		int h = KeyHash()(cpos) % MapSize;
+		int h = index(cpos);
 		MapChunk* head = m_map[h].load(std::memory_order_relaxed);
 		for (MapChunk* i = head; i; i = i->next) if (i->cpos == cpos) return *i;
 
@@ -506,112 +390,42 @@ struct Map
 		MapChunk* p = new MapChunk;
 		p->cpos = cpos;
 		p->next = head2;
-		GenerateTerrain(cpos, *p);
+		GenerateTerrain(*p);
 		m_map[h] = p;
 		return *p;
 	}
 
 	MapChunk* try_get(glm::ivec3 cpos)
 	{
-		int h = KeyHash()(cpos) % MapSize;
+		int h = index(cpos);
 		MapChunk* head = m_map[h].load(std::memory_order_relaxed);
 		for (MapChunk* i = head; i; i = i->next) if (i->cpos == cpos) return i;
 		return nullptr;
 	}
-	
-	void Set(glm::ivec3 pos, Block block)
+
+	void set(glm::ivec3 pos, Block block)
 	{
 		get(pos >> ChunkSizeBits).set(pos & ChunkSizeMask, block);
 	}
 
-	void Print()
-	{
-		int m = 0, c = 0, nz = 0;
-		FOR(i, MapSize)
-		{
-			int n = 0;
-			for (MapChunk* p = m_map[i]; p; p=p->next)
-			{
-				n += 1;
-			}
-			if (n != 0) nz += 1;
-			if (n > 1)
-			{
-				fprintf(stderr, "chain\n");
-				for (MapChunk* p = m_map[i]; p; p=p->next)
-				{
-					fprintf(stderr, "%s\n", str(p->cpos));
-				}
-			}
-			c += n;
-			m = std::max(m, n);
-		}
-		fprintf(stderr, "map hash table: size %d, chains %d, max chain %d, average chain %lf\n", c, nz, m, (double)c / nz);
-	}
-	
 private:
-	struct KeyHash
-	{
-		size_t operator()(glm::ivec3 a) const { a &= 127; return (a.x * 128 * 128) + (a.y * 128) + (a.z); }
-	};
+	// TODO: Z-order?
+	int index(glm::ivec3 a) const { a &= 127; return (a.x * 128 + a.y) * 128 + a.z; }
 
 	static const int MapSize = 128 * 128 * 128;
 	std::atomic<MapChunk*> m_map[MapSize];
 	std::mutex m_lock[64];
-	
-	glm::ivec3 m_cpos;
 };
-
-// ============================
-
-int S(int a) { return 1 << a; }
-
-Map::Map() : m_cpos(0x80000000, 0, 0)
-{
-	FOR(i, MapSize) m_map[i] = nullptr;
-	InitColorCodes();
-
-	// sphere test
-	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1)
-	{
-		int dx = (x == 1) ? 1 : 0;
-		int dy = (y == 1) ? 2 : 0;
-		int dz = (z == 1) ? 4 : 0;
-
-		unsigned char shape = 255;
-		if (x == 0 && y != 0 && z != 0)
-		{
-			shape = 255 - S(0 + dy + dz) - S(1 + dy + dz);
-		}
-		if (x != 0 && y == 0 && z != 0)
-		{
-			shape = 255 - S(0 + dx + dz) - S(2 + dx + dz);
-		}
-		if (x != 0 && y != 0 && z == 0)
-		{
-			shape = 255 - S(0 + dx + dy) - S(4 + dx + dy);
-		}
-		if (x != 0 && y != 0 && z != 0)
-		{
-			int f = 0;
-			if (x == -1) f ^= 1;
-			if (y == -1) f ^= 2;
-			if (z == -1) f ^= 4;
-			shape = S(0^f) + S(1^f) + S(2^f) + S(4^f);
-		}
-
-		Set(glm::ivec3(x+1, y-10, z+30), Color(3, 3, 0, 3));
-	}
-
-	// all colors
-	FOR(x, 4) FOR(y, 4) FOR(z, 4) Set(glm::ivec3(x*2, y*2, z*2+45), Color(x, y, z, 3));
-}
-
-// ============================
 
 Map* map = new Map;
 
 Block map_get(glm::ivec3 pos) { return map->get(pos >> ChunkSizeBits)[pos & ChunkSizeMask]; }
+Block map_get(glm::ivec3 pos, MapChunk& hint)
+{
+	glm::ivec3 cpos = pos >> ChunkSizeBits;
+	MapChunk& mc = (cpos == hint.cpos) ? hint : map->get(cpos);
+	return mc[pos & ChunkSizeMask];
+}
 
 // ============================
 
@@ -623,27 +437,10 @@ struct Vertex
 	GLubyte pos[3];
 };
 
-struct Frustum
-{
-	std::array<glm::vec4, 4> frustum;
-	void init(const glm::mat4& matrix);
-
-	bool contains_point(glm::vec3 p) const;
-
-	bool is_sphere_outside(glm::vec3 p, float radius) const
-	{
-		FOR(i, 4) if (glm::dot(p, frustum[i].xyz()) + frustum[i].w < -radius) return true;
-		return false;
-	}
-};
-
 const float BlockRadius = sqrtf(3) / 2;
 
 struct VisibleChunks
 {
-	BitCube<MapSize> set;
-	std::vector<glm::ivec3> array;	
-
 	VisibleChunks() { set.clear(); }
 
 	void add(glm::ivec3 v)
@@ -656,7 +453,6 @@ struct VisibleChunks
 		int w = 0;
 		for (glm::ivec3 c : array)
 		{
-			;
 			if (glm::dot(direction, glm::vec3(c - center)) < 0 || glm::distance2(c, center) > sqr(RenderDistance))
 			{
 				assert(set[c & MapSizeMask]);
@@ -669,6 +465,19 @@ struct VisibleChunks
 		}
 		array.resize(w);
 	}
+
+	void sort(glm::ivec3 center)
+	{
+		auto cmp = [center](glm::ivec3 a, glm::ivec3 b) { return glm::distance2(a, center) > glm::distance2(b, center); };
+		std::sort(array.begin(), array.end(), cmp);
+	}
+
+	glm::ivec3* begin() { return &array[0]; }
+	glm::ivec3* end() { return begin() + array.size(); }
+
+private:
+	BitCube<MapSize> set;
+	std::vector<glm::ivec3> array;
 };
 
 struct BlockRenderer
@@ -679,15 +488,12 @@ struct BlockRenderer
 
 	void vertex(GLubyte light, GLubyte uv, int c);
 	void draw_quad(int a, int b, int c, int d);
-	void render(glm::ivec3 pos, Block bs);
+	void render(MapChunk& mc, glm::ivec3 pos, Block bs);
 };
 
 struct Chunk
 {
-	std::mutex mutex;
-	glm::ivec3 cpos; // TODO -> should be atomic -> pack into uint64 -> 21 bit per coordinate -> 25 effective
-	std::vector<Vertex> vertices;
-	int render_size;
+	Chunk() : cpos(0x80000000, 0, 0) { }
 
 	void buffer(BlockRenderer& renderer)
 	{
@@ -695,13 +501,19 @@ struct Chunk
 		MapChunk& mc = map->get(cpos);
 		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
 		{
-			renderer.render(cpos * ChunkSize + glm::ivec3(x, y, z), mc[glm::ivec3(x, y, z)]);
+			renderer.render(mc, cpos * ChunkSize + glm::ivec3(x, y, z), mc[glm::ivec3(x, y, z)]);
 		}
-	
+
 		vertices.resize(renderer.m_vertices.size());
 		std::copy(renderer.m_vertices.begin(), renderer.m_vertices.end(), vertices.begin());
-		assert(vertices.size() == vertices.capacity());
 		render_size = vertices.size();
+	}
+
+	int render()
+	{
+		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * vertices.size(), &vertices[0], GL_STREAM_DRAW);
+		glDrawArrays(GL_TRIANGLES, 0, render_size);
+		return render_size;
 	}
 
 	bool init(glm::ivec3 _cpos, BlockRenderer& renderer)
@@ -728,7 +540,12 @@ struct Chunk
 		// TODO: move visible quads
 	}
 
-	Chunk() : cpos(0x80000000, 0, 0), render_size(0) { }
+	friend class Chunks;
+private:
+	std::mutex mutex;
+	glm::ivec3 cpos; // TODO -> should be atomic -> pack into uint64 -> 21 bit per coordinate -> 25 effective
+	std::vector<Vertex> vertices;
+	int render_size;
 };
 
 Console console;
@@ -741,13 +558,13 @@ namespace player
 	float yaw = 0;
 	float pitch = 0;
 	glm::mat4 orientation;
+	//float* m = glm::value_ptr(player::orientation);
+	//glm::vec3 forward(m[4], m[5], m[6]);
+	//glm::vec3 right(m[0], m[1], m[2]);
 	glm::vec3 velocity;
 	bool flying = true;
 }
 
-#include <functional>
-#include <atomic>
-#include "unistd.h"
 class Chunks
 {
 public:
@@ -770,7 +587,7 @@ public:
 			t.detach();
 		}
 	}
-	
+
 	static void loader_thread(Chunks* chunks, int k)
 	{
 		glm::ivec3 last_cpos(0x80000000, 0, 0);
@@ -801,13 +618,13 @@ public:
 			last_cpos = cpos;
 		}
 	}
-	
+
 	static int owner(glm::ivec3 cpos)
 	{
 		static_assert(Threads == 1 || Threads == 2 || Threads == 4 || Threads == 8 || Threads == 16, "");
 		return (cpos.x ^ cpos.y ^ cpos.z) & (Threads - 1);
 	}
-	
+
 	// TODO: add trylock to prevent it from being unloaded
 	bool loaded(glm::ivec3 cpos) { return get(cpos).cpos == cpos; }
 
@@ -829,27 +646,15 @@ Chunks g_chunks;
 
 // ======================
 
-float distance2_point_and_line(glm::vec3 point, glm::vec3 orig, glm::vec3 dir)
-{
-	assert(is_unit_length(dir));
-	return glm::distance2(point, orig + dir * glm::dot(point - orig, dir));
-}
-
-template<int size>
-bool intersects_line_polygon(Plucker line, const Plucker edges[size])
-{
-	FOR(i, size) if (line_crossing(line, edges[i]) > 0) return false;
-	return true;
-}
-
 struct BoundaryBlocks : public std::vector<glm::ivec3>
 {
 	BoundaryBlocks()
 	{
 		const int M = ChunkSize - 1;
 		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
-			if (x == 0 || x == M || y == 0 || y == M || z == 0 || z == M)
-				push_back(glm::ivec3(x, y, z));
+		{
+			if (x == 0 || x == M || y == 0 || y == M || z == 0 || z == M) push_back(glm::ivec3(x, y, z));
+		}
 	}
 } boundary_blocks;
 
@@ -858,35 +663,26 @@ bool can_see_through(Block block) { return block == Empty || block == Leaves; }
 
 struct Directions : public std::vector<glm::ivec3>
 {
-	static const int Bits = 9;
+	enum { Bits = 9 };
 	Directions()
 	{
 		const int M = 1 << Bits, N = M - 1;
-		FOR2(x, static_cast<int>(1), M) FOR2(y, static_cast<int>(1), M) FOR2(z, static_cast<int>(1), M)
+		FOR2(x, 1, M) FOR2(y, 1, M) FOR2(z, 1, M)
 		{
 			int d2 = x*x + y*y + z*z;
-			if (N*N < d2 && d2 <= M*M)
+			if (N*N < d2 && d2 <= M*M) for (int i : {-x, x}) for (int j : {-y, y})
 			{
-				push_back(glm::ivec3( x,  y,  z));
-				push_back(glm::ivec3( x,  y, -z));
-				push_back(glm::ivec3( x, -y,  z));
-				push_back(glm::ivec3( x, -y, -z));
-				push_back(glm::ivec3(-x,  y,  z));
-				push_back(glm::ivec3(-x,  y, -z));
-				push_back(glm::ivec3(-x, -y,  z));
-				push_back(glm::ivec3(-x, -y, -z));
+				push_back(glm::ivec3(i, j, z));
+				push_back(glm::ivec3(i, j, -z));
 			}
 		}
-		push_back(glm::ivec3( M, 0, 0));
-		push_back(glm::ivec3(-M, 0, 0));
-		push_back(glm::ivec3(0,  M, 0));
-		push_back(glm::ivec3(0, -M, 0));
-		push_back(glm::ivec3(0, 0,  M));
-		push_back(glm::ivec3(0, 0, -M));
-		for (int i = 0; i < size(); i++)
+		for (int m : {M, -M})
 		{
-			std::swap(operator[](std::rand() % size()), operator[](i));
+			push_back(glm::ivec3(m, 0, 0));
+			push_back(glm::ivec3(0, m, 0));
+			push_back(glm::ivec3(0, 0, m));
 		}
+		FOR(i, size()) std::swap(operator[](std::rand() % size()), operator[](i));
 	}
 } directions;
 
@@ -895,77 +691,77 @@ int rays_remaining = 0;
 
 VisibleChunks visible_chunks;
 
+const int E = Directions::Bits + 1;
+
+void raytrace(MapChunk* mc, glm::ivec3 photon, glm::ivec3 dir)
+{
+	const int MaxDist2 = sqr(RenderDistance * ChunkSize);
+	const int B = ChunkSizeBits + E;
+	glm::ivec3 svoxel = photon >> E, voxel = svoxel;
+	while (true)
+	{
+		do photon += dir; while ((photon >> E) == voxel);
+		glm::ivec3 cvoxel = photon >> B;
+		if (mc->cpos != cvoxel)
+		{
+			mc = map->try_get(cvoxel);
+			if (!mc) return;
+			// Advance photon until it leaves empty chunk
+			while (mc->count_empty == ChunkSize * ChunkSize * ChunkSize)
+			{
+				do photon += dir; while ((photon >> B) == cvoxel);
+				voxel = photon >> E;
+				if (glm::distance2(voxel, svoxel) > MaxDist2) return;
+				cvoxel = photon >> B;
+				mc = map->try_get(cvoxel);
+				if (!mc) return;
+			}
+		}
+		voxel = photon >> E;
+		if (glm::distance2(voxel, svoxel) > MaxDist2) return;
+		Block block = (*mc)[voxel & ChunkSizeMask];
+		if (block == Empty) continue;
+		visible_chunks.add(cvoxel);
+		if (!can_see_through(block)) return;
+	}
+}
+
 // which chunks must be rendered from the center chunk?
 void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 {
 	if (rays_remaining == 0) return;
 	MapChunk& mc = map->get(cpos);
-	const int D = Directions::Bits;
-	int MaxDist = RenderDistance * ChunkSize;
-	int size = visible_chunks.array.size();
 
-	float k = 1 << D;
+	float k = 1 << E;
 	glm::ivec3 origin = glm::ivec3(glm::floor(player::position * k));
 
-	int budget = 3000000;
-	while (budget > 0 && rays_remaining > 0)
+	int64_t budget = 40 / Timestamp::milisec_per_tick;
+	Timestamp ta;
+
+	int q = 0;
+	while (rays_remaining > 0)
 	{
 		glm::ivec3 dir = directions[ray_it++];
 		if (ray_it == directions.size()) ray_it = 0;
 		rays_remaining -= 1;
-		if (!frustum.contains_point(player::position + glm::vec3(dir))) continue;
-
-		glm::ivec3 photon = origin;
-		int dist = 0;
-		MapChunk* pmc = &mc;
-		while (true)
-		{
-			photon += dir;
-			dist += 1;
-			again:
-			if (dist > MaxDist) break;
-			glm::ivec3 cvoxel = photon >> (D + ChunkSizeBits);
-			if (pmc->cpos != cvoxel)
-			{
-				pmc = map->try_get(cvoxel);
-				if (!pmc) break;
-				if (pmc->count_empty == ChunkSize * ChunkSize * ChunkSize)
-				{
-					// Advance photon until it leaves chunk
-					do
-					{
-						photon += dir;
-						dist += 1;
-					}
-					while ((photon >> (D + ChunkSizeBits)) == cvoxel);
-					goto again;
-				}
-			}
-			glm::ivec3 voxel = photon >> D;
-			Block block = (*pmc)[voxel & ChunkSizeMask]; // 3D hilbert curve order?
-			if (block != Empty) visible_chunks.add(cvoxel);
-			if (!can_see_through(block)) break;
-		}
-		budget -= dist;
+		if (frustum.contains_point(player::position + glm::vec3(dir))) raytrace(&mc, origin, dir);
+		if ((q++ % 2048) == 0 && ta.elapsed() > budget) break;
 	}
-
-	if (visible_chunks.array.size() != size) std::sort(visible_chunks.array.begin(), visible_chunks.array.end(), NotCloser{cpos});
+	visible_chunks.sort(cpos);
 }
 
 namespace stats
 {
-	int triangle_count = 0;
+	int vertex_count = 0;
 	int chunk_count = 0;
 
 	float frame_time_ms = 0;
-	float block_render_time_ms = 0;
+	float render_time_ms = 0;
 	float model_time_ms = 0;
 	float raytrace_time_ms = 0;
 }
 
 // Model
-
-float last_time;
 
 glm::mat4 perspective;
 glm::mat4 perspective_rotation;
@@ -974,25 +770,25 @@ glm::ivec3 sel_cube;
 int sel_face;
 bool selection = false;
 bool wireframe = false;
+bool show_counters = true;
 
-BlockRenderer g_renderer;
-
-void EditBlock(glm::ivec3 pos, Block block)
+void edit_block(glm::ivec3 pos, Block block)
 {
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
 	glm::ivec3 p = pos & ChunkSizeMask;
 
-	map->Set(pos, block);
-	g_chunks(cpos).reset(g_renderer);
-	if (p.x == 0) g_chunks(cpos - ix).reset(g_renderer);
-	if (p.y == 0) g_chunks(cpos - iy).reset(g_renderer);
-	if (p.z == 0) g_chunks(cpos - iz).reset(g_renderer);
-	if (p.x == ChunkSizeMask) g_chunks(cpos + ix).reset(g_renderer);
-	if (p.y == ChunkSizeMask) g_chunks(cpos + iy).reset(g_renderer);
-	if (p.z == ChunkSizeMask) g_chunks(cpos + iz).reset(g_renderer);
+	map->set(pos, block);
+	static BlockRenderer renderer;
+	g_chunks(cpos).reset(renderer);
+	if (p.x == 0) g_chunks(cpos - ix).reset(renderer);
+	if (p.y == 0) g_chunks(cpos - iy).reset(renderer);
+	if (p.z == 0) g_chunks(cpos - iz).reset(renderer);
+	if (p.x == ChunkSizeMask) g_chunks(cpos + ix).reset(renderer);
+	if (p.y == ChunkSizeMask) g_chunks(cpos + iy).reset(renderer);
+	if (p.z == ChunkSizeMask) g_chunks(cpos + iz).reset(renderer);
 }
 
-void OnEditKey(int key)
+void on_edit_key(int key)
 {
 	Block block = map_get(sel_cube);
 	int r = block % 4;
@@ -1003,28 +799,26 @@ void OnEditKey(int key)
 	if (key == GLFW_KEY_Z)
 	{
 		block = Color((r + 1) % 4, g, b, a);
-		EditBlock(sel_cube, block);
+		edit_block(sel_cube, block);
 	}
 	if (key == GLFW_KEY_X)
 	{
 		block = Color(r, (g + 1) % 4, b, a);
-		EditBlock(sel_cube, block);
+		edit_block(sel_cube, block);
 	}
 	if (key == GLFW_KEY_C)
 	{
 		block = Color(r, g, (b + 1) % 4, a);
-		EditBlock(sel_cube, block);
+		edit_block(sel_cube, block);
 	}
 	if (key == GLFW_KEY_V)
 	{
 		block = Color(r, g, b, (a + 1) % 4);
-		EditBlock(sel_cube, block);
+		edit_block(sel_cube, block);
 	}
 }
 
-bool show_counters = true;
-
-void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
+void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
@@ -1066,39 +860,36 @@ void OnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 		}
 		else if (selection)
 		{
-			OnEditKey(key);
+			on_edit_key(key);
 		}
 	}
 	else if (action == GLFW_REPEAT)
 	{
 		if (selection)
 		{
-			OnEditKey(key);
+			on_edit_key(key);
 		}
 	}
 }
 
-void OnMouseButton(GLFWwindow* window, int button, int action, int mods)
+void on_mouse_button(GLFWwindow* window, int button, int action, int mods)
 {
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection)
 	{
-		EditBlock(sel_cube, Empty);
+		edit_block(sel_cube, Empty);
 	}
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
 	{
 		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
-		EditBlock(sel_cube + dir[sel_face], map_get(sel_cube));
+		edit_block(sel_cube + dir[sel_face], map_get(sel_cube));
 	}
 }
 
 void model_init(GLFWwindow* window)
 {
-	glfwSetKeyCallback(window, OnKey);
-	glfwSetMouseButtonCallback(window, OnMouseButton);
-
-	last_time = glfwGetTime();
-
+	glfwSetKeyCallback(window, on_key);
+	glfwSetMouseButtonCallback(window, on_mouse_button);
 	glfwSetCursorPos(window, 0, 0);
 }
 
@@ -1137,7 +928,7 @@ int Resolve(glm::vec3& center, float k, float x, float y, float z)
 //
 // Neighbors is 3x3x3 matrix of 27 bits representing nearby cubes.
 // Used to turn off vertices and edges that are not exposed.
-int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbors)
+int sphere_vs_cube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbors)
 {
 	float e = 0.5;
 	float x = center.x - cube.x - e;
@@ -1235,7 +1026,7 @@ int SphereVsCube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbors
 	return 1;
 }
 
-int CubeNeighbors(glm::ivec3 cube)
+int cube_neighbors(glm::ivec3 cube)
 {
 	int neighbors = 0;
 	FOR2(dx, -1, 1) FOR2(dy, -1, 1) FOR2(dz, -1, 1)
@@ -1248,30 +1039,7 @@ int CubeNeighbors(glm::ivec3 cube)
 	return neighbors;
 }
 
-void ResolveCollisionsWithBlocks()
-{
-	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
-	FOR(i, 2)
-	{
-		// Resolve all collisions simultaneously
-		glm::vec3 sum(0, 0, 0);
-		int c = 0;
-		FOR2(x, p.x - 3, p.x + 3) FOR2(y, p.y - 3, p.y + 3) FOR2(z, p.z - 3, p.z + 3)
-		{
-			glm::ivec3 cube(x, y, z);
-			if (map_get(cube) != Empty && 1 == SphereVsCube(player::position, 1.6f, cube, CubeNeighbors(cube)))
-			{
-				sum += player::position;
-				c += 1;
-			}
-		}
-		if (c == 0) break;
-		player::velocity = glm::vec3(0, 0, 0);
-		player::position = sum / (float)c;
-	}
-}
-
-glm::vec3 Gravity(glm::vec3 pos)
+glm::vec3 gravity(glm::vec3 pos)
 {
 	return glm::vec3(0, 0, -15);
 
@@ -1289,14 +1057,33 @@ glm::vec3 Gravity(glm::vec3 pos)
 	}
 }
 
-void Simulate(float dt, glm::vec3 dir)
+void simulate(float dt, glm::vec3 dir)
 {
 	if (!player::flying)
 	{
-		player::velocity += Gravity(player::position) * dt;
+		player::velocity += gravity(player::position) * dt;
 	}
 	player::position += dir * ((player::flying ? 20 : 10) * dt) + player::velocity * dt;
-	ResolveCollisionsWithBlocks();
+
+	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
+	FOR(i, 2)
+	{
+		// Resolve all collisions simultaneously
+		glm::vec3 sum(0, 0, 0);
+		int c = 0;
+		FOR2(x, p.x - 3, p.x + 3) FOR2(y, p.y - 3, p.y + 3) FOR2(z, p.z - 3, p.z + 3)
+		{
+			glm::ivec3 cube(x, y, z);
+			if (map_get(cube) != Empty && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube)))
+			{
+				sum += player::position;
+				c += 1;
+			}
+		}
+		if (c == 0) break;
+		player::velocity = glm::vec3(0, 0, 0);
+		player::position = sum / (float)c;
+	}
 }
 
 void model_move_player(GLFWwindow* window, float dt)
@@ -1324,7 +1111,7 @@ void model_move_player(GLFWwindow* window, float dt)
 
 	if (!player::flying && glfwGetKey(window, GLFW_KEY_SPACE))
 	{
-		player::velocity = Gravity(player::position) * -0.5f;
+		player::velocity = gravity(player::position) * -0.5f;
 	}
 
 	glm::vec3 p = player::position;
@@ -1336,10 +1123,10 @@ void model_move_player(GLFWwindow* window, float dt)
 	{
 		if (dt <= 0.008)
 		{
-			Simulate(dt, dir);
+			simulate(dt, dir);
 			break;
 		}
-		Simulate(0.008, dir);
+		simulate(0.008, dir);
 		dt -= 0.008;
 	}
 	if (p != player::position)
@@ -1363,6 +1150,7 @@ float intersect_line_plane(glm::vec3 orig, glm::vec3 dir, glm::vec4 plane)
 // No results if ray's origin is inside the cube
 int intersects_ray_cube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube)
 {
+	assert(is_unit_length(dir));
 	orig -= glm::dvec3(cube);
 	glm::vec3 cube_center(0.5f, 0.5f, 0.5f);
 	float pos = glm::dot(cube_center - orig, dir);
@@ -1385,7 +1173,7 @@ int intersects_ray_cube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube)
 		if (0 <= k.y && k.y <= 1 && 0 <= k.z && k.z <= 1) return 1;
 	}
 	if (orig.y < 0 && dir.y > 0)
-	{		
+	{
 		float d = -orig.y / dir.y;
 		glm::vec3 k = orig + dir * d;
 		if (0 <= k.x && k.x <= 1 && 0 <= k.z && k.z <= 1) return 2;
@@ -1397,13 +1185,13 @@ int intersects_ray_cube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube)
 		if (0 <= k.x && k.x <= 1 && 0 <= k.z && k.z <= 1) return 3;
 	}
 	if (orig.z < 0 && dir.z > 0)
-	{		
+	{
 		float d = -orig.z / dir.z;
 		glm::vec3 k = orig + dir * d;
 		if (0 <= k.x && k.x <= 1 && 0 <= k.y && k.y <= 1) return 4;
 	}
 	if (orig.z > 1 && dir.z < 0)
-	{		
+	{
 		float d = (1 - orig.z) / dir.z;
 		glm::vec3 k = orig + dir * d;
 		if (0 <= k.x && k.x <= 1 && 0 <= k.y && k.y <= 1) return 5;
@@ -1411,13 +1199,13 @@ int intersects_ray_cube(glm::vec3 orig, glm::vec3 dir, glm::ivec3 cube)
 	return -1;
 }
 
-Sphere select_sphere(8);
+Sphere select_sphere(10);
 
-bool SelectCube(glm::ivec3& sel_cube, int& sel_face)
+bool select_cube(glm::ivec3& sel_cube, int& sel_face)
 {
+	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
 	float* ma = glm::value_ptr(player::orientation);
 	glm::vec3 dir(ma[4], ma[5], ma[6]);
-	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
 
 	for (glm::ivec3 d : select_sphere)
 	{
@@ -1431,12 +1219,8 @@ bool SelectCube(glm::ivec3& sel_cube, int& sel_face)
 	return false;
 }
 
-void model_frame(GLFWwindow* window)
+void model_frame(GLFWwindow* window, double delta_ms)
 {
-	double time = glfwGetTime();
-	double dt = (time - last_time) < 0.5 ? (time - last_time) : 0.5;
-	last_time = time;
-
 	double cursor_x, cursor_y;
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
 	static double last_cursor_x = 0;
@@ -1447,68 +1231,38 @@ void model_frame(GLFWwindow* window)
 		player::pitch += (cursor_y - last_cursor_y) / 150;
 		if (player::pitch > M_PI / 2 * 0.999) player::pitch = M_PI / 2 * 0.999;
 		if (player::pitch < -M_PI / 2 * 0.999) player::pitch = -M_PI / 2 * 0.999;
-		//glfwSetCursorPos(window, 0, 0);
 		last_cursor_x = cursor_x;
 		last_cursor_y = cursor_y;
 		player::orientation = glm::rotate(glm::rotate(glm::mat4(), -player::yaw, glm::vec3(0, 0, 1)), -player::pitch, glm::vec3(1, 0, 0));
-
-		float* m = glm::value_ptr(player::orientation);
-		glm::vec3 forward(m[4], m[5], m[6]);
-		glm::vec3 right(m[0], m[1], m[2]);
-		tracelog << "orientation = [" << m[0] << " " << m[1] << " " << m[2] << ", " << m[4] << " " << m[5] << " " << m[6] << ", " << m[8] << " " << m[9] << " " << m[10] << "]" << std::endl;
-
 		perspective_rotation = glm::rotate(perspective, player::pitch, glm::vec3(1, 0, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, player::yaw, glm::vec3(0, 1, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
-
 		rays_remaining = directions.size();
 	}
-	
+
 	if (!console.IsVisible())
 	{
-		model_move_player(window, dt);
+		model_move_player(window, delta_ms * 1e-3);
 	}
 
-	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-	player::cposx = cplayer.x;
-	player::cposy = cplayer.y;
-	player::cposz = cplayer.z;
-	
-	selection = SelectCube(/*out*/sel_cube, /*out*/sel_face);
-	double end = std::max<float>(0, (glfwGetTime() - time) * 1000);
-	stats::model_time_ms = stats::model_time_ms * 0.85f + end * 0.15f;
+	selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
 }
 
 // Render
-
-const int MaxTriangles = 4000000;
 
 GLuint block_texture;
 glm::vec3 light_direction(0.5, 1, -1);
 
 GLubyte light_cache[8][8][8];
 
-float clampf(float a, float min, float max)
+Initialize
 {
-	if (a > max) return max;
-	if (a < min) return min;
-	return a;
-}
-
-void InitLightCache()
-{
-	for (int a = 0; a < 8; a++)
+	FOR(a, 8) FOR(b, 8) FOR(c, 8)
 	{
-		for (int b = 0; b < 8; b++)
-		{
-			for (int c = 0; c < 8; c++)
-			{
-				glm::vec3 normal = glm::normalize((glm::vec3)glm::cross(glm::vec3(Cube::corner[b] - Cube::corner[a]), glm::vec3(Cube::corner[c] - Cube::corner[a])));
-				float cos_angle = std::max<float>(0, -glm::dot(normal, light_direction));
-				float light = clampf(0.3f + cos_angle * 0.7f, 0.0f, 1.0f);
-				light_cache[a][b][c] = (uint) floorf(clampf(light * 256.f, 0.0f, 255.0f));
-			}
-		}
+		glm::vec3 normal = glm::normalize(glm::cross(glm::vec3(Cube::corner[b] - Cube::corner[a]), glm::vec3(Cube::corner[c] - Cube::corner[a])));
+		float cos_angle = std::max<float>(0, -glm::dot(normal, light_direction));
+		float light = glm::clamp<float>(0.3f + cos_angle * 0.7f, 0, 1);
+		light_cache[a][b][c] = (uint) floorf(glm::clamp<float>(light * 256, 0, 255));
 	}
 }
 
@@ -1529,19 +1283,10 @@ GLuint block_color_loc;
 GLuint block_light_loc;
 GLuint block_uv_loc;
 
-float simplex2(glm::vec2 p, int octaves, float persistence)
-{
-	float freq = 1.0f, amp = 1.0f, max = amp;
-	float total = glm::simplex(p);
-	FOR(i, octaves - 1)
-	{
-	    freq /= sqrt(2);
-	    amp *= persistence;
-	    max += amp;
-	    total += glm::simplex(p * freq) * amp;
-	}
-	return total / max;
-}
+GLuint block_buffer;
+GLuint line_buffer;
+
+int g_tick;
 
 void load_noise_texture(int size)
 {
@@ -1549,31 +1294,26 @@ void load_noise_texture(int size)
 	FOR(x, size) FOR(y, size)
 	{
 		glm::vec2 p = glm::vec2(x+32131, y+908012) * (1.0f / size);
-		float f = simplex2(p * 32.f, 10, 1) * 3;
+		float f = SimplexNoise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
 		f = fabs(f);
 		f = std::min<float>(f, 1);
 		f = std::max<float>(f, -1);
-		//f = (f + 1) / 2;
 		GLubyte a = (int) std::min<float>(255, floorf(f * 256));
 		image[(x + y * size) * 3] = a;
 
-
 		p = glm::vec2(x+9420234, y+9808312) * (1.0f / size);
-		f = simplex2(p * 32.f, 10, 1) * 3;
+		f = SimplexNoise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
 		f = fabs(f);
 		f = std::min<float>(f, 1);
 		f = std::max<float>(f, -1);
-		//f = (f + 1) / 2;
 		a = (int) std::min<float>(255, floorf(f * 256));
 		image[(x + y * size) * 3 + 1] = a;
 
-
 		p = glm::vec2(x+983322, y+1309329) * (1.0f / size);
-		f = simplex2(p * 32.f, 10, 1) * 3;
+		f = SimplexNoise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
 		f = fabs(f);
 		f = std::min<float>(f, 1);
 		f = std::max<float>(f, -1);
-		//f = (f + 1) / 2;
 		a = (int) std::min<float>(255, floorf(f * 256));
 		image[(x + y * size) * 3 + 2] = a;
 	}
@@ -1594,7 +1334,6 @@ void render_init()
 	load_png_texture("noise.png");
 
 	light_direction = glm::normalize(light_direction);
-	InitLightCache();
 
 	perspective = glm::perspective<float>(M_PI / 180 * 90, width / (float)height, 0.03, 1000);
 	text = new Text;
@@ -1614,18 +1353,17 @@ void render_init()
 	block_light_loc = glGetAttribLocation(block_program, "light");
 	block_uv_loc = glGetAttribLocation(block_program, "uv");
 
-	g_chunks.start_threads();
-}
-
-GLuint block_buffer;
-GLuint line_buffer;
-
-GLfloat* line_data = new GLfloat[24 * 3];
-
-void render_general_init()
-{
 	glGenBuffers(1, &block_buffer);
 	glGenBuffers(1, &line_buffer);
+
+	GLuint vao;
+	glGenVertexArrays(1, &vao);
+	glBindVertexArray(vao);
+
+	glClearColor(0.2, 0.4, 1, 1.0);
+	glViewport(0, 0, width, height);
+
+	g_chunks.start_threads();
 }
 
 void BlockRenderer::vertex(GLubyte light, GLubyte uv, int c)
@@ -1647,80 +1385,35 @@ void BlockRenderer::draw_quad(int a, int b, int c, int d)
 	vertex(light, 1, b);
 	vertex(light, 3, c);
 	vertex(light, 0, a);
-      vertex(light, 3, c);
-      vertex(light, 2, d);
+	vertex(light, 3, c);
+	vertex(light, 2, d);
 }
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
-void BlockRenderer::render(glm::ivec3 pos, Block block)
+void BlockRenderer::render(MapChunk& mc, glm::ivec3 pos, Block block)
 {
 	if (block == Empty) return;
 	m_pos = pos;
 	m_color = block;
 
-	if (can_see_through(map_get(pos - ix))) draw_quad(0, 4, 6, 2);
-	if (can_see_through(map_get(pos + ix))) draw_quad(1, 3, 7, 5);
-	if (can_see_through(map_get(pos - iy))) draw_quad(0, 1, 5, 4);
-	if (can_see_through(map_get(pos + iy))) draw_quad(2, 6, 7, 3);
-	if (can_see_through(map_get(pos - iz))) draw_quad(0, 2, 3, 1);
-	if (can_see_through(map_get(pos + iz))) draw_quad(4, 5, 7, 6);
+	if (can_see_through(map_get(pos - ix, mc))) draw_quad(0, 4, 6, 2);
+	if (can_see_through(map_get(pos + ix, mc))) draw_quad(1, 3, 7, 5);
+	if (can_see_through(map_get(pos - iy, mc))) draw_quad(0, 1, 5, 4);
+	if (can_see_through(map_get(pos + iy, mc))) draw_quad(2, 6, 7, 3);
+	if (can_see_through(map_get(pos - iz, mc))) draw_quad(0, 2, 3, 1);
+	if (can_see_through(map_get(pos + iz, mc))) draw_quad(4, 5, 7, 6);
 }
 
-void Frustum::init(const glm::mat4& matrix)
+void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 {
-	const float* clip = glm::value_ptr(matrix);
-	// left
-	frustum[0][0] = clip[ 3] - clip[ 0];
-	frustum[0][1] = clip[ 7] - clip[ 4];
-	frustum[0][2] = clip[11] - clip[ 8];
-	frustum[0][3] = clip[15] - clip[12];
-	// right
-	frustum[1][0] = clip[ 3] + clip[ 0];
-	frustum[1][1] = clip[ 7] + clip[ 4];
-	frustum[1][2] = clip[11] + clip[ 8];
-	frustum[1][3] = clip[15] + clip[12];
-	// bottom
-	frustum[2][0] = clip[ 3] + clip[ 1];
-	frustum[2][1] = clip[ 7] + clip[ 5];
-	frustum[2][2] = clip[11] + clip[ 9];
-	frustum[2][3] = clip[15] + clip[13];
-	// top
-	frustum[3][0] = clip[ 3] - clip[ 1];
-	frustum[3][1] = clip[ 7] - clip[ 5];
-	frustum[3][2] = clip[11] - clip[ 9];
-	frustum[3][3] = clip[15] - clip[13];
-
-	FOR(i, 4) frustum[i] *= glm::fastInverseSqrt(sqr(frustum[i].xyz()));
-}
-
-bool Frustum::contains_point(glm::vec3 p) const
-{
-	FOR(i, 4) if (glm::dot(p, frustum[i].xyz()) + frustum[i].w < 0) return false;
-	return true;
-}
-
-int g_tick;
-
-void render_chunk(Chunk& chunk)
-{
-	if (chunk.render_size == 0) return;
-	glm::ivec3 pos = chunk.cpos * ChunkSize;
-	glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
-	glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * chunk.vertices.size(), &chunk.vertices[0], GL_STREAM_DRAW);
-	glDrawArrays(GL_TRIANGLES, 0, chunk.render_size);
-}
-
-void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frustum& frustum)
-{
-	float time_start = glfwGetTime();
 	glBindTexture(GL_TEXTURE_2D, block_texture);
-
 	if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	Auto(if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
 
 	glUseProgram(block_program);
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
-	glUniform1i(block_sampler_loc, 0/*block_texture*/);
 	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player::position));
+	glUniform1i(block_tick_loc, g_tick++);
 
 	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
 	glEnableVertexAttribArray(block_position_loc);
@@ -1733,88 +1426,19 @@ void render_world_blocks(glm::ivec3 cplayer, const glm::mat4& matrix, const Frus
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
-	glUniform1i(block_tick_loc, g_tick++);
-
 	stats::chunk_count = 0;
-	stats::triangle_count = 0;
+	stats::vertex_count = 0;
 
-	if (g_chunks.loaded(cplayer))
+	for (glm::ivec3 cpos : visible_chunks)
 	{
-		Chunk& chunk0 = g_chunks(cplayer);
-		render_chunk(chunk0);
-		stats::chunk_count = 1;
-		stats::triangle_count = chunk0.vertices.size();
-	}
-
-	for (glm::ivec3 cpos : visible_chunks.array)
-	{
-		if (g_chunks.loaded(cpos))
+		if (g_chunks.loaded(cpos) && !frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
 		{
-			Chunk& chunk = g_chunks(cpos);
-			if (!frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
-			{
-				render_chunk(chunk);
-				stats::triangle_count += chunk.vertices.size();
-				stats::chunk_count += 1;
-			}
+			glm::ivec3 pos = cpos * ChunkSize;
+			glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
+			stats::vertex_count += g_chunks(cpos).render();
+			stats::chunk_count += 1;
 		}
 	}
-
-	glUseProgram(0);
-	if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-	float time_ms = (glfwGetTime() - time_start) * 1000;
-	stats::block_render_time_ms = stats::block_render_time_ms * 0.85f + time_ms * 0.15f;
-}
-
-glm::vec3 Q(glm::ivec3 a, glm::vec3 c)
-{
-	return (glm::vec3(a) - c) * 1.02f + c;
-}
-
-void render_block_selection(const glm::mat4& matrix)
-{
-	glUseProgram(line_program);
-	glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
-
-	glBindBuffer(GL_ARRAY_BUFFER, line_buffer);
-	glEnableVertexAttribArray(line_position_loc);
-
-	glVertexAttribPointer(line_position_loc, 3, GL_FLOAT, GL_FALSE, 0, 0);
-
-	glm::vec3* vline = reinterpret_cast<glm::vec3*>(line_data);
-	glm::vec3 c = glm::vec3(sel_cube) + 0.5f;
-	FOR(i, 2) FOR(j, 2)
-	{
-		glm::ivec3 sel = sel_cube;
-		*vline++ = Q(sel + i*iy + j*iz, c); *vline++ = Q(sel + ix + i*iy + j*iz, c);
-		*vline++ = Q(sel + i*ix + j*iz, c); *vline++ = Q(sel + iy + i*ix + j*iz, c);
-		*vline++ = Q(sel + i*ix + j*iy, c); *vline++ = Q(sel + iz + i*ix + j*iy, c);
-	}
-
-	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * 3 * 24, line_data, GL_STREAM_DRAW);
-	glDrawArrays(GL_LINES, 0, 24);
-
-	glDisableVertexAttribArray(line_position_loc);
-}
-
-void render_world()
-{
-	glm::mat4 matrix = glm::translate(perspective_rotation, -player::position);
-	Frustum frustum;
-	frustum.init(matrix);
-	
-	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-	
-	float time_start = glfwGetTime();
-	update_render_list(cplayer, frustum);
-	float time = std::max<float>(0, (glfwGetTime() - time_start) * 1000);
-	stats::raytrace_time_ms = stats::raytrace_time_ms * 0.75f + time * 0.25f;
-
-	glEnable(GL_DEPTH_TEST);
-	render_world_blocks(cplayer, matrix, frustum);
-	if (selection) render_block_selection(matrix);
-	glDisable(GL_DEPTH_TEST);
 }
 
 void render_gui()
@@ -1823,12 +1447,12 @@ void render_gui()
 
 	text->Reset(width, height, matrix);
 	if (show_counters)
-	text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.1f model:%1.1f raytrace:%2.1f %.0f%% render %2.1f",
-			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::triangle_count / 3000,
-			 stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, 100.0f * (directions.size() - rays_remaining) / directions.size(), stats::block_render_time_ms);
-
-	if (show_counters)
 	{
+		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
+		text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f",
+			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::vertex_count / 3000,
+			 stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms);
+
 		if (selection)
 		{
 			Block block = map_get(sel_cube);
@@ -1844,7 +1468,7 @@ void render_gui()
 		}
 	}
 
-	console.Render(text, last_time);
+	console.Render(text, glfwGetTime());
 
 	glUseProgram(0);
 
@@ -1855,19 +1479,18 @@ void render_gui()
 
 		glBindBuffer(GL_ARRAY_BUFFER, line_buffer);
 		glEnableVertexAttribArray(line_position_loc);
+		Auto(glDisableVertexAttribArray(line_position_loc));
 
 		glVertexAttribPointer(line_position_loc, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
-		glm::vec2* vline = reinterpret_cast<glm::vec2*>(line_data);
-		*vline++ = glm::vec2(width/2 - 15, height / 2);
-		*vline++ = glm::vec2(width/2 + 15, height / 2);
-		*vline++ = glm::vec2(width/2, height / 2 - 15);
-		*vline++ = glm::vec2(width/2, height / 2 + 15);
+		glm::vec2 vline[4];
+		vline[0] = glm::vec2(width/2 - 15, height / 2);
+		vline[1] = glm::vec2(width/2 + 15, height / 2);
+		vline[2] = glm::vec2(width/2, height / 2 - 15);
+		vline[3] = glm::vec2(width/2, height / 2 + 15);
 
-		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 2 * 4, line_data, GL_STREAM_DRAW);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(vline), vline, GL_STREAM_DRAW);
 		glDrawArrays(GL_LINES, 0, 4);
-
-		glDisableVertexAttribArray(line_position_loc);
 	}
 }
 
@@ -1876,9 +1499,22 @@ void OnError(int error, const char* message)
 	fprintf(stderr, "GLFW error %d: %s\n", error, message);
 }
 
+double Timestamp::milisec_per_tick = 0;
+
 int main(int, char**)
 {
 	if (!glfwInit()) return 0;
+
+	glm::dvec3 a;
+	glm::i64vec3 b;
+	a.x = glfwGetTime();
+	b.x = rdtsc();
+	usleep(200000);
+	a.y = glfwGetTime();
+	b.y = rdtsc();
+	usleep(200000);
+	a.z = glfwGetTime();
+	b.z = rdtsc();
 
 	glfwSetErrorCallback(OnError);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -1890,34 +1526,59 @@ int main(int, char**)
 	GLFWwindow* window = glfwCreateWindow(mode->width*2, mode->height*2, "Arena", glfwGetPrimaryMonitor(), NULL);
 	if (!window) { glfwTerminate(); return 0; }
 	glfwMakeContextCurrent(window);
-	glfwSwapInterval(VSYNC);
+	glfwSwapInterval(1/*VSYNC*/);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwGetFramebufferSize(window, &width, &height);
-	glViewport(0, 0, width, height);
 
 	model_init(window);
 	render_init();
-	render_general_init();
 
-	GLuint vao;
-	glGenVertexArrays(1, &vao);
-	glBindVertexArray(vao);
-	
-	glClearColor(0.2, 0.4, 1, 1.0);
-	glViewport(0, 0, width, height);
-	
-	float frame_start = glfwGetTime();
+	glm::dvec3 c;
+	glm::i64vec3 d;
+	c.x = glfwGetTime();
+	d.x = rdtsc();
+	usleep(200000);
+	c.y = glfwGetTime();
+	d.y = rdtsc();
+	usleep(200000);
+	c.z = glfwGetTime();
+	d.z = rdtsc();
+	Timestamp::init(a, b, c, d);
+
+	Timestamp t0;
 	while (!glfwWindowShouldClose(window))
 	{
-		float frame_end = glfwGetTime();
-		stats::frame_time_ms = stats::frame_time_ms * 0.85f + (frame_end - frame_start) * 1000 * 0.15f;
-		frame_start = frame_end;
-
-		model_frame(window);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		render_world();
-		render_gui();
+		Timestamp ta;
+		double frame_ms = t0.elapsed_ms(ta);
+		t0 = ta;
 		glfwPollEvents();
+		model_frame(window, frame_ms);
+		glm::mat4 matrix = glm::translate(perspective_rotation, -player::position);
+		Frustum frustum(matrix);
+		glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+		player::cposx = cplayer.x;
+		player::cposy = cplayer.y;
+		player::cposz = cplayer.z;
+
+		Timestamp tb;
+		update_render_list(cplayer, frustum);
+
+		Timestamp tc;
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		glEnable(GL_DEPTH_TEST);
+		render_world_blocks(matrix, frustum);
+		glDisable(GL_DEPTH_TEST);
+		render_gui();
+
+		if (show_counters)
+		{
+			Timestamp td;
+			stats::frame_time_ms = glm::mix<float>(stats::frame_time_ms, frame_ms, 0.15f);
+			stats::model_time_ms = glm::mix<float>(stats::model_time_ms, ta.elapsed_ms(tb), 0.15f);
+			stats::raytrace_time_ms = glm::mix<float>(stats::raytrace_time_ms, tb.elapsed_ms(tc), 0.15f);
+			stats::render_time_ms = glm::mix<float>(stats::render_time_ms, tc.elapsed_ms(td), 0.15f);
+		}
+
 		glfwSwapBuffers(window);
 	}
 	glfwTerminate();

@@ -27,9 +27,9 @@ void main() {
     if (color == 255u)
     {
         fragment_color = vec3(0, 3, 0) * light / (3.0f * 255.0f);
-		float ftick = tick * 0.2;
+		float ftick = tick * 0.4;
                 float speed = 0.75;
-                float magnitude = (sin((ftick * pi / ((28.0) * speed))) * 0.05 + 0.15)*0.1;
+                float magnitude = (sin((ftick * pi / ((28.0) * speed))) * 0.05 + 0.15)*0.2;
                 float d0 = sin(ftick * pi / (122.0 * speed)) * 3.0 - 1.5;
                 float d1 = sin(ftick * pi / (142.0 * speed)) * 3.0 - 1.5;
                 float d2 = sin(ftick * pi / (162.0 * speed)) * 3.0 - 1.5;
