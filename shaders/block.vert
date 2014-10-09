@@ -8,7 +8,7 @@ uniform ivec3 pos;
 in ivec3 position;
 in uint color;
 in uint light;
-in uint uv;
+in ivec2 uv;
 
 //out float material;
 out float fog_factor;
@@ -16,7 +16,6 @@ out vec3 fragment_color;
 out vec2 fragment_uv;
 
 const float FogLimit = 0.80 * 63 * 16;
-vec2[4] uv_table = vec2[](vec2(0,0), vec2(0,1), vec2(1,0), vec2(1,1));
 
 const float pi = 3.14159265f;
 
@@ -49,5 +48,5 @@ void main() {
     fog_factor = clamp(eye_dist_sqr / FogLimit / FogLimit, 0.0, 1.0);
     fog_factor *= fog_factor;
 
-    fragment_uv = uv_table[uv];
+    fragment_uv = uv;
 }

@@ -1,7 +1,7 @@
 // TODO:
 // - slowly blend-in newly buffered chunks so that they are less noticable
 // - persist map-chunks for faster loading!
-// - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance and raytracing budget based on frame time
+// - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
 // # Raytracing:
 // - Raytracer when moving: clear set only, and not array. Deduplicate array when sorting. Remove stale array elements when raytracing is complete!
@@ -21,7 +21,6 @@
 // # gravity mode: planar (2 degrees of freedom orientation), spherical (2 degrees of freedom orientation), zero-g (3 degrees of freedom orientation)
 
 // # PERF level-of-detail rendering
-// - combine consecutive quads to reduce number of triangles (loosless)
 // - mesh reduction for far away chunks:
 //	- remove interior quads not visible from far outside
 //    - remove small lone blocks, fill small lone holes
@@ -429,12 +428,26 @@ Block map_get(glm::ivec3 pos, MapChunk& hint)
 
 // ============================
 
+struct Quad
+{
+	glm::u8vec3 pos[4];
+	uint8_t color;
+	uint8_t light;
+	uint16_t plane;
+};
+
+bool operator<(const Quad& a, const Quad& b)
+{
+	if (a.color != b.color) return a.color < b.color;
+	return a.plane < b.plane;
+}
+
 struct Vertex
 {
 	GLubyte color;
 	GLubyte light;
-	GLubyte uv;
-	GLubyte pos[3];
+	glm::u8vec2 uv;
+	glm::u8vec3 pos;
 };
 
 const float BlockRadius = sqrtf(3) / 2;
@@ -482,13 +495,97 @@ private:
 
 struct BlockRenderer
 {
-	std::vector<Vertex> m_vertices;
+	std::vector<Quad> m_quads;
 	glm::ivec3 m_pos;
 	GLubyte m_color;
 
-	void vertex(GLubyte light, GLubyte uv, int c);
-	void draw_quad(int a, int b, int c, int d);
+	std::vector<Quad> m_xy, m_yx;
+
+	void draw_quad(int a, int b, int c, int d, int face);
 	void render(MapChunk& mc, glm::ivec3 pos, Block bs);
+
+	static bool combine(Quad& a, Quad b, int X, int Y)
+	{
+		if (a.pos[0][X] == b.pos[0][X] && a.pos[2][X] == b.pos[2][X] && a.pos[2][Y] == b.pos[0][Y])
+		{
+			a.pos[2] = b.pos[2];
+			if (a.pos[1][Y] == b.pos[0][Y]) a.pos[1] = b.pos[1];
+			if (a.pos[3][Y] == b.pos[0][Y]) a.pos[3] = b.pos[3];
+			return true;
+		}
+		return false;
+	}
+
+	static void merge_axis(std::vector<Quad>& quads, int X, int Y)
+	{
+		std::sort(quads.begin(), quads.end(), [X, Y](Quad a, Quad b) { return a.pos[0][X] < b.pos[0][X] || (a.pos[0][X] == b.pos[0][X] && a.pos[0][Y] < b.pos[0][Y]); });
+		int w = 0;
+		for (Quad q : quads)
+		{
+			if (w == 0 || !combine(quads[w-1], q, X, Y)) quads[w++] = q;
+		}
+		quads.resize(w);
+	}
+
+	void merge_quads(std::vector<Vertex>& vertices)
+	{
+		std::sort(m_quads.begin(), m_quads.end());
+		auto a = m_quads.begin(), w = a;
+		while (a != m_quads.end())
+		{
+			auto b = a + 1;
+			while (b != m_quads.end() && a->color == b->color && a->plane == b->plane) b += 1;
+
+			if (a->color == Leaves)
+			{
+				while (a < b) *w++ = *a++;
+				continue;
+			}
+
+			m_xy.clear();
+			m_yx.clear();
+			while (a < b)
+			{
+				m_xy.push_back(*a);
+				m_yx.push_back(*a);
+				a += 1;
+			}
+
+			int axis = m_xy[0].plane >> 9;
+			int x = (axis == 0) ? 1 : 0;
+			int y = (axis == 2) ? 1 : 2;
+
+			merge_axis(m_xy, x, y);
+			merge_axis(m_xy, y, x);
+			merge_axis(m_yx, y, x);
+			merge_axis(m_yx, x, y);
+
+			if (m_xy.size() > m_yx.size()) std::swap(m_xy, m_yx);
+			w = std::copy(m_xy.begin(), m_xy.end(), w);
+		}
+		m_quads.resize(w - m_quads.begin());
+
+		vertices.resize(6 * m_quads.size());
+		auto v = vertices.begin();
+		for (Quad q : m_quads)
+		{
+			uint tv = non_zero(q.pos[1] - q.pos[0]);
+			uint tu = non_zero(q.pos[3] - q.pos[0]);
+			*v++ = { q.color, q.light, glm::u8vec2( 0,  0), q.pos[0] };
+			*v++ = { q.color, q.light, glm::u8vec2( 0, tv), q.pos[1] };
+			*v++ = { q.color, q.light, glm::u8vec2(tu, tv), q.pos[2] };
+			*v++ = { q.color, q.light, glm::u8vec2( 0,  0), q.pos[0] };
+			*v++ = { q.color, q.light, glm::u8vec2(tu, tv), q.pos[2] };
+			*v++ = { q.color, q.light, glm::u8vec2(tu,  0), q.pos[3] };
+		}
+	}
+
+	static uint non_zero(glm::u8vec3 a)
+	{
+		FOR(i, 3) if (a[i] != 0) return a[i];
+		assert(false);
+		return 0;
+	}
 };
 
 struct Chunk
@@ -497,15 +594,14 @@ struct Chunk
 
 	void buffer(BlockRenderer& renderer)
 	{
-		renderer.m_vertices.clear();
+		renderer.m_quads.clear();
 		MapChunk& mc = map->get(cpos);
 		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
 		{
-			renderer.render(mc, cpos * ChunkSize + glm::ivec3(x, y, z), mc[glm::ivec3(x, y, z)]);
+			Block block = mc[glm::ivec3(x, y, z)];
+			if (block != Empty) renderer.render(mc, cpos * ChunkSize + glm::ivec3(x, y, z), block);
 		}
-
-		vertices.resize(renderer.m_vertices.size());
-		std::copy(renderer.m_vertices.begin(), renderer.m_vertices.end(), vertices.begin());
+		renderer.merge_quads(vertices);
 		render_size = vertices.size();
 	}
 
@@ -1330,6 +1426,8 @@ void render_init()
 	glBindTexture(GL_TEXTURE_2D, block_texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 	//load_noise_texture(512);
 	load_png_texture("noise.png");
 
@@ -1366,42 +1464,32 @@ void render_init()
 	g_chunks.start_threads();
 }
 
-void BlockRenderer::vertex(GLubyte light, GLubyte uv, int c)
+void BlockRenderer::draw_quad(int a, int b, int c, int d, int face)
 {
-	Vertex v;
-	v.color = m_color;
-	v.light = light;
-	v.uv = uv;
-	v.pos[0] = (m_pos.x & ChunkSizeMask) + Cube::corner[c].x;
-	v.pos[1] = (m_pos.y & ChunkSizeMask) + Cube::corner[c].y;
-	v.pos[2] = (m_pos.z & ChunkSizeMask) + Cube::corner[c].z;
-	m_vertices.push_back(v);
-}
-
-void BlockRenderer::draw_quad(int a, int b, int c, int d)
-{
-	GLubyte light = light_cache[a][b][c];
-	vertex(light, 0, a);
-	vertex(light, 1, b);
-	vertex(light, 3, c);
-	vertex(light, 0, a);
-	vertex(light, 3, c);
-	vertex(light, 2, d);
+	Quad q;
+	q.color = m_color;
+	q.light = light_cache[a][b][c];
+	glm::ivec3 w = m_pos & ChunkSizeMask;
+	q.pos[0] = glm::u8vec3(w + Cube::corner[a]);
+	q.pos[1] = glm::u8vec3(w + Cube::corner[b]);
+	q.pos[2] = glm::u8vec3(w + Cube::corner[c]);
+	q.pos[3] = glm::u8vec3(w + Cube::corner[d]);
+	q.plane = (face << 8) | q.pos[0][face / 2];
+	m_quads.push_back(q);
 }
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
 void BlockRenderer::render(MapChunk& mc, glm::ivec3 pos, Block block)
 {
-	if (block == Empty) return;
 	m_pos = pos;
 	m_color = block;
 
-	if (can_see_through(map_get(pos - ix, mc))) draw_quad(0, 4, 6, 2);
-	if (can_see_through(map_get(pos + ix, mc))) draw_quad(1, 3, 7, 5);
-	if (can_see_through(map_get(pos - iy, mc))) draw_quad(0, 1, 5, 4);
-	if (can_see_through(map_get(pos + iy, mc))) draw_quad(2, 6, 7, 3);
-	if (can_see_through(map_get(pos - iz, mc))) draw_quad(0, 2, 3, 1);
-	if (can_see_through(map_get(pos + iz, mc))) draw_quad(4, 5, 7, 6);
+	if (can_see_through(map_get(pos - ix, mc))) draw_quad(0, 4, 6, 2, 0);
+	if (can_see_through(map_get(pos + ix, mc))) draw_quad(1, 3, 7, 5, 1);
+	if (can_see_through(map_get(pos - iy, mc))) draw_quad(0, 1, 5, 4, 2);
+	if (can_see_through(map_get(pos + iy, mc))) draw_quad(2, 6, 7, 3, 3);
+	if (can_see_through(map_get(pos - iz, mc))) draw_quad(0, 2, 3, 1, 4);
+	if (can_see_through(map_get(pos + iz, mc))) draw_quad(4, 5, 7, 6, 5);
 }
 
 void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
@@ -1424,7 +1512,7 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->pos);
 	glVertexAttribIPointer(block_color_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->color);
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
-	glVertexAttribIPointer(block_uv_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
+	glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
 	stats::chunk_count = 0;
 	stats::vertex_count = 0;
