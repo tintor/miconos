@@ -8,10 +8,6 @@
 //    - Use array of MapChunkEntries instead of LinkedList of MapChunk
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
-// Bugs:
-/*3   GLEngine                            0x00007fff85848dc2 glDrawArrays_ACC_GL3Exec + 760
-  4   arena                               0x0000000103c8a400 _Z19render_world_blocksRKN3glm6detail7tmat4x4IfLNS_9precisionE0EEERK7Frustum + 704*/
-
 // # Raytracing:
 // - Raytracer when moving: clear set only, and not array. Deduplicate array when sorting. Remove stale array elements when raytracing is complete!
 // - newly buffered chunks should re-start raytracer
@@ -676,9 +672,9 @@ struct BlockRenderer
 
 struct Chunk
 {
-	Chunk() : cpos(0x80000000, 0, 0) { }
+	Chunk() : m_cpos(0x80000000, 0, 0) { }
 
-	void buffer(BlockRenderer& renderer)
+	void buffer(glm::ivec3 cpos, BlockRenderer& renderer)
 	{
 		renderer.m_quads.clear();
 		MapChunk& mc = map->get(cpos);
@@ -690,34 +686,32 @@ struct Chunk
 				if (block != Empty) renderer.render(mc, cpos * ChunkSize + glm::ivec3(x, y, z), block);
 			}
 		}
-		renderer.merge_quads(vertices);
-		render_size = vertices.size();
+		renderer.merge_quads(m_vertices);
+		m_render_size = m_vertices.size();
 	}
 
 	int render()
 	{
-		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * vertices.size(), &vertices[0], GL_STREAM_DRAW);
-		glDrawArrays(GL_TRIANGLES, 0, render_size);
-		return render_size;
+		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * m_vertices.size(), &m_vertices[0], GL_STREAM_DRAW);
+		glDrawArrays(GL_TRIANGLES, 0, m_render_size);
+		return m_render_size;
 	}
 
-	bool init(glm::ivec3 _cpos, BlockRenderer& renderer)
+	bool init(glm::ivec3 cpos, BlockRenderer& renderer)
 	{
-		mutex.lock();
-		if (cpos == _cpos) { mutex.unlock(); return true; }
-		cpos = _cpos;
-		release(vertices);
-		buffer(renderer);
-		mutex.unlock();
+		AutoLock(m_mutex);
+		if (m_cpos == cpos) return true;
+		release(m_vertices);
+		buffer(cpos, renderer);
+		m_cpos = cpos;
 		return false;
 	}
 
 	void reset(BlockRenderer& renderer)
 	{
-		mutex.lock();
-		release(vertices);
-		buffer(renderer);
-		mutex.unlock();
+		AutoLock(m_mutex);
+		release(m_vertices);
+		buffer(m_cpos, renderer);
 	}
 
 	void sort_relative_to(glm::ivec3 cpos)
@@ -727,10 +721,10 @@ struct Chunk
 
 	friend class Chunks;
 private:
-	std::mutex mutex;
-	glm::ivec3 cpos; // TODO -> should be atomic -> pack into uint64 -> 21 bit per coordinate -> 25 effective
-	std::vector<Vertex> vertices;
-	int render_size;
+	std::mutex m_mutex;
+	glm::ivec3 m_cpos; // TODO -> should be atomic -> pack into uint64 -> 21 bit per coordinate -> 25 effective
+	std::vector<Vertex> m_vertices;
+	int m_render_size;
 };
 
 Console console;
@@ -760,7 +754,7 @@ public:
 	Chunk& operator()(glm::ivec3 cpos)
 	{
 		Chunk& chunk = get(cpos);
-		if (chunk.cpos != cpos) { fprintf(stderr, "cpos = [%d %d %d] %lg\n", cpos.x, cpos.y, cpos.z, sqrt(glm::length2(cpos))); assert(false); }
+		if (chunk.m_cpos != cpos) { fprintf(stderr, "cpos = [%d %d %d] %lg\n", cpos.x, cpos.y, cpos.z, sqrt(glm::length2(cpos))); assert(false); }
 		return chunk;
 	}
 
@@ -810,7 +804,7 @@ public:
 	}
 
 	// TODO: add trylock to prevent it from being unloaded
-	bool loaded(glm::ivec3 cpos) { return get(cpos).cpos == cpos; }
+	bool loaded(glm::ivec3 cpos) { return get(cpos).m_cpos == cpos; }
 
 private:
 	Chunk& get(glm::ivec3 a)
