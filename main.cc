@@ -72,8 +72,12 @@
 #include "auto.hh"
 #include "unistd.h"
 
+#define AutoLock(A) (A).lock(); Auto((A).unlock());
+std::mutex stderr_mutex;
+
 void handler(int sig)
 {
+	AutoLock(stderr_mutex);
 	fprintf(stderr, "Error: signal %d:\n", sig);
 	void* array[100];
 	backtrace_symbols_fd(array, backtrace(array, 100), STDERR_FILENO);
@@ -82,6 +86,7 @@ void handler(int sig)
 
 void __assert_rtn(const char* func, const char* file, int line, const char* cond)
 {
+	AutoLock(stderr_mutex);
 	fprintf(stderr, "Assertion failed: (%s), function %s, file %s, line %d.\n", cond, func, file, line);
 	void* array[100];
 	backtrace_symbols_fd(array, backtrace(array, 100), STDERR_FILENO);
@@ -134,8 +139,6 @@ Block Leaves = 255;
 
 // ============================
 
-#define AutoLock(A) (A).lock(); Auto((A).unlock());
-
 rocksdb::DB* db;
 
 Initialize
@@ -166,49 +169,47 @@ bool get_map_chunk(glm::ivec3 cpos, Block*& block)
 	if (s.IsNotFound()) return false;
 	assert(s.ok());
 	assert(value.size() == sizeof(Block) * ChunkSize3 || value.size() == 0);
-	assert(block == nullptr);
 	if (value.size() > 0)
 	{
 		// TODO: can we just steal pointer from std::string?
 		// TODO: will mmap-ing on page boundaries help (as pagesize == blocksize)?
-		block = (Block*)malloc(value.size());
+		if (!block) block = (Block*)malloc(value.size());
 		memcpy(block, value.data(), value.size());
+	}
+	else
+	{
+		if (block) free(block);
 	}
 	return true;
 }
 
 struct MapChunk
 {
-	const glm::ivec3 cpos;
-	MapChunk* const next;
-private:
-	Block* block;
-public:
 	static_assert(ChunkSize3 % 4096 == 0, "must be pagesize aligned");
-	MapChunk(glm::ivec3 _cpos, MapChunk* _next) : cpos(_cpos), next(_next), block(nullptr) { }
+	MapChunk() : m_block(nullptr) { }
+	~MapChunk() { free(m_block); }
 
-	Block operator[](glm::ivec3 a) { return block ? block[index(a)] : Empty; }
+	Block operator[](glm::ivec3 a) { return m_block ? m_block[index(a)] : Empty; }
 
-	bool empty() { return block == nullptr; }
+	bool empty() { return m_block == nullptr; }
 
 	void set(glm::ivec3 a, Block b)
 	{
-		if (block == nullptr)
+		if (m_block == nullptr)
 		{
 			if (b == Empty) return;
-			block = static_cast<Block*>(malloc(sizeof(Block) * ChunkSize3));
-			memset(block, Empty, sizeof(Block) * ChunkSize3);
+			m_block = static_cast<Block*>(malloc(sizeof(Block) * ChunkSize3));
+			memset(m_block, Empty, sizeof(Block) * ChunkSize3);
 		}
-		int i = index(a);
-		if (block[i] == b) return;
-		block[i] = b;
+		m_block[index(a)] = b;
 	}
 
-	void save() { set_map_chunk(cpos, block); }
-	bool load() { return get_map_chunk(cpos, block); }
+	void clear() { free(m_block); m_block = nullptr; }
+	bool load(glm::ivec3 cpos) { return get_map_chunk(cpos, m_block); }
+	void save(glm::ivec3 cpos) { set_map_chunk(cpos, m_block); }
 
 private:
-	int index(glm::ivec3 a)
+	static int index(glm::ivec3 a)
 	{
 		// Z-order space filling curve!
 		assert(a.x >= 0 && a.x < ChunkSize && a.y >= 0 && a.y < ChunkSize && a.z >= 0 && a.z < ChunkSize);
@@ -223,6 +224,9 @@ private:
 		}
 		return e;
 	}
+
+protected:
+	Block* m_block;
 };
 
 struct Heightmap
@@ -292,17 +296,17 @@ const glm::ivec3 CraterCenter(CraterRadius * -0.8, CraterRadius * -0.8, 0);
 const int MoonRadius = 500;
 const glm::ivec3 MoonCenter(MoonRadius * 0.8, MoonRadius * 0.8, 0);
 
-void GenerateTree(MapChunk& mc, int x, int y)
+void GenerateTree(MapChunk& mc, glm::ivec3 cpos, int x, int y)
 {
-	int dx = x + mc.cpos.x * ChunkSize;
-	int dy = y + mc.cpos.y * ChunkSize;
+	int dx = x + cpos.x * ChunkSize;
+	int dy = y + cpos.y * ChunkSize;
 
 	if (heightmap->HasTree(dx, dy))
 	{
 		int height = heightmap->Height(dx, dy);
 		FOR(z, ChunkSize)
 		{
-			int dz = z + mc.cpos.z * ChunkSize;
+			int dz = z + cpos.z * ChunkSize;
 			if (dz > height && dz < height + 6)
 			{
 				mc.set(glm::ivec3(x, y, z), Color(0, 0, 3, 3));
@@ -315,7 +319,7 @@ void GenerateTree(MapChunk& mc, int x, int y)
 		int height = heightmap->Height(dx, dy-1);
 		FOR(z, ChunkSize)
 		{
-			int dz = z + mc.cpos.z * ChunkSize;
+			int dz = z + cpos.z * ChunkSize;
 			if (dz > height + 2 && dz < height + 6)
 			{
 				mc.set(glm::ivec3(x, y, z), Leaves);
@@ -328,7 +332,7 @@ void GenerateTree(MapChunk& mc, int x, int y)
 		int height = heightmap->Height(dx, dy+1);
 		FOR(z, ChunkSize)
 		{
-			int dz = z + mc.cpos.z * ChunkSize;
+			int dz = z + cpos.z * ChunkSize;
 			if (dz > height + 2 && dz < height + 6)
 			{
 				mc.set(glm::ivec3(x, y, z), Leaves);
@@ -341,7 +345,7 @@ void GenerateTree(MapChunk& mc, int x, int y)
 		int height = heightmap->Height(dx+1, dy);
 		FOR(z, ChunkSize)
 		{
-			int dz = z + mc.cpos.z * ChunkSize;
+			int dz = z + cpos.z * ChunkSize;
 			if (dz > height + 2 && dz < height + 6)
 			{
 				mc.set(glm::ivec3(x, y, z), Leaves);
@@ -354,7 +358,7 @@ void GenerateTree(MapChunk& mc, int x, int y)
 		int height = heightmap->Height(dx-1, dy);
 		FOR(z, ChunkSize)
 		{
-			int dz = z + mc.cpos.z * ChunkSize;
+			int dz = z + cpos.z * ChunkSize;
 			if (dz > height + 2 && dz < height + 6)
 			{
 				mc.set(glm::ivec3(x, y, z), Leaves);
@@ -364,18 +368,18 @@ void GenerateTree(MapChunk& mc, int x, int y)
 	}
 }
 
-void generate_terrain(MapChunk& mc)
+void generate_terrain(MapChunk& mc, glm::ivec3 cpos)
 {
-	heightmap->Populate(mc.cpos.x, mc.cpos.y); // TODO: not thread safe!
+	heightmap->Populate(cpos.x, cpos.y); // TODO: not thread safe!
 
 	FOR(x, ChunkSize) FOR(y, ChunkSize)
 	{
-		int dx = x + mc.cpos.x * ChunkSize;
-		int dy = y + mc.cpos.y * ChunkSize;
+		int dx = x + cpos.x * ChunkSize;
+		int dy = y + cpos.y * ChunkSize;
 
 		FOR(z, ChunkSize)
 		{
-			int dz = z + mc.cpos.z * ChunkSize;
+			int dz = z + cpos.z * ChunkSize;
 			glm::ivec3 pos(dx, dy, dz);
 
 			if (dz > 100 && dz < 200)
@@ -393,24 +397,24 @@ void generate_terrain(MapChunk& mc)
 		}
 	}
 
-	FOR(x, ChunkSize) FOR(y, ChunkSize) GenerateTree(mc, x, y);
+	FOR(x, ChunkSize) FOR(y, ChunkSize) GenerateTree(mc, cpos, x, y);
 
 	// moon
 	FOR(x, ChunkSize)
 	{
-		int dx = x + mc.cpos.x * ChunkSize;
+		int dx = x + cpos.x * ChunkSize;
 		int64_t sx = sqr<int64_t>(dx - MoonCenter.x) - sqr<int64_t>(MoonRadius);
 		if (sx > 0) continue;
 
 		FOR(y, ChunkSize)
 		{
-			int dy = y + mc.cpos.y * ChunkSize;
+			int dy = y + cpos.y * ChunkSize;
 			int64_t sy = sx + sqr<int64_t>(dy - MoonCenter.y);
 			if (sy > 0) continue;
 
 			FOR(z, ChunkSize)
 			{
-				int dz = z + mc.cpos.z * ChunkSize;
+				int dz = z + cpos.z * ChunkSize;
 				int64_t sz = sy + sqr<int64_t>(dz - MoonCenter.z);
 				if (sz > 0) continue;
 				mc.set(glm::ivec3(x, y, z), heightmap->Color(dx, dy));
@@ -421,18 +425,18 @@ void generate_terrain(MapChunk& mc)
 	// crater
 	FOR(x, ChunkSize)
 	{
-		int64_t sx = sqr<int64_t>(x + mc.cpos.x * ChunkSize - CraterCenter.x) - sqr<int64_t>(CraterRadius);
+		int64_t sx = sqr<int64_t>(x + cpos.x * ChunkSize - CraterCenter.x) - sqr<int64_t>(CraterRadius);
 		if (sx > 0) continue;
 
 		FOR(y, ChunkSize)
 		{
-			int64_t sy = sx + sqr<int64_t>(y + mc.cpos.y * ChunkSize - CraterCenter.y);
+			int64_t sy = sx + sqr<int64_t>(y + cpos.y * ChunkSize - CraterCenter.y);
 			if (sy > 0) continue;
 
 			FOR(z, ChunkSize)
 			{
-				int64_t sz = sy + sqr<int64_t>(z + mc.cpos.z * ChunkSize - CraterCenter.z);
-				if (sz > 0 || z + ChunkSize * mc.cpos.z >= 100) continue;
+				int64_t sz = sy + sqr<int64_t>(z + cpos.z * ChunkSize - CraterCenter.z);
+				if (sz > 0 || z + ChunkSize * cpos.z >= 100) continue;
 				mc.set(glm::ivec3(x, y, z), Empty);
 			}
 		}
@@ -441,72 +445,7 @@ void generate_terrain(MapChunk& mc)
 
 // ============================
 
-struct Map
-{
-	Map()
-	{
-		FOR(i, MapSize) m_map[i] = nullptr;
-		FOR(x, 4) FOR(y, 4) FOR(z, 4) set(glm::ivec3(x*2, y*2, z*2+45), Color(x, y, z, 3));
-	}
-
-	MapChunk& get(glm::ivec3 cpos)
-	{
-		int h = index(cpos);
-		MapChunk* head = m_map[h].load(std::memory_order_relaxed);
-		for (MapChunk* i = head; i; i = i->next) if (i->cpos == cpos) return *i;
-
-		MapChunk* p;
-		bool save = false;
-		{
-			AutoLock(m_lock[(cpos.x ^ cpos.y ^ cpos.z) & 63]);
-			MapChunk* head2 = m_map[h].load(std::memory_order_relaxed);
-			for (MapChunk* i = head2; i != head; i = i->next) if (i->cpos == cpos) return *i;
-
-			p = new MapChunk(cpos, head2);
-			if (!p->load())
-			{
-				generate_terrain(*p);
-				save = true;
-			}
-			m_map[h] = p;
-		}
-		if (save) p->save();
-		return *p;
-	}
-
-	MapChunk* try_get(glm::ivec3 cpos)
-	{
-		int h = index(cpos);
-		MapChunk* head = m_map[h].load(std::memory_order_relaxed);
-		for (MapChunk* i = head; i; i = i->next) if (i->cpos == cpos) return i;
-		return nullptr;
-	}
-
-	void set(glm::ivec3 pos, Block block)
-	{
-		MapChunk& mc = get(pos >> ChunkSizeBits);
-		mc.set(pos & ChunkSizeMask, block);
-		mc.save();
-	}
-
-private:
-	// TODO: Z-order?
-	int index(glm::ivec3 a) const { a &= 127; return (a.x * 128 + a.y) * 128 + a.z; }
-
-	static const int MapSize = 128 * 128 * 128;
-	std::atomic<MapChunk*> m_map[MapSize];
-	std::mutex m_lock[64];
-};
-
-Map* map = new Map;
-
-Block map_get(glm::ivec3 pos) { return map->get(pos >> ChunkSizeBits)[pos & ChunkSizeMask]; }
-Block map_get(glm::ivec3 pos, MapChunk& hint)
-{
-	glm::ivec3 cpos = pos >> ChunkSizeBits;
-	MapChunk& mc = (cpos == hint.cpos) ? hint : map->get(cpos);
-	return mc[pos & ChunkSizeMask];
-}
+// FOR(x, 4) FOR(y, 4) FOR(z, 4) set(glm::ivec3(x*2, y*2, z*2+45), Color(x, y, z, 3));
 
 // ============================
 
@@ -575,6 +514,8 @@ private:
 	std::vector<glm::ivec3> array;
 };
 
+struct Chunk;
+
 struct BlockRenderer
 {
 	std::vector<Quad> m_quads;
@@ -583,8 +524,8 @@ struct BlockRenderer
 
 	std::vector<Quad> m_xy, m_yx;
 
-	void draw_quad(int a, int b, int c, int d, int face);
-	void render(MapChunk& mc, glm::ivec3 pos, Block bs);
+	void draw_quad(int face);
+	void render(Chunk& mc, glm::ivec3 pos, Block bs);
 
 	static bool combine(Quad& a, Quad b, int X, int Y)
 	{
@@ -670,22 +611,150 @@ struct BlockRenderer
 	}
 };
 
-struct Chunk
+struct CachedChunk
+{
+	CachedChunk() : cached(false) { }
+	void init(glm::ivec3 cpos);
+	~CachedChunk();
+	Block operator[](glm::ivec3 pos);
+
+	bool cached;
+	Chunk* chunk;
+	MapChunk mc;
+};
+
+struct ReCachedChunk
+{
+	ReCachedChunk() : cached(0x80000000), chunk(nullptr) { }
+	void init(glm::ivec3 cpos);
+	~ReCachedChunk();
+	Block operator[](glm::ivec3 pos);
+
+	glm::ivec3 cached;
+	Chunk* chunk;
+	MapChunk mc;
+};
+
+bool can_move_through(Block block) { return block == Empty; }
+bool can_see_through(Block block) { return block == Empty || block == Leaves; }
+
+struct Chunk : public MapChunk
 {
 	Chunk() : m_cpos(0x80000000, 0, 0) { }
 
 	void unlock() { m_mutex.unlock(); }
 
-	void buffer(glm::ivec3 cpos, BlockRenderer& renderer)
+	void buffer(BlockRenderer& renderer)
 	{
+		release(m_vertices);
 		renderer.m_quads.clear();
-		MapChunk& mc = map->get(cpos);
-		if (!mc.empty())
+		if (!empty())
 		{
+			{
+				CachedChunk cc;
+				int x = 0;
+				FOR(y, ChunkSize) FOR(z, ChunkSize)
+				{
+					Block block = operator[](glm::ivec3(x, y, z));
+					if (block != Empty)
+					{
+						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						renderer.m_pos = pos;
+						renderer.m_color = block;
+						if (can_see_through(cc[pos - ix])) renderer.draw_quad(0);
+					}
+				}
+			}
+			{
+				CachedChunk cc;
+				int x = ChunkSize-1;
+				FOR(y, ChunkSize) FOR(z, ChunkSize)
+				{
+					Block block = operator[](glm::ivec3(x, y, z));
+					if (block != Empty)
+					{
+						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						renderer.m_pos = pos;
+						renderer.m_color = block;
+						if (can_see_through(cc[pos + ix])) renderer.draw_quad(1);
+					}
+				}
+			}
+			{
+				CachedChunk cc;
+				int y = 0;
+				FOR(x, ChunkSize) FOR(z, ChunkSize)
+				{
+					Block block = operator[](glm::ivec3(x, y, z));
+					if (block != Empty)
+					{
+						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						renderer.m_pos = pos;
+						renderer.m_color = block;
+						if (can_see_through(cc[pos - iy])) renderer.draw_quad(2);
+					}
+				}
+			}
+			{
+				CachedChunk cc;
+				int y = ChunkSize-1;
+				FOR(x, ChunkSize) FOR(z, ChunkSize)
+				{
+					Block block = operator[](glm::ivec3(x, y, z));
+					if (block != Empty)
+					{
+						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						renderer.m_pos = pos;
+						renderer.m_color = block;
+						if (can_see_through(cc[pos + iy])) renderer.draw_quad(3);
+					}
+				}
+			}
+			{
+				CachedChunk cc;
+				int z = 0;
+				FOR(x, ChunkSize) FOR(y, ChunkSize)
+				{
+					Block block = operator[](glm::ivec3(x, y, z));
+					if (block != Empty)
+					{
+						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						renderer.m_pos = pos;
+						renderer.m_color = block;
+						if (can_see_through(cc[pos - iz])) renderer.draw_quad(4);
+					}
+				}
+			}
+			{
+				CachedChunk cc;
+				int z = ChunkSize-1;
+				FOR(x, ChunkSize) FOR(y, ChunkSize)
+				{
+					Block block = operator[](glm::ivec3(x, y, z));
+					if (block != Empty)
+					{
+						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						renderer.m_pos = pos;
+						renderer.m_color = block;
+						if (can_see_through(cc[pos + iz])) renderer.draw_quad(5);
+					}
+				}
+			}
 			FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
 			{
-				Block block = mc[glm::ivec3(x, y, z)];
-				if (block != Empty) renderer.render(mc, cpos * ChunkSize + glm::ivec3(x, y, z), block);
+				glm::ivec3 p(x, y, z);
+				Block block = operator[](p);
+				if (block != Empty)
+				{
+					renderer.m_pos = m_cpos * ChunkSize + p;
+					renderer.m_color = block;
+					if (x != 0 && can_see_through(operator[](p - ix))) renderer.draw_quad(0);
+					if (x != ChunkSize-1 && can_see_through(operator[](p + ix))) renderer.draw_quad(1);
+					if (y != 0 && can_see_through(operator[](p - iy))) renderer.draw_quad(2);
+					if (y != ChunkSize-1 && can_see_through(operator[](p + iy))) renderer.draw_quad(3);
+					if (z != 0 && can_see_through(operator[](p - iz))) renderer.draw_quad(4);
+					if (z != ChunkSize-1 && can_see_through(operator[](p + iz))) renderer.draw_quad(5);
+				}
 			}
 		}
 		renderer.merge_quads(m_vertices);
@@ -703,26 +772,29 @@ struct Chunk
 	{
 		AutoLock(m_mutex);
 		if (m_cpos == cpos) return true;
-		release(m_vertices);
-		buffer(cpos, renderer);
-		m_cpos = cpos;
+
+		{
+			AutoLock(m_mutex_low); // TODO: change to string lock!
+			m_cpos = cpos;
+			if (!get_map_chunk(cpos, m_block))
+			{
+				free(m_block);
+				m_block = nullptr;
+				generate_terrain(*this, m_cpos);
+				set_map_chunk(cpos, m_block);
+			}
+		}
+
+		buffer(renderer);
 		return false;
 	}
 
-	void reset_unsafe(BlockRenderer& renderer)
-	{
-		release(m_vertices);
-		buffer(m_cpos, renderer);
-	}
-
-	void sort_relative_to(glm::ivec3 cpos)
-	{
-		// TODO: move visible quads
-	}
+	glm::ivec3 cpos() { return m_cpos; }
 
 	friend class Chunks;
+	std::mutex m_mutex_low; // guarding MapChunk from morphing
 private:
-	std::mutex m_mutex;
+	std::mutex m_mutex; // guarding entire chunk from morphing
 	glm::ivec3 m_cpos;
 	std::vector<Vertex> m_vertices;
 	int m_render_size;
@@ -819,12 +891,35 @@ public:
 		return &c;
 	}
 
+	Chunk* try_lock(glm::ivec3 cpos)
+	{
+		Chunk& c = get(cpos);
+		if (!c.m_mutex.try_lock()) return nullptr;
+		if (c.m_cpos != cpos) { c.m_mutex.unlock(); return nullptr; }
+		return &c;
+	}
+
+	Chunk* unsafe(glm::ivec3 cpos)
+	{
+		Chunk& c = get(cpos);
+		if (c.m_cpos != cpos) return nullptr;
+		return &c;
+	}
+
+	Chunk* low_lock(glm::ivec3 cpos)
+	{
+		Chunk& c = get(cpos);
+		c.m_mutex_low.lock();
+		if (c.m_cpos != cpos) { c.m_mutex_low.unlock(); return nullptr; }
+		return &c;
+	}
+
 	void reset(glm::ivec3 cpos, BlockRenderer& renderer)
 	{
 		Chunk& c = get(cpos);
 		c.m_mutex.lock();
 		if (c.m_cpos != cpos) { c.m_mutex.unlock(); return; }
-		c.reset_unsafe(renderer);
+		c.buffer(renderer);
 		c.m_mutex.unlock();
 	}
 
@@ -842,7 +937,80 @@ private:
 	Chunk* m_map; // Huge array in memory!
 };
 
+// Threading model:
+// - main rendering thread acquires not locks! it must check g_chunks.loaded() before accessing buffer.
+// - main rendering thread accessing blocks from unloaded chunks: NOT ALLOWED!
+// - worker threads never conflict with each other, only with main thread.
+// - only worker threads can convert unloaded chunks into loaded chunks
+// - only main thread can convert loaded chunks into unloaded chunks (when player moves out of chunk)
+
 Chunks g_chunks;
+
+void CachedChunk::init(glm::ivec3 cpos)
+{
+	cached = true;
+	chunk = g_chunks.low_lock(cpos);
+	if (!chunk && !mc.load(cpos))
+	{
+		generate_terrain(mc, cpos);
+		mc.save(cpos);
+	}
+}
+
+CachedChunk::~CachedChunk() { if (cached && chunk) chunk->m_mutex_low.unlock(); }
+
+Block CachedChunk::operator[](glm::ivec3 pos) { if (!cached) init(pos >> ChunkSizeBits); return chunk ? (*chunk)[pos & ChunkSizeMask] : mc[pos & ChunkSizeMask]; }
+
+void ReCachedChunk::init(glm::ivec3 cpos)
+{
+	if (cpos == cached) return;
+	cached = cpos;
+	if (chunk) chunk->m_mutex_low.unlock();
+	chunk = g_chunks.low_lock(cpos);
+	if (!chunk && !mc.load(cpos))
+	{
+		mc.clear();
+		generate_terrain(mc, cpos);
+		mc.save(cpos);
+	}
+}
+
+ReCachedChunk::~ReCachedChunk() { if (chunk) chunk->m_mutex_low.unlock(); }
+
+Block ReCachedChunk::operator[](glm::ivec3 pos) { init(pos >> ChunkSizeBits); return chunk ? (*chunk)[pos & ChunkSizeMask] : mc[pos & ChunkSizeMask]; }
+
+/*class AutoVecLock;
+
+struct VecLock
+{
+	std::mutex m_lock;
+	std::condition_variable m_cond;
+	std::atomic<AutoVecLock*> m_avl;
+} g_vecLock;
+
+class AutoVecLock
+{
+public:
+	AutoVecLock(glm::ivec3 vec)
+	{
+
+	}
+
+	~AutoVecLock()
+	{
+
+	}
+
+private:
+	glm::ivec3 m_vec;
+	AutoVecLock* m_next;
+};*/
+
+Block map_get(glm::ivec3 pos)
+{
+	CachedChunk cc;
+	return cc[pos];
+}
 
 // ======================
 
@@ -857,9 +1025,6 @@ struct BoundaryBlocks : public std::vector<glm::ivec3>
 		}
 	}
 } boundary_blocks;
-
-bool can_move_through(Block block) { return block == Empty; }
-bool can_see_through(Block block) { return block == Empty || block == Leaves; }
 
 struct Directions : public std::vector<glm::ivec3>
 {
@@ -893,8 +1058,10 @@ VisibleChunks visible_chunks;
 
 const int E = Directions::Bits + 1;
 
-void raytrace(MapChunk* mc, glm::ivec3 photon, glm::ivec3 dir)
+void raytrace(glm::ivec3 cpos, glm::ivec3 photon, glm::ivec3 dir)
 {
+	Chunk* chunk = g_chunks.low_lock(cpos);
+	assert(chunk);
 	const int MaxDist2 = sqr(RenderDistance * ChunkSize);
 	const int B = ChunkSizeBits + E;
 	glm::ivec3 svoxel = photon >> E, voxel = svoxel;
@@ -902,35 +1069,37 @@ void raytrace(MapChunk* mc, glm::ivec3 photon, glm::ivec3 dir)
 	{
 		do photon += dir; while ((photon >> E) == voxel);
 		glm::ivec3 cvoxel = photon >> B;
-		if (mc->cpos != cvoxel)
+		if (chunk->cpos() != cvoxel)
 		{
-			mc = map->try_get(cvoxel);
-			if (!mc) return; // TODO: chunk not loaded yet. Render it as big fog cube. Need to retrace it again once it is loaded.
+			chunk->m_mutex_low.unlock();
+			chunk = g_chunks.low_lock(cvoxel);
+			if (!chunk) return; // TODO: chunk not loaded yet. Render it as big fog cube. Need to retrace it again once it is loaded.
 			// Advance photon until it leaves empty chunk
-			while (mc->empty())
+			while (chunk->empty())
 			{
 				do photon += dir; while ((photon >> B) == cvoxel);
 				voxel = photon >> E;
-				if (glm::distance2(voxel, svoxel) > MaxDist2) return;
+				if (glm::distance2(voxel, svoxel) > MaxDist2) { chunk->m_mutex_low.unlock(); return; }
 				cvoxel = photon >> B;
-				mc = map->try_get(cvoxel);
-				if (!mc) return;
+				chunk->m_mutex_low.unlock();
+				chunk = g_chunks.low_lock(cvoxel);
+				if (!chunk) return;
 			}
 		}
 		voxel = photon >> E;
-		if (glm::distance2(voxel, svoxel) > MaxDist2) return;
-		Block block = (*mc)[voxel & ChunkSizeMask];
+		if (glm::distance2(voxel, svoxel) > MaxDist2) break;
+		Block block = (*chunk)[voxel & ChunkSizeMask];
 		if (block == Empty) continue;
 		visible_chunks.add(cvoxel);
-		if (!can_see_through(block)) return;
+		if (!can_see_through(block)) break;
 	}
+	chunk->m_mutex_low.unlock();
 }
 
 // which chunks must be rendered from the center chunk?
 void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 {
 	if (rays_remaining == 0) return;
-	MapChunk& mc = map->get(cpos);
 
 	float k = 1 << E;
 	glm::ivec3 origin = glm::ivec3(glm::floor(player::position * k));
@@ -944,7 +1113,7 @@ void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 		glm::ivec3 dir = directions[ray_it++];
 		if (ray_it == directions.size()) ray_it = 0;
 		rays_remaining -= 1;
-		if (frustum.contains_point(player::position + glm::vec3(dir))) raytrace(&mc, origin, dir);
+		if (frustum.contains_point(player::position + glm::vec3(dir))) raytrace(cpos, origin, dir);
 		if ((q++ % 2048) == 0 && ta.elapsed() > budget) break;
 	}
 	visible_chunks.sort(cpos);
@@ -981,8 +1150,11 @@ void edit_block(glm::ivec3 pos, Block block)
 	Chunk* c = g_chunks.lock(cpos);
 	if (c)
 	{
-		map->set(pos, block);
-		c->reset_unsafe(renderer);
+		c->m_mutex_low.lock();
+		c->set(p, block);
+		c->save(cpos);
+		c->m_mutex_low.unlock();
+		c->buffer(renderer);
 		c->unlock();
 	}
 
@@ -1232,13 +1404,13 @@ int sphere_vs_cube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbo
 	return 1;
 }
 
-int cube_neighbors(glm::ivec3 cube)
+int cube_neighbors(glm::ivec3 cube, ReCachedChunk& cc)
 {
 	int neighbors = 0;
 	FOR2(dx, -1, 1) FOR2(dy, -1, 1) FOR2(dz, -1, 1)
 	{
 		glm::ivec3 pos(cube.x + dx, cube.y + dy, cube.z + dz);
-		if (!g_chunks.loaded(pos >> ChunkSizeBits) || map_get(pos) != Empty)
+		if (!g_chunks.loaded(pos >> ChunkSizeBits) || cc[pos] != Empty)
 		{
 			neighbors |= NeighborBit(dx, dy, dz);
 		}
@@ -1272,6 +1444,7 @@ void simulate(float dt, glm::vec3 dir)
 	}
 	player::position += dir * ((player::flying ? 20 : 10) * dt) + player::velocity * dt;
 
+	ReCachedChunk cc;
 	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
 	FOR(i, 2)
 	{
@@ -1281,7 +1454,7 @@ void simulate(float dt, glm::vec3 dir)
 		FOR2(x, p.x - 3, p.x + 3) FOR2(y, p.y - 3, p.y + 3) FOR2(z, p.z - 3, p.z + 3)
 		{
 			glm::ivec3 cube(x, y, z);
-			if ((!g_chunks.loaded(cube >> ChunkSizeBits) || map_get(cube) != Empty) && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube)))
+			if ((!g_chunks.loaded(cube >> ChunkSizeBits) || cc[cube] != Empty) && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube, cc)))
 			{
 				sum += player::position;
 				c += 1;
@@ -1414,10 +1587,11 @@ bool select_cube(glm::ivec3& sel_cube, int& sel_face)
 	float* ma = glm::value_ptr(player::orientation);
 	glm::vec3 dir(ma[4], ma[5], ma[6]);
 
+	ReCachedChunk cc;
 	for (glm::ivec3 d : select_sphere)
 	{
 		glm::ivec3 cube = p + d;
-		if (map_get(cube) != Empty && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
+		if (cc[cube] != Empty && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
 		{
 			sel_cube = cube;
 			return true;
@@ -1575,32 +1749,24 @@ void render_init()
 	g_chunks.start_threads();
 }
 
-void BlockRenderer::draw_quad(int a, int b, int c, int d, int face)
+void BlockRenderer::draw_quad(int face)
 {
 	Quad q;
 	q.color = m_color;
-	q.light = light_cache[a][b][c];
+	const int* f = Cube::faces[face];
+	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;
-	q.pos[0] = glm::u8vec3(w + Cube::corner[a]);
-	q.pos[1] = glm::u8vec3(w + Cube::corner[b]);
-	q.pos[2] = glm::u8vec3(w + Cube::corner[c]);
-	q.pos[3] = glm::u8vec3(w + Cube::corner[d]);
+	q.pos[0] = glm::u8vec3(w + Cube::corner[f[0]]);
+	q.pos[1] = glm::u8vec3(w + Cube::corner[f[1]]);
+	q.pos[2] = glm::u8vec3(w + Cube::corner[f[2]]);
+	q.pos[3] = glm::u8vec3(w + Cube::corner[f[3]]);
 	q.plane = (face << 8) | q.pos[0][face / 2];
 	m_quads.push_back(q);
 }
 
 // every bit from 0 to 7 in block represents once vertex (can be off or on)
-void BlockRenderer::render(MapChunk& mc, glm::ivec3 pos, Block block)
+void BlockRenderer::render(Chunk& mc, glm::ivec3 pos, Block block)
 {
-	m_pos = pos;
-	m_color = block;
-
-	if (can_see_through(map_get(pos - ix, mc))) draw_quad(0, 4, 6, 2, 0);
-	if (can_see_through(map_get(pos + ix, mc))) draw_quad(1, 3, 7, 5, 1);
-	if (can_see_through(map_get(pos - iy, mc))) draw_quad(0, 1, 5, 4, 2);
-	if (can_see_through(map_get(pos + iy, mc))) draw_quad(2, 6, 7, 3, 3);
-	if (can_see_through(map_get(pos - iz, mc))) draw_quad(0, 2, 3, 1, 4);
-	if (can_see_through(map_get(pos + iz, mc))) draw_quad(4, 5, 7, 6, 5);
 }
 
 void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
@@ -1632,7 +1798,7 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	{
 		if (!frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
 		{
-			Chunk* c = g_chunks.lock(cpos);
+			Chunk* c = g_chunks.try_lock(cpos);
 			if (!c) continue;
 			glm::ivec3 pos = cpos * ChunkSize;
 			glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));

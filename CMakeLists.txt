@@ -4,7 +4,7 @@ project(arena)
 
 add_executable(arena main.cc util.hh auto.hh callstack.hh rendering.cc rendering.hh lodepng/lodepng.cc tinycthread/tinycthread.c)
 
-add_definitions(-O3 -Wno-c++11-extensions)
+add_definitions(-g -Wno-c++11-extensions)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++0x")
 
