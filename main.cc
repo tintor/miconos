@@ -674,6 +674,8 @@ struct Chunk
 {
 	Chunk() : m_cpos(0x80000000, 0, 0) { }
 
+	void unlock() { m_mutex.unlock(); }
+
 	void buffer(glm::ivec3 cpos, BlockRenderer& renderer)
 	{
 		renderer.m_quads.clear();
@@ -707,9 +709,8 @@ struct Chunk
 		return false;
 	}
 
-	void reset(BlockRenderer& renderer)
+	void reset_unsafe(BlockRenderer& renderer)
 	{
-		AutoLock(m_mutex);
 		release(m_vertices);
 		buffer(m_cpos, renderer);
 	}
@@ -722,7 +723,7 @@ struct Chunk
 	friend class Chunks;
 private:
 	std::mutex m_mutex;
-	glm::ivec3 m_cpos; // TODO -> should be atomic -> pack into uint64 -> 21 bit per coordinate -> 25 effective
+	glm::ivec3 m_cpos;
 	std::vector<Vertex> m_vertices;
 	int m_render_size;
 };
@@ -803,8 +804,29 @@ public:
 		return (uint)(cpos.x ^ cpos.y ^ cpos.z) % Threads;
 	}
 
-	// TODO: add trylock to prevent it from being unloaded
-	bool loaded(glm::ivec3 cpos) { return get(cpos).m_cpos == cpos; }
+	bool loaded(glm::ivec3 cpos)
+	{
+		Chunk& c = get(cpos);
+		AutoLock(c.m_mutex);
+		return c.m_cpos == cpos;
+	}
+
+	Chunk* lock(glm::ivec3 cpos)
+	{
+		Chunk& c = get(cpos);
+		c.m_mutex.lock();
+		if (c.m_cpos != cpos) { c.m_mutex.unlock(); return nullptr; }
+		return &c;
+	}
+
+	void reset(glm::ivec3 cpos, BlockRenderer& renderer)
+	{
+		Chunk& c = get(cpos);
+		c.m_mutex.lock();
+		if (c.m_cpos != cpos) { c.m_mutex.unlock(); return; }
+		c.reset_unsafe(renderer);
+		c.m_mutex.unlock();
+	}
 
 private:
 	Chunk& get(glm::ivec3 a)
@@ -954,17 +976,22 @@ void edit_block(glm::ivec3 pos, Block block)
 {
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
 	glm::ivec3 p = pos & ChunkSizeMask;
-
-	if (!g_chunks.loaded(cpos)) return;
-	map->set(pos, block);
 	static BlockRenderer renderer;
-	g_chunks(cpos).reset(renderer);
-	if (p.x == 0) g_chunks(cpos - ix).reset(renderer);
-	if (p.y == 0) g_chunks(cpos - iy).reset(renderer);
-	if (p.z == 0) g_chunks(cpos - iz).reset(renderer);
-	if (p.x == ChunkSizeMask) g_chunks(cpos + ix).reset(renderer);
-	if (p.y == ChunkSizeMask) g_chunks(cpos + iy).reset(renderer);
-	if (p.z == ChunkSizeMask) g_chunks(cpos + iz).reset(renderer);
+
+	Chunk* c = g_chunks.lock(cpos);
+	if (c)
+	{
+		map->set(pos, block);
+		c->reset_unsafe(renderer);
+		c->unlock();
+	}
+
+	if (p.x == 0) g_chunks.reset(cpos - ix, renderer);
+	if (p.y == 0) g_chunks.reset(cpos - iy, renderer);
+	if (p.z == 0) g_chunks.reset(cpos - iz, renderer);
+	if (p.x == ChunkSizeMask) g_chunks.reset(cpos + ix, renderer);
+	if (p.y == ChunkSizeMask) g_chunks.reset(cpos + iy, renderer);
+	if (p.z == ChunkSizeMask) g_chunks.reset(cpos + iz, renderer);
 }
 
 void on_edit_key(int key)
@@ -1603,12 +1630,15 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 
 	for (glm::ivec3 cpos : visible_chunks)
 	{
-		if (g_chunks.loaded(cpos) && !frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
+		if (!frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
 		{
+			Chunk* c = g_chunks.lock(cpos);
+			if (!c) continue;
 			glm::ivec3 pos = cpos * ChunkSize;
 			glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
-			stats::vertex_count += g_chunks(cpos).render();
+			stats::vertex_count += c->render();
 			stats::chunk_count += 1;
+			c->unlock();
 		}
 	}
 }
