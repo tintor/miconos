@@ -1,6 +1,11 @@
 // TODO:
 // - slowly blend-in newly buffered chunks so that they are less noticable
-// - persist map-chunks for faster loading!
+// - now that map chunks are persisted, optimize memory space for mapchunks:
+//    - @ unload far mapchunks are player moves
+//    - @ don't waste space for empty mapchunks
+//    - @ put mapchunk block data on page boundaries to optimize memory (just malloc(4096) for non-empty ones?)
+//    - include memory usage in counters
+//    - Use array of MapChunkEntries instead of LinkedList of MapChunk
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
 // # Raytracing:
@@ -11,12 +16,7 @@
 
 // # more proceduraly generated stuff!
 // - nicer generated trees! palms!
-// - water / sand / snow!
-// - diffuse/reduce process?
-
-// # eye-candy
-// - grass with wind effect!
-// - nicer textures!
+// - nicer textures: water / sand / snow / grass!
 
 // # gravity mode: planar (2 degrees of freedom orientation), spherical (2 degrees of freedom orientation), zero-g (3 degrees of freedom orientation)
 
@@ -32,7 +32,6 @@
 // - textures with transparent pixels
 
 // # client / server:
-// - disk persistence on server
 // - terrain generation on server
 // - server sends: chunks, block updates and player position
 // - client sends: edits, player commands
@@ -72,6 +71,7 @@
 #include "rendering.hh"
 #include "auto.hh"
 #include "unistd.h"
+#include "sqlite3.h"
 
 // GUI
 
@@ -83,6 +83,7 @@ int height;
 const int ChunkSizeBits = 4, MapSizeBits = 7;
 const int ChunkSize = 1 << ChunkSizeBits, MapSize = 1 << MapSizeBits;
 const int ChunkSizeMask = ChunkSize - 1, MapSizeMask = MapSize - 1;
+const int ChunkSize3 = ChunkSize * ChunkSize * ChunkSize;
 
 const int RenderDistance = 63;
 static_assert(RenderDistance < MapSize / 2, "");
@@ -98,8 +99,6 @@ namespace Cube
 	Initialize { FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1); }
 }
 
-// ============================
-
 Block Color(int r, int g, int b, int a)
 {
 	assert(0 <= r && r < 4 && 0 <= g && g < 4 && 0 <= b && b < 4 && 0 <= a && a < 4);
@@ -109,19 +108,99 @@ Block Color(int r, int g, int b, int a)
 Block Empty = Color(3, 3, 3, 0);
 Block Leaves = 255;
 
+// ============================
+
+#define AutoLock(A) (A).lock(); Auto((A).unlock());
+#define DB(A) { int rc = sqlite3_ ## A; if (rc != SQLITE_OK) { fprintf(stderr, "%d\n", rc); assert(false); } }
+#define DB_DONE(A) { int rc = sqlite3_ ## A; if (rc != SQLITE_DONE) { fprintf(stderr, "%d\n", rc); assert(false); } }
+int sqlite3_exec(sqlite3* db, const char* query) { return sqlite3_exec(db, query, nullptr, nullptr, nullptr); }
+
+Initialize
+{
+	sqlite3* db;
+	DB(open_v2("arena.db", &db, SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr));
+	DB(exec(db, "CREATE TABLE IF NOT EXISTS map_chunk (x SMALLINT NOT NULL, y SMALLINT NOT NULL, z SMALLINT NOT NULL, block BLOB NOT NULL, cnt SMALLINT NOT NULL, PRIMARY KEY(x, y, z))"));
+	DB(close(db));
+}
+
+struct Database
+{
+	Database();
+	void set_map_chunk(glm::ivec3 cpos, const Block block[ChunkSize3], short count);
+	bool get_map_chunk(glm::ivec3 cpos, Block block[ChunkSize3], short& count);
+
+private:
+	std::mutex m_mutex;
+	sqlite3* m_db;
+	sqlite3_stmt* m_set_mc_stmt;
+	sqlite3_stmt* m_get_mc_stmt;
+};
+
+Database::Database()
+{
+	DB(open_v2("arena.db", &m_db, SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_READWRITE, nullptr));
+	DB(prepare_v2(m_db, "INSERT OR REPLACE INTO map_chunk VALUES (?, ?, ?, ?, ?)", -1, &m_set_mc_stmt, NULL));
+	DB(prepare_v2(m_db, "SELECT block, cnt FROM map_chunk WHERE x = ? AND y = ? AND z = ?", -1, &m_get_mc_stmt, NULL));
+}
+
+void Database::set_map_chunk(glm::ivec3 cpos, const Block block[ChunkSize3], short count)
+{
+	AutoLock(m_mutex);
+	sqlite3_stmt* stmt = m_set_mc_stmt;
+	DB(reset(stmt));
+	DB(bind_int(stmt, 1, cpos.x));
+	DB(bind_int(stmt, 2, cpos.y));
+	DB(bind_int(stmt, 3, cpos.z));
+	DB(bind_blob(stmt, 4, block, count ? sizeof(Block) * ChunkSize3 : 0, SQLITE_STATIC));
+	DB(bind_int(stmt, 5, count));
+	DB_DONE(step(stmt));
+}
+
+bool Database::get_map_chunk(glm::ivec3 cpos, Block block[ChunkSize3], short& count)
+{
+	AutoLock(m_mutex);
+	sqlite3_stmt* stmt = m_get_mc_stmt;
+	DB(reset(stmt));
+	DB(bind_int(stmt, 1, cpos.x));
+	DB(bind_int(stmt, 2, cpos.y));
+	DB(bind_int(stmt, 3, cpos.z));
+	int rc = sqlite3_step(stmt);
+	if (rc == SQLITE_DONE) return false;
+	assert(rc == SQLITE_ROW);
+	rc = sqlite3_column_bytes(stmt, 0);
+	assert(rc == sizeof(Block) * ChunkSize3 || rc == 0);
+	if (rc > 0)
+	{
+		memcpy(block, sqlite3_column_blob(stmt, 0), rc);
+	}
+	else
+	{
+		memset(block, Empty, sizeof(Block) * ChunkSize3);
+	}
+	count = sqlite3_column_int(stmt, 1);
+	DB_DONE(step(stmt));
+	return true;
+}
+
+// ============================
+
+Database g_db;
+
 struct MapChunk
 {
-	glm::ivec3 cpos;
-	int count_empty;
-	MapChunk* next;
+	const glm::ivec3 cpos;
+	short count; // number of non-Empty blocks
+	MapChunk* const next;
 private:
-	Block block[ChunkSize * ChunkSize * ChunkSize];
+	Block* block;
 public:
 
-	MapChunk()
+	MapChunk(glm::ivec3 _cpos, MapChunk* _next) : cpos(_cpos), next(_next)
 	{
-		memset(block, Empty, sizeof(Block) * ChunkSize * ChunkSize * ChunkSize);
-		count_empty = ChunkSize * ChunkSize * ChunkSize;
+		assert(ChunkSize3 % 4096 == 0); // pagesize aligned
+		block = static_cast<Block*>(malloc(sizeof(Block) * ChunkSize3));
+		memset(block, Empty, sizeof(Block) * ChunkSize3);
+		count = 0;
 	}
 
 	Block operator[](glm::ivec3 a) { return block[index(a)]; }
@@ -130,9 +209,22 @@ public:
 	{
 		int i = index(a);
 		if (block[i] == b) return;
-		if (block[i] == Empty) count_empty -= 1;
-		if (b == Empty) count_empty += 1;
+		if (block[i] == Empty) count += 1;
+		if (b == Empty) count -= 1;
 		block[i] = b;
+		save();
+	}
+
+	void save() { g_db.set_map_chunk(cpos, block, count); }
+	bool load() { return g_db.get_map_chunk(cpos, block, count); }
+
+	void optimize()
+	{
+		if (count == 0)
+		{
+			free(block);
+			block = nullptr;
+		}
 	}
 
 private:
@@ -292,7 +384,7 @@ void GenerateTree(MapChunk& mc, int x, int y)
 	}
 }
 
-void GenerateTerrain(MapChunk& mc)
+void generate_terrain(MapChunk& mc)
 {
 	heightmap->Populate(mc.cpos.x, mc.cpos.y); // TODO: not thread safe!
 
@@ -383,14 +475,23 @@ struct Map
 		MapChunk* head = m_map[h].load(std::memory_order_relaxed);
 		for (MapChunk* i = head; i; i = i->next) if (i->cpos == cpos) return *i;
 
-		std::lock_guard<std::mutex> _(m_lock[(cpos.x ^ cpos.y ^ cpos.z) & 63]);
-		MapChunk* head2 = m_map[h].load(std::memory_order_relaxed);
-		for (MapChunk* i = head2; i != head; i = i->next) if (i->cpos == cpos) return *i;
-		MapChunk* p = new MapChunk;
-		p->cpos = cpos;
-		p->next = head2;
-		GenerateTerrain(*p);
-		m_map[h] = p;
+		MapChunk* p;
+		bool save = false;
+		{
+			AutoLock(m_lock[(cpos.x ^ cpos.y ^ cpos.z) & 63]);
+			MapChunk* head2 = m_map[h].load(std::memory_order_relaxed);
+			for (MapChunk* i = head2; i != head; i = i->next) if (i->cpos == cpos) return *i;
+
+			p = new MapChunk(cpos, head2);
+			if (!p->load())
+			{
+				generate_terrain(*p);
+				save = true;
+				p->optimize();
+			}
+			m_map[h] = p;
+		}
+		if (save) p->save();
 		return *p;
 	}
 
@@ -803,7 +904,7 @@ void raytrace(MapChunk* mc, glm::ivec3 photon, glm::ivec3 dir)
 			mc = map->try_get(cvoxel);
 			if (!mc) return;
 			// Advance photon until it leaves empty chunk
-			while (mc->count_empty == ChunkSize * ChunkSize * ChunkSize)
+			while (mc->count == 0)
 			{
 				do photon += dir; while ((photon >> B) == cvoxel);
 				voxel = photon >> E;

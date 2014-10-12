@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8)
 
 project(arena)
 
-add_executable(arena main.cc util.hh auto.hh callstack.hh rendering.cc rendering.hh lodepng/lodepng.cc tinycthread/tinycthread.c)
+add_executable(arena main.cc util.hh auto.hh callstack.hh rendering.cc rendering.hh lodepng/lodepng.cc tinycthread/tinycthread.c sqlite/sqlite3.c sqlite/sqlite3.h)
 
 add_definitions(-O3 -Wno-c++11-extensions)
 
