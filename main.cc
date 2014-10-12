@@ -8,6 +8,10 @@
 //    - Use array of MapChunkEntries instead of LinkedList of MapChunk
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
+// Bugs:
+/*3   GLEngine                            0x00007fff85848dc2 glDrawArrays_ACC_GL3Exec + 760
+  4   arena                               0x0000000103c8a400 _Z19render_world_blocksRKN3glm6detail7tmat4x4IfLNS_9precisionE0EEERK7Frustum + 704*/
+
 // # Raytracing:
 // - Raytracer when moving: clear set only, and not array. Deduplicate array when sorting. Remove stale array elements when raytracing is complete!
 // - newly buffered chunks should re-start raytracer
@@ -71,7 +75,31 @@
 #include "rendering.hh"
 #include "auto.hh"
 #include "unistd.h"
-#include "sqlite3.h"
+
+void handler(int sig)
+{
+	fprintf(stderr, "Error: signal %d:\n", sig);
+	void* array[100];
+	backtrace_symbols_fd(array, backtrace(array, 100), STDERR_FILENO);
+	exit(1);
+}
+
+void __assert_rtn(const char* func, const char* file, int line, const char* cond)
+{
+	fprintf(stderr, "Assertion failed: (%s), function %s, file %s, line %d.\n", cond, func, file, line);
+	void* array[100];
+	backtrace_symbols_fd(array, backtrace(array, 100), STDERR_FILENO);
+	exit(1);
+}
+
+Initialize
+{
+	signal(SIGSEGV, handler);
+}
+
+#include "rocksdb/db.h"
+#include "rocksdb/slice.h"
+#include "rocksdb/options.h"
 
 // GUI
 
@@ -111,121 +139,77 @@ Block Leaves = 255;
 // ============================
 
 #define AutoLock(A) (A).lock(); Auto((A).unlock());
-#define DB(A) { int rc = sqlite3_ ## A; if (rc != SQLITE_OK) { fprintf(stderr, "%d\n", rc); assert(false); } }
-#define DB_DONE(A) { int rc = sqlite3_ ## A; if (rc != SQLITE_DONE) { fprintf(stderr, "%d\n", rc); assert(false); } }
-int sqlite3_exec(sqlite3* db, const char* query) { return sqlite3_exec(db, query, nullptr, nullptr, nullptr); }
+
+rocksdb::DB* db;
 
 Initialize
 {
-	sqlite3* db;
-	DB(open_v2("arena.db", &db, SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr));
-	DB(exec(db, "CREATE TABLE IF NOT EXISTS map_chunk (x SMALLINT NOT NULL, y SMALLINT NOT NULL, z SMALLINT NOT NULL, block BLOB NOT NULL, cnt SMALLINT NOT NULL, PRIMARY KEY(x, y, z))"));
-	DB(close(db));
+	rocksdb::Options options;
+	options.IncreaseParallelism();
+	options.OptimizeLevelStyleCompaction();
+	options.create_if_missing = true;
+	rocksdb::Status s = rocksdb::DB::Open(options, "arena.rdb", &db);
+	assert(s.ok());
 }
 
-struct Database
+void set_map_chunk(glm::ivec3 cpos, const Block block[ChunkSize3])
 {
-	Database();
-	void set_map_chunk(glm::ivec3 cpos, const Block block[ChunkSize3], short count);
-	bool get_map_chunk(glm::ivec3 cpos, Block block[ChunkSize3], short& count);
-
-private:
-	std::mutex m_mutex;
-	sqlite3* m_db;
-	sqlite3_stmt* m_set_mc_stmt;
-	sqlite3_stmt* m_get_mc_stmt;
-};
-
-Database::Database()
-{
-	DB(open_v2("arena.db", &m_db, SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_READWRITE, nullptr));
-	DB(prepare_v2(m_db, "INSERT OR REPLACE INTO map_chunk VALUES (?, ?, ?, ?, ?)", -1, &m_set_mc_stmt, NULL));
-	DB(prepare_v2(m_db, "SELECT block, cnt FROM map_chunk WHERE x = ? AND y = ? AND z = ?", -1, &m_get_mc_stmt, NULL));
+	Timestamp ta;
+	rocksdb::Slice key(reinterpret_cast<const char*>(&cpos), sizeof(cpos));
+	rocksdb::Slice value(reinterpret_cast<const char*>(block), block ? sizeof(Block) * ChunkSize3 : 0);
+	rocksdb::Status s = db->Put(rocksdb::WriteOptions(), key, value);
+	assert(s.ok());
 }
 
-void Database::set_map_chunk(glm::ivec3 cpos, const Block block[ChunkSize3], short count)
+// result allocated using malloc or left as nullptr if empty
+bool get_map_chunk(glm::ivec3 cpos, Block*& block)
 {
-	AutoLock(m_mutex);
-	sqlite3_stmt* stmt = m_set_mc_stmt;
-	DB(reset(stmt));
-	DB(bind_int(stmt, 1, cpos.x));
-	DB(bind_int(stmt, 2, cpos.y));
-	DB(bind_int(stmt, 3, cpos.z));
-	DB(bind_blob(stmt, 4, block, count ? sizeof(Block) * ChunkSize3 : 0, SQLITE_STATIC));
-	DB(bind_int(stmt, 5, count));
-	DB_DONE(step(stmt));
-}
-
-bool Database::get_map_chunk(glm::ivec3 cpos, Block block[ChunkSize3], short& count)
-{
-	AutoLock(m_mutex);
-	sqlite3_stmt* stmt = m_get_mc_stmt;
-	DB(reset(stmt));
-	DB(bind_int(stmt, 1, cpos.x));
-	DB(bind_int(stmt, 2, cpos.y));
-	DB(bind_int(stmt, 3, cpos.z));
-	int rc = sqlite3_step(stmt);
-	if (rc == SQLITE_DONE) return false;
-	assert(rc == SQLITE_ROW);
-	rc = sqlite3_column_bytes(stmt, 0);
-	assert(rc == sizeof(Block) * ChunkSize3 || rc == 0);
-	if (rc > 0)
+	rocksdb::Slice key(reinterpret_cast<const char*>(&cpos), sizeof(cpos));
+	std::string value;
+	rocksdb::Status s = db->Get(rocksdb::ReadOptions(), key, &value);
+	if (s.IsNotFound()) return false;
+	assert(s.ok());
+	assert(value.size() == sizeof(Block) * ChunkSize3 || value.size() == 0);
+	assert(block == nullptr);
+	if (value.size() > 0)
 	{
-		memcpy(block, sqlite3_column_blob(stmt, 0), rc);
+		// TODO: can we just steal pointer from std::string?
+		// TODO: will mmap-ing on page boundaries help (as pagesize == blocksize)?
+		block = (Block*)malloc(value.size());
+		memcpy(block, value.data(), value.size());
 	}
-	else
-	{
-		memset(block, Empty, sizeof(Block) * ChunkSize3);
-	}
-	count = sqlite3_column_int(stmt, 1);
-	DB_DONE(step(stmt));
 	return true;
 }
-
-// ============================
-
-Database g_db;
 
 struct MapChunk
 {
 	const glm::ivec3 cpos;
-	short count; // number of non-Empty blocks
 	MapChunk* const next;
 private:
 	Block* block;
 public:
+	static_assert(ChunkSize3 % 4096 == 0, "must be pagesize aligned");
+	MapChunk(glm::ivec3 _cpos, MapChunk* _next) : cpos(_cpos), next(_next), block(nullptr) { }
 
-	MapChunk(glm::ivec3 _cpos, MapChunk* _next) : cpos(_cpos), next(_next)
-	{
-		assert(ChunkSize3 % 4096 == 0); // pagesize aligned
-		block = static_cast<Block*>(malloc(sizeof(Block) * ChunkSize3));
-		memset(block, Empty, sizeof(Block) * ChunkSize3);
-		count = 0;
-	}
+	Block operator[](glm::ivec3 a) { return block ? block[index(a)] : Empty; }
 
-	Block operator[](glm::ivec3 a) { return block[index(a)]; }
+	bool empty() { return block == nullptr; }
 
 	void set(glm::ivec3 a, Block b)
 	{
+		if (block == nullptr)
+		{
+			if (b == Empty) return;
+			block = static_cast<Block*>(malloc(sizeof(Block) * ChunkSize3));
+			memset(block, Empty, sizeof(Block) * ChunkSize3);
+		}
 		int i = index(a);
 		if (block[i] == b) return;
-		if (block[i] == Empty) count += 1;
-		if (b == Empty) count -= 1;
 		block[i] = b;
-		save();
 	}
 
-	void save() { g_db.set_map_chunk(cpos, block, count); }
-	bool load() { return g_db.get_map_chunk(cpos, block, count); }
-
-	void optimize()
-	{
-		if (count == 0)
-		{
-			free(block);
-			block = nullptr;
-		}
-	}
+	void save() { set_map_chunk(cpos, block); }
+	bool load() { return get_map_chunk(cpos, block); }
 
 private:
 	int index(glm::ivec3 a)
@@ -487,7 +471,6 @@ struct Map
 			{
 				generate_terrain(*p);
 				save = true;
-				p->optimize();
 			}
 			m_map[h] = p;
 		}
@@ -505,7 +488,9 @@ struct Map
 
 	void set(glm::ivec3 pos, Block block)
 	{
-		get(pos >> ChunkSizeBits).set(pos & ChunkSizeMask, block);
+		MapChunk& mc = get(pos >> ChunkSizeBits);
+		mc.set(pos & ChunkSizeMask, block);
+		mc.save();
 	}
 
 private:
@@ -697,10 +682,13 @@ struct Chunk
 	{
 		renderer.m_quads.clear();
 		MapChunk& mc = map->get(cpos);
-		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
+		if (!mc.empty())
 		{
-			Block block = mc[glm::ivec3(x, y, z)];
-			if (block != Empty) renderer.render(mc, cpos * ChunkSize + glm::ivec3(x, y, z), block);
+			FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
+			{
+				Block block = mc[glm::ivec3(x, y, z)];
+				if (block != Empty) renderer.render(mc, cpos * ChunkSize + glm::ivec3(x, y, z), block);
+			}
 		}
 		renderer.merge_quads(vertices);
 		render_size = vertices.size();
@@ -765,14 +753,14 @@ namespace player
 class Chunks
 {
 public:
-	static const int Threads = 8;
+	static const int Threads = 7;
 
 	Chunks(): m_map(new Chunk[MapSize * MapSize * MapSize]) { }
 
 	Chunk& operator()(glm::ivec3 cpos)
 	{
 		Chunk& chunk = get(cpos);
-		if (chunk.cpos != cpos) { fprintf(stderr, "cpos = [%d %d %d] %lg\n", cpos.x, cpos.y, cpos.z, sqrt(glm::length2(cpos))); PrintCallStack(); assert(false); }
+		if (chunk.cpos != cpos) { fprintf(stderr, "cpos = [%d %d %d] %lg\n", cpos.x, cpos.y, cpos.z, sqrt(glm::length2(cpos))); assert(false); }
 		return chunk;
 	}
 
@@ -818,8 +806,7 @@ public:
 
 	static int owner(glm::ivec3 cpos)
 	{
-		static_assert(Threads == 1 || Threads == 2 || Threads == 4 || Threads == 8 || Threads == 16, "");
-		return (cpos.x ^ cpos.y ^ cpos.z) & (Threads - 1);
+		return (uint)(cpos.x ^ cpos.y ^ cpos.z) % Threads;
 	}
 
 	// TODO: add trylock to prevent it from being unloaded
@@ -902,9 +889,9 @@ void raytrace(MapChunk* mc, glm::ivec3 photon, glm::ivec3 dir)
 		if (mc->cpos != cvoxel)
 		{
 			mc = map->try_get(cvoxel);
-			if (!mc) return;
+			if (!mc) return; // TODO: chunk not loaded yet. Render it as big fog cube. Need to retrace it again once it is loaded.
 			// Advance photon until it leaves empty chunk
-			while (mc->count == 0)
+			while (mc->empty())
 			{
 				do photon += dir; while ((photon >> B) == cvoxel);
 				voxel = photon >> E;
@@ -974,6 +961,7 @@ void edit_block(glm::ivec3 pos, Block block)
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
 	glm::ivec3 p = pos & ChunkSizeMask;
 
+	if (!g_chunks.loaded(cpos)) return;
 	map->set(pos, block);
 	static BlockRenderer renderer;
 	g_chunks(cpos).reset(renderer);
@@ -1228,7 +1216,8 @@ int cube_neighbors(glm::ivec3 cube)
 	int neighbors = 0;
 	FOR2(dx, -1, 1) FOR2(dy, -1, 1) FOR2(dz, -1, 1)
 	{
-		if (map_get(glm::ivec3(cube.x + dx, cube.y + dy, cube.z + dz)) != Empty)
+		glm::ivec3 pos(cube.x + dx, cube.y + dy, cube.z + dz);
+		if (!g_chunks.loaded(pos >> ChunkSizeBits) || map_get(pos) != Empty)
 		{
 			neighbors |= NeighborBit(dx, dy, dz);
 		}
@@ -1271,7 +1260,7 @@ void simulate(float dt, glm::vec3 dir)
 		FOR2(x, p.x - 3, p.x + 3) FOR2(y, p.y - 3, p.y + 3) FOR2(z, p.z - 3, p.z + 3)
 		{
 			glm::ivec3 cube(x, y, z);
-			if (map_get(cube) != Empty && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube)))
+			if ((!g_chunks.loaded(cube >> ChunkSizeBits) || map_get(cube) != Empty) && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube)))
 			{
 				sum += player::position;
 				c += 1;
