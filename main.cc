@@ -638,6 +638,42 @@ struct ReCachedChunk
 bool can_move_through(Block block) { return block == Empty; }
 bool can_see_through(Block block) { return block == Empty || block == Leaves; }
 
+typedef uint64_t CompressedIVec3;
+
+uint64_t compress(int v, int bits)
+{
+	uint64_t c = v;
+	return c & ((1lu << bits) - 1);
+}
+
+int decompress(uint64_t c, int bits)
+{
+	int64_t q = c << (64 - bits);
+	return q >> (64 - bits);
+}
+
+CompressedIVec3 compress_ivec3(glm::ivec3 v)
+{
+	uint64_t c = 0;
+	c |= compress(v.x, 21);
+	c <<= 21;
+	c |= compress(v.y, 21);
+	c <<= 21;
+	c |= compress(v.z, 21);
+	return c;
+}
+
+glm::ivec3 decompress_ivec3(CompressedIVec3 c)
+{
+	glm::ivec3 v;
+	v.z = decompress(c, 21);
+	c >>= 21;
+	v.y = decompress(c, 21);
+	c >>= 21;
+	v.x = decompress(c, 21);
+	return v;
+}
+
 struct Chunk : public MapChunk
 {
 	Chunk() : m_cpos(0x80000000, 0, 0) { }
@@ -914,6 +950,21 @@ public:
 		return &c;
 	}
 
+	Block get_block(glm::ivec3 pos)
+	{
+		Chunk& c = get(pos >> ChunkSizeBits);
+		AutoLock(c.m_mutex_low);
+		assert(c.m_cpos == (pos >> ChunkSizeBits));
+		return c[pos & ChunkSizeMask];
+	}
+
+	bool can_move_through(glm::ivec3 pos)
+	{
+		Chunk& chunk = get(pos >> ChunkSizeBits);
+		AutoLock(chunk.m_mutex_low);
+		return chunk.m_cpos != (pos >> ChunkSizeBits) && ::can_move_through(chunk[pos & ChunkSizeMask]);
+	}
+
 	void reset(glm::ivec3 cpos, BlockRenderer& renderer)
 	{
 		Chunk& c = get(cpos);
@@ -940,9 +991,11 @@ private:
 // Threading model:
 // - main rendering thread acquires not locks! it must check g_chunks.loaded() before accessing buffer.
 // - main rendering thread accessing blocks from unloaded chunks: NOT ALLOWED!
-// - worker threads never conflict with each other, only with main thread.
-// - only worker threads can convert unloaded chunks into loaded chunks
+// - worker threads conflict with each other when accessing neighbour chunks during buffering and with main thread.
+// - only worker threads can convert unloaded chunks into loaded chunks!
 // - only main thread can convert loaded chunks into unloaded chunks (when player moves out of chunk)
+// - worker thread can loose the chunk asynchronously by main thread (main thread will just clear chunk's m_cpos), but the chunk will still be safe to access
+// - Chunk::cpos must be atomic!
 
 Chunks g_chunks;
 
@@ -1005,12 +1058,6 @@ private:
 	glm::ivec3 m_vec;
 	AutoVecLock* m_next;
 };*/
-
-Block map_get(glm::ivec3 pos)
-{
-	CachedChunk cc;
-	return cc[pos];
-}
 
 // ======================
 
@@ -1168,7 +1215,8 @@ void edit_block(glm::ivec3 pos, Block block)
 
 void on_edit_key(int key)
 {
-	Block block = map_get(sel_cube);
+	Block block = g_chunks.get_block(sel_cube);
+
 	int r = block % 4;
 	int g = (block / 4) % 4;
 	int b = (block / 16) % 4;
@@ -1260,7 +1308,7 @@ void on_mouse_button(GLFWwindow* window, int button, int action, int mods)
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
 	{
 		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
-		edit_block(sel_cube + dir[sel_face], map_get(sel_cube));
+		edit_block(sel_cube + dir[sel_face], g_chunks.get_block(sel_cube));
 	}
 }
 
@@ -1404,16 +1452,13 @@ int sphere_vs_cube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbo
 	return 1;
 }
 
-int cube_neighbors(glm::ivec3 cube, ReCachedChunk& cc)
+int cube_neighbors(glm::ivec3 cube)
 {
 	int neighbors = 0;
 	FOR2(dx, -1, 1) FOR2(dy, -1, 1) FOR2(dz, -1, 1)
 	{
 		glm::ivec3 pos(cube.x + dx, cube.y + dy, cube.z + dz);
-		if (!g_chunks.loaded(pos >> ChunkSizeBits) || cc[pos] != Empty)
-		{
-			neighbors |= NeighborBit(dx, dy, dz);
-		}
+		if (!g_chunks.can_move_through(pos)) neighbors |= NeighborBit(dx, dy, dz);
 	}
 	return neighbors;
 }
@@ -1444,7 +1489,6 @@ void simulate(float dt, glm::vec3 dir)
 	}
 	player::position += dir * ((player::flying ? 20 : 10) * dt) + player::velocity * dt;
 
-	ReCachedChunk cc;
 	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
 	FOR(i, 2)
 	{
@@ -1454,7 +1498,7 @@ void simulate(float dt, glm::vec3 dir)
 		FOR2(x, p.x - 3, p.x + 3) FOR2(y, p.y - 3, p.y + 3) FOR2(z, p.z - 3, p.z + 3)
 		{
 			glm::ivec3 cube(x, y, z);
-			if ((!g_chunks.loaded(cube >> ChunkSizeBits) || cc[cube] != Empty) && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube, cc)))
+			if (!g_chunks.can_move_through(cube) && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube)))
 			{
 				sum += player::position;
 				c += 1;
@@ -1823,7 +1867,7 @@ void render_gui()
 
 		if (selection)
 		{
-			Block block = map_get(sel_cube);
+			Block block = g_chunks.get_block(sel_cube);
 			int r = block % 4;
 			int g = (block / 4) % 4;
 			int b = (block / 16) % 4;
@@ -1871,6 +1915,9 @@ double Timestamp::milisec_per_tick = 0;
 
 int main(int, char**)
 {
+	assert(decompress(compress(-33, 21), 21) == -33);
+	assert(decompress_ivec3(compress_ivec3(glm::ivec3(123, -127, 44))) == glm::ivec3(123, -127, 44));
+
 	if (!glfwInit()) return 0;
 
 	glm::dvec3 a;
@@ -1912,6 +1959,27 @@ int main(int, char**)
 	c.z = glfwGetTime();
 	d.z = rdtsc();
 	Timestamp::init(a, b, c, d);
+
+	// Wait for 3x3 chunks around player's starting position to load
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+	player::cposx = cplayer.x;
+	player::cposy = cplayer.y;
+	player::cposz = cplayer.z;
+	Timestamp tq;
+	FOR2(x, cplayer.x-1, cplayer.x+1)
+	FOR2(y, cplayer.y-1, cplayer.y+1)
+	FOR2(z, cplayer.z-1, cplayer.z+1)
+	{
+		while (!g_chunks.loaded(glm::ivec3(x, y, z)))
+		{
+			usleep(10000);
+			assert(tq.elapsed_ms() < 2);
+		}
+	}
+
+	Chunk* chunk = g_chunks.low_lock(cplayer);
+	assert(chunk);
+	chunk->unlock();
 
 	Timestamp t0;
 	while (!glfwWindowShouldClose(window))
