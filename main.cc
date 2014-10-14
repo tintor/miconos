@@ -74,10 +74,9 @@
 #include "auto.hh"
 #include "unistd.h"
 
-#define AutoLock(A) (A).lock(); Auto((A).unlock());
 std::mutex stderr_mutex;
 
-void handler(int sig)
+void sigsegv_handler(int sig)
 {
 	AutoLock(stderr_mutex);
 	fprintf(stderr, "Error: signal %d:\n", sig);
@@ -95,10 +94,7 @@ void __assert_rtn(const char* func, const char* file, int line, const char* cond
 	exit(1);
 }
 
-Initialize
-{
-	signal(SIGSEGV, handler);
-}
+Initialize { signal(SIGSEGV, sigsegv_handler); }
 
 #include "rocksdb/db.h"
 #include "rocksdb/slice.h"
@@ -122,6 +118,29 @@ static_assert(RenderDistance < MapSize / 2, "");
 Sphere render_sphere(RenderDistance);
 
 typedef unsigned char Block;
+
+// ===============
+
+// - .not_null 4k, 1bit per chunk, marking which chunks are not null
+// - .not_empty 4k, 1bit per chunk, marking which chunks are not empty (just an optimization when loading)
+// - .block 128MB, blocks (uses file system hole punching to save space!)
+
+template<int N>
+struct BitCubeFile : public ArrayFile<BitCube<N>, 1>
+{
+	BitCube<N>& cube() { return *ArrayFile<BitCube<N>, 1>::data(); }
+};
+
+template<int Power>
+struct BlockCubeFile : public ArrayFile<Block, 1lu<<(3*Power)>
+{
+	Block* chunk(glm::ivec3 cpos) { return ArrayFile<Block, 1lu<<(3*Power)>::data() + ChunkSize3 * z_order<Power - ChunkSizeBits>(cpos); }
+	Block& block(glm::ivec3 pos) { return ArrayFile<Block, 1lu<<(3*Power)>::data()[z_order<Power>(pos)]; }
+};
+
+// TODO: Empty block should be changed to 0!
+
+// ===============
 
 namespace Cube
 {
@@ -211,21 +230,7 @@ struct MapChunk
 	void save(glm::ivec3 cpos) { set_map_chunk(cpos, m_block); }
 
 private:
-	static int index(glm::ivec3 a)
-	{
-		// Z-order space filling curve!
-		assert(a.x >= 0 && a.x < ChunkSize && a.y >= 0 && a.y < ChunkSize && a.z >= 0 && a.z < ChunkSize);
-		int e = 0;
-		int w = 0;
-		FOR(i, 4)
-		{
-			glm::ivec3 b = a & 1;
-			a >>= 1;
-			e += ((b.x * 2 + b.y) * 2 + b.z) << w;
-			w += 3;
-		}
-		return e;
-	}
+	static int index(glm::ivec3 a) { return z_order<4>(a); }
 
 protected:
 	Block* m_block;
@@ -251,18 +256,18 @@ struct Heightmap
 
 int GetHeight(int x, int y)
 {
-	float q = SimplexNoise(glm::vec2(x, y) * 0.004f, 6, 0.5f, 0.5f, true);
+	float q = noise(glm::vec2(x, y) * 0.004f, 6, 0.5f, 0.5f, true);
 	return q * q * q * q * 200;
 }
 
 Block GetColor(int x, int y)
 {
-	return std::min<int>(63, floorf((1 + SimplexNoise(glm::vec2(x, y) * -0.024f, 6, 0.5f, 0.5f, false)) * 8)) + 64 * 3;
+	return std::min<int>(63, floorf((1 + noise(glm::vec2(x, y) * -0.024f, 6, 0.5f, 0.5f, false)) * 8)) + 64 * 3;
 }
 
 float Tree(int x, int y)
 {
-	return SimplexNoise(glm::vec2(x+321398, y+8901) * 0.002f, 4, 2.0f, 0.5f, true);
+	return noise(glm::vec2(x+321398, y+8901) * 0.002f, 4, 2.0f, 0.5f, true);
 }
 
 bool GetHasTree(int x, int y)
@@ -387,13 +392,13 @@ void generate_terrain(MapChunk& mc, glm::ivec3 cpos)
 			if (dz > 100 && dz < 200)
 			{
 				// clouds
-				double q = SimplexNoise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
+				double q = noise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
 				if (q < -0.35) mc.set(glm::ivec3(x, y, z), Color(3, 3, 3, 2));
 			}
 			else if (dz <= heightmap->Height(dx, dy))
 			{
 				// ground and caves
-				double q = SimplexNoise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
+				double q = noise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
 				mc.set(glm::ivec3(x, y, z), q < -0.25 ? Empty : heightmap->Color(dx, dy));
 			}
 		}
@@ -1636,7 +1641,7 @@ void load_noise_texture(int size)
 	FOR(x, size) FOR(y, size)
 	{
 		glm::vec2 p = glm::vec2(x+32131, y+908012) * (1.0f / size);
-		float f = SimplexNoise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
+		float f = noise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
 		f = fabs(f);
 		f = std::min<float>(f, 1);
 		f = std::max<float>(f, -1);
@@ -1644,7 +1649,7 @@ void load_noise_texture(int size)
 		image[(x + y * size) * 3] = a;
 
 		p = glm::vec2(x+9420234, y+9808312) * (1.0f / size);
-		f = SimplexNoise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
+		f = noise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
 		f = fabs(f);
 		f = std::min<float>(f, 1);
 		f = std::max<float>(f, -1);
@@ -1652,7 +1657,7 @@ void load_noise_texture(int size)
 		image[(x + y * size) * 3 + 1] = a;
 
 		p = glm::vec2(x+983322, y+1309329) * (1.0f / size);
-		f = SimplexNoise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
+		f = noise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
 		f = fabs(f);
 		f = std::min<float>(f, 1);
 		f = std::max<float>(f, -1);
@@ -1831,9 +1836,6 @@ double Timestamp::milisec_per_tick = 0;
 
 int main(int, char**)
 {
-	assert(decompress(compress(-33, 21), 21) == -33);
-	assert(decompress_ivec3(compress_ivec3(glm::ivec3(123, -127, 44))) == glm::ivec3(123, -127, 44));
-
 	if (!glfwInit()) return 0;
 
 	glm::dvec3 a;

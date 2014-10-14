@@ -53,6 +53,11 @@ private:
 template<int N>
 struct BitCube
 {
+	typedef uint64_t Word;
+	static const int W = sizeof(Word) * 8;
+	static const int Z = (N * N * N + W - 1) / W;
+	static const int Bytes = sizeof(Word) * Z;
+
 	void clear() { memset(&m_words[0], 0, Z * sizeof(Word)); }
 	void operator=(const BitCube<N>& q) { memcpy(&m_words[0], q.m_words[0], Z * sizeof(Word)); }
 	void set(glm::ivec3 a) { int i = index(a); m_words[i / W] |= mask(i); }
@@ -71,9 +76,6 @@ private:
 	static uint mask(int index) { return 1u << (index % W); }
 	int index(glm::ivec3 a) { return (a.x*N + a.y)*N + a.z; }
 private:
-	typedef uint64_t Word;
-	static const int W = sizeof(Word) * 8;
-	static const int Z = (N * N * N + W - 1) / W;
 	std::array<Word, Z> m_words;
 };
 
@@ -95,8 +97,8 @@ inline bool opposite_sign_strict(double a, double b) { return a * b < 0; }
 inline bool is_unit_length(glm::vec3 a) { return std::abs(glm::length2(a) - 1) <= 5e-7; }
 inline glm::vec3 random_vec3() { return glm::vec3(glm::linearRand(0.0f, 1.0f), glm::linearRand(0.0f, 1.0f), glm::linearRand(0.0f, 1.0f)); }
 template<typename T> T sqr(T a) { return a * a; }
-float sqr(glm::vec3 a) { return glm::dot(a, a); }
-int sqr(glm::ivec3 a) { return glm::dot(a, a); }
+inline float sqr(glm::vec3 a) { return glm::dot(a, a); }
+inline int sqr(glm::ivec3 a) { return glm::dot(a, a); }
 
 inline float distance2_point_and_line(glm::vec3 point, glm::vec3 orig, glm::vec3 dir)
 {
@@ -124,63 +126,29 @@ void compress(std::vector<T>& a) { if (a.capacity() > a.size()) { std::vector<T>
 
 inline const char* str(glm::ivec3 a)
 {
-	char buffer[100];
-	snprintf(buffer, 100, "[%d %d %d]", a.x, a.y, a.z);
-	int size = strlen(buffer);
-	char* p = new char[size + 1];
-	memcpy(p, buffer, size + 1);
-	return p;
+	char* result = nullptr;
+	asprintf(&result, "[%d %d %d]", a.x, a.y, a.z);
+	return result;
 }
 
 inline const char* str(glm::dvec3 a)
 {
-	char buffer[100];
-	snprintf(buffer, sizeof(buffer), "[%lf %lf %lf]", a.x, a.y, a.z);
-	int size = strlen(buffer);
-	char* p = new char[size + 1];
-	memcpy(buffer, p, size + 1);
-	return p;
+	char* result = nullptr;
+	asprintf(&result, "[%lf %lf %lf]", a.x, a.y, a.z);
+	return result;
 }
 
 inline const char* str(glm::vec3 a)
 {
-	char buffer[100];
-	snprintf(buffer, sizeof(buffer), "[%f %f %f]", a.x, a.y, a.z);
-	int size = strlen(buffer);
-	char* p = new char[size + 1];
-	memcpy(buffer, p, size + 1);
-	return p;
+	char* result = nullptr;
+	asprintf(&result, "[%f %f %f]", a.x, a.y, a.z);
+	return result;
 }
 
 // ===============
 
-float SimplexNoise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbulent)
-{
-	float freq = 1.0f, amp = 1.0f, max = amp;
-	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
-	FOR(i, octaves - 1)
-	{
-		freq *= freqf;
-		amp *= ampf;
-		max += amp;
-		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
-	}
-	return total / max;
-}
-
-float SimplexNoise(glm::vec3 p, int octaves, float freqf, float ampf, bool turbulent)
-{
-	float freq = 1.0f, amp = 1.0f, max = amp;
-	float total = turbulent ? fabs(glm::simplex(p)) : glm::simplex(p);
-	FOR(i, octaves - 1)
-	{
-		freq *= freqf;
-		amp *= ampf;
-		max += amp;
-		total += (turbulent ? fabs(glm::simplex(p * freq)) : glm::simplex(p * freq)) * amp;
-	}
-	return total / max;
-}
+float noise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbulent);
+float noise(glm::vec3 p, int octaves, float freqf, float ampf, bool turbulent);
 
 // ===============
 
@@ -260,4 +228,52 @@ struct Timestamp
 	static double milisec_per_tick;
 private:
 	int64_t m_ticks;
+};
+
+// =================
+
+template<int Bits>
+uint64_t z_order(glm::ivec3 a)
+{
+	// Z-order space filling curve!
+	static_assert(1 <= Bits && Bits <= 21, "");
+	assert(a.x >= 0 && a.x < (1 << Bits) && a.y >= 0 && a.y < (1 << Bits) && a.z >= 0 && a.z < (1 << Bits));
+
+	uint64_t e = 0;
+	int w = 0;
+	FOR(i, Bits)
+	{
+		glm::ivec3 b = a & 1;
+		a >>= 1;
+		e |= ((b.x * 2 + b.y) * 2 + b.z) << w;
+		w += 3;
+	}
+	return e;
+}
+
+// =================
+
+#define CHECK(A) do { if (!(A)) { fprintf(stderr, "CHECK(%s) failed at %s line %d", #A, __FILE__, __LINE__); return false; } } while(0);
+
+#define AutoLock(A) (A).lock(); Auto((A).unlock());
+
+// =================
+
+void array_file_init(void*& map, int& fd);
+bool array_file_open(const char* prefix, glm::ivec3 pos, const char* suffix, void*& map, int& fd, size_t size);
+void array_file_close(void*& map, int& fd, size_t size);
+
+template<typename Element, size_t Size>
+struct ArrayFile
+{
+	ArrayFile() { array_file_init(m_map, m_fd); }
+	~ArrayFile() { close(); }
+	bool open(const char* prefix, glm::ivec3 pos, const char* suffix) { return array_file_open(prefix, pos, suffix, m_map, m_fd, Size * sizeof(Element)); }
+	void close() { return array_file_close(m_map, m_fd, Size * sizeof(Element)); }
+	Element* data() { return reinterpret_cast<Element*>(m_map); }
+	void save() { fsync(m_fd); }
+
+private:
+	void* m_map;
+	int m_fd;
 };
