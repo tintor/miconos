@@ -1,35 +1,37 @@
+// TODO After removing locks and merging MapChunks into Chunks:
+// - main thread should unload chunks that are too far (to make room for new ones)
+// - model_frame() is too slow! -> PROFILE!
+// - chunk loading/buffering too slow! -> PROFILE!
+// - raytracer too slow! -> PROFILE! new counter: rays / second
+// - compare perf with past changes, to avoid regressions!
+
+
+// BUG: stray blue pixels on quad seams!
+
 // TODO:
-// - slowly blend-in newly buffered chunks so that they are less noticable
-// - now that map chunks are persisted, optimize memory space for mapchunks:
-//    - @ unload far mapchunks are player moves
-//    - @ don't waste space for empty mapchunks
-//    - @ put mapchunk block data on page boundaries to optimize memory (just malloc(4096) for non-empty ones?)
-//    - include memory usage in counters
-//    - Use array of MapChunkEntries instead of LinkedList of MapChunk
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
 // # Raytracing:
-// - Raytracer when moving: clear set only, and not array. Deduplicate array when sorting. Remove stale array elements when raytracing is complete!
-// - newly buffered chunks should re-start raytracer
-// - generate ray in screen space (avoids testing all directions against frustum + adapts to different resolutions)
-// - sky/ambient chunk cubes (generated when ray goes out of render distance), this allows us to avoid clearing the buffer (and makes holes when raycasting less noticable)
+// - Fix annoying missing far chunks until raytracer completes the scan.
+// - MAYBE generate ray in screen space (avoids testing all directions against frustum + adapts to different resolutions)
 
 // # more proceduraly generated stuff!
 // - nicer generated trees! palms!
-// - nicer textures: water / sand / snow / grass!
 
 // # gravity mode: planar (2 degrees of freedom orientation), spherical (2 degrees of freedom orientation), zero-g (3 degrees of freedom orientation)
 
 // # PERF level-of-detail rendering
-// - mesh reduction for far away chunks:
+// - triangle reduction for far away chunks:
 //	- remove interior quads not visible from far outside
 //    - remove small lone blocks, fill small lone holes
 //    - two concave quads at 90 degrees can be converted into slope (even if not far!)
-// - combine 2x2x2 chunks that are far to be able to optimize their quads better and to reduce the total number of chunks as render distances are increasing
+// - chunk reduction:
+//    - combine 2x2x2 chunks that are far to be able to optimize their triangles better and to reduce the total number of chunks as render distances are increasing
+//		- should help with ray-tracing as well, as ray will hit (and make visible) 2x2x2 chunk as single unit
 
-// - semi-transparent alpha color component (0-> 25%) (1->50%) (2->75%) (3->100%)
-// - need to re-sort triangles inside chunk buffer (for nearby chunks only) as player moves
-// - textures with transparent pixels
+// Textures with 100% transparent pixels:
+// - need to re-sort triangles inside chunk buffer (for axis chunks only) as player moves
+// - load textures with transparent pixels: BDCraft!
 
 // # client / server:
 // - terrain generation on server
@@ -615,22 +617,9 @@ struct CachedChunk
 {
 	CachedChunk() : cached(false) { }
 	void init(glm::ivec3 cpos);
-	~CachedChunk();
 	Block operator[](glm::ivec3 pos);
 
 	bool cached;
-	Chunk* chunk;
-	MapChunk mc;
-};
-
-struct ReCachedChunk
-{
-	ReCachedChunk() : cached(0x80000000), chunk(nullptr) { }
-	void init(glm::ivec3 cpos);
-	~ReCachedChunk();
-	Block operator[](glm::ivec3 pos);
-
-	glm::ivec3 cached;
 	Chunk* chunk;
 	MapChunk mc;
 };
@@ -639,6 +628,8 @@ bool can_move_through(Block block) { return block == Empty; }
 bool can_see_through(Block block) { return block == Empty || block == Leaves; }
 
 typedef uint64_t CompressedIVec3;
+
+const CompressedIVec3 NullChunk = 0xFFFFFFFF;
 
 uint64_t compress(int v, int bits)
 {
@@ -676,9 +667,7 @@ glm::ivec3 decompress_ivec3(CompressedIVec3 c)
 
 struct Chunk : public MapChunk
 {
-	Chunk() : m_cpos(0x80000000, 0, 0) { }
-
-	void unlock() { m_mutex.unlock(); }
+	Chunk() : m_cpos(NullChunk) { }
 
 	void buffer(BlockRenderer& renderer)
 	{
@@ -686,6 +675,7 @@ struct Chunk : public MapChunk
 		renderer.m_quads.clear();
 		if (!empty())
 		{
+			glm::ivec3 cpos = get_cpos();
 			{
 				CachedChunk cc;
 				int x = 0;
@@ -694,7 +684,7 @@ struct Chunk : public MapChunk
 					Block block = operator[](glm::ivec3(x, y, z));
 					if (block != Empty)
 					{
-						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
 						renderer.m_color = block;
 						if (can_see_through(cc[pos - ix])) renderer.draw_quad(0);
@@ -709,7 +699,7 @@ struct Chunk : public MapChunk
 					Block block = operator[](glm::ivec3(x, y, z));
 					if (block != Empty)
 					{
-						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
 						renderer.m_color = block;
 						if (can_see_through(cc[pos + ix])) renderer.draw_quad(1);
@@ -724,7 +714,7 @@ struct Chunk : public MapChunk
 					Block block = operator[](glm::ivec3(x, y, z));
 					if (block != Empty)
 					{
-						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
 						renderer.m_color = block;
 						if (can_see_through(cc[pos - iy])) renderer.draw_quad(2);
@@ -739,7 +729,7 @@ struct Chunk : public MapChunk
 					Block block = operator[](glm::ivec3(x, y, z));
 					if (block != Empty)
 					{
-						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
 						renderer.m_color = block;
 						if (can_see_through(cc[pos + iy])) renderer.draw_quad(3);
@@ -754,7 +744,7 @@ struct Chunk : public MapChunk
 					Block block = operator[](glm::ivec3(x, y, z));
 					if (block != Empty)
 					{
-						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
 						renderer.m_color = block;
 						if (can_see_through(cc[pos - iz])) renderer.draw_quad(4);
@@ -769,7 +759,7 @@ struct Chunk : public MapChunk
 					Block block = operator[](glm::ivec3(x, y, z));
 					if (block != Empty)
 					{
-						glm::ivec3 pos = m_cpos * ChunkSize + glm::ivec3(x, y, z);
+						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
 						renderer.m_color = block;
 						if (can_see_through(cc[pos + iz])) renderer.draw_quad(5);
@@ -782,7 +772,7 @@ struct Chunk : public MapChunk
 				Block block = operator[](p);
 				if (block != Empty)
 				{
-					renderer.m_pos = m_cpos * ChunkSize + p;
+					renderer.m_pos = cpos * ChunkSize + p;
 					renderer.m_color = block;
 					if (x != 0 && can_see_through(operator[](p - ix))) renderer.draw_quad(0);
 					if (x != ChunkSize-1 && can_see_through(operator[](p + ix))) renderer.draw_quad(1);
@@ -804,34 +794,31 @@ struct Chunk : public MapChunk
 		return m_render_size;
 	}
 
-	bool init(glm::ivec3 cpos, BlockRenderer& renderer)
+	void init(glm::ivec3 cpos, BlockRenderer& renderer)
 	{
-		AutoLock(m_mutex);
-		if (m_cpos == cpos) return true;
-
+		assert(unloaded());
+		if (!get_map_chunk(cpos, m_block))
 		{
-			AutoLock(m_mutex_low); // TODO: change to string lock!
-			m_cpos = cpos;
-			if (!get_map_chunk(cpos, m_block))
-			{
-				free(m_block);
-				m_block = nullptr;
-				generate_terrain(*this, m_cpos);
-				set_map_chunk(cpos, m_block);
-			}
+			free(m_block);
+			m_block = nullptr;
+			generate_terrain(*this, cpos);
+			set_map_chunk(cpos, m_block);
 		}
-
+		m_cpos = compress_ivec3(cpos);
 		buffer(renderer);
-		return false;
+		m_renderable = true;
 	}
 
-	glm::ivec3 cpos() { return m_cpos; }
+	void unload() { m_cpos = NullChunk; m_renderable = false; }
+	bool unloaded() { return m_cpos == NullChunk; }
+	bool renderable() { return m_renderable; }
+
+	glm::ivec3 get_cpos() { return decompress_ivec3(m_cpos); }
 
 	friend class Chunks;
-	std::mutex m_mutex_low; // guarding MapChunk from morphing
 private:
-	std::mutex m_mutex; // guarding entire chunk from morphing
-	glm::ivec3 m_cpos;
+	std::atomic<CompressedIVec3> m_cpos;
+	std::atomic<bool> m_renderable;
 	std::vector<Vertex> m_vertices;
 	int m_render_size;
 };
@@ -842,7 +829,7 @@ namespace player
 {
 //	glm::vec3 position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
 	glm::vec3 position(0, 0, 20);
-	std::atomic<int> cposx(0), cposy(0), cposz(1); // TODO: use formula!
+	std::atomic<CompressedIVec3> cpos(compress_ivec3(glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits));
 	float yaw = 0;
 	float pitch = 0;
 	glm::mat4 orientation;
@@ -860,13 +847,6 @@ public:
 
 	Chunks(): m_map(new Chunk[MapSize * MapSize * MapSize]) { }
 
-	Chunk& operator()(glm::ivec3 cpos)
-	{
-		Chunk& chunk = get(cpos);
-		if (chunk.m_cpos != cpos) { fprintf(stderr, "cpos = [%d %d %d] %lg\n", cpos.x, cpos.y, cpos.z, sqrt(glm::length2(cpos))); assert(false); }
-		return chunk;
-	}
-
 	void start_threads()
 	{
 		FOR(i, Threads)
@@ -876,16 +856,51 @@ public:
 		}
 	}
 
+	Block get_block(glm::ivec3 pos)
+	{
+		Chunk& chunk = get(pos >> ChunkSizeBits);
+		assert(chunk.get_cpos() == (pos >> ChunkSizeBits));
+		return chunk[pos & ChunkSizeMask];
+	}
+
+	bool selectable_block(glm::ivec3 pos)
+	{
+		Chunk& chunk = get(pos >> ChunkSizeBits);
+		return chunk.get_cpos() == (pos >> ChunkSizeBits) && chunk[pos & ChunkSizeMask] != Empty;
+	}
+
+	bool can_move_through(glm::ivec3 pos)
+	{
+		Chunk& chunk = get(pos >> ChunkSizeBits);
+		return chunk.get_cpos() == (pos >> ChunkSizeBits) && ::can_move_through(chunk[pos & ChunkSizeMask]);
+	}
+
+	void reset(glm::ivec3 cpos, BlockRenderer& renderer)
+	{
+		Chunk& c = get(cpos);
+		if (c.get_cpos() != cpos) return;
+		c.m_renderable = false;
+		c.buffer(renderer);
+		c.m_renderable = true;
+	}
+
+	Chunk& get(glm::ivec3 a)
+	{
+		a &= MapSizeMask;
+		assert(0 <= a.x && a.x < MapSize);
+		assert(0 <= a.y && a.y < MapSize);
+		assert(0 <= a.z && a.z < MapSize);
+		return m_map[((a.x * MapSize) + a.y) * MapSize + a.z];
+	}
+
+private:
 	static void loader_thread(Chunks* chunks, int k)
 	{
 		glm::ivec3 last_cpos(0x80000000, 0, 0);
 		BlockRenderer renderer;
 		while (true)
 		{
-			int x = player::cposx;
-			int y = player::cposy;
-			int z = player::cposz;
-			glm::ivec3 cpos(x, y, z);
+			glm::ivec3 cpos = decompress_ivec3(player::cpos);
 			if (cpos == last_cpos)
 			{
 				usleep(200);
@@ -893,12 +908,14 @@ public:
 			}
 
 			int q = 0;
-			if (owner(cpos) == k && chunks->get(cpos).init(cpos, renderer)) q += 1;
 			for (int i = 0; i < render_sphere.size(); i++)
 			{
 				glm::ivec3 c = cpos + glm::ivec3(render_sphere[i]);
-				if (owner(c) == k && chunks->get(c).init(c, renderer))
+				if (owner(c) != k) continue;
+				Chunk& chunk = chunks->get(c);
+				if (chunk.unloaded())
 				{
+					chunk.init(c, renderer);
 					q += 1;
 					if (q >= 1000) { last_cpos.x = 0x80000000; break; }
 				}
@@ -910,78 +927,6 @@ public:
 	static int owner(glm::ivec3 cpos)
 	{
 		return (uint)(cpos.x ^ cpos.y ^ cpos.z) % Threads;
-	}
-
-	bool loaded(glm::ivec3 cpos)
-	{
-		Chunk& c = get(cpos);
-		AutoLock(c.m_mutex);
-		return c.m_cpos == cpos;
-	}
-
-	Chunk* lock(glm::ivec3 cpos)
-	{
-		Chunk& c = get(cpos);
-		c.m_mutex.lock();
-		if (c.m_cpos != cpos) { c.m_mutex.unlock(); return nullptr; }
-		return &c;
-	}
-
-	Chunk* try_lock(glm::ivec3 cpos)
-	{
-		Chunk& c = get(cpos);
-		if (!c.m_mutex.try_lock()) return nullptr;
-		if (c.m_cpos != cpos) { c.m_mutex.unlock(); return nullptr; }
-		return &c;
-	}
-
-	Chunk* unsafe(glm::ivec3 cpos)
-	{
-		Chunk& c = get(cpos);
-		if (c.m_cpos != cpos) return nullptr;
-		return &c;
-	}
-
-	Chunk* low_lock(glm::ivec3 cpos)
-	{
-		Chunk& c = get(cpos);
-		c.m_mutex_low.lock();
-		if (c.m_cpos != cpos) { c.m_mutex_low.unlock(); return nullptr; }
-		return &c;
-	}
-
-	Block get_block(glm::ivec3 pos)
-	{
-		Chunk& c = get(pos >> ChunkSizeBits);
-		AutoLock(c.m_mutex_low);
-		assert(c.m_cpos == (pos >> ChunkSizeBits));
-		return c[pos & ChunkSizeMask];
-	}
-
-	bool can_move_through(glm::ivec3 pos)
-	{
-		Chunk& chunk = get(pos >> ChunkSizeBits);
-		AutoLock(chunk.m_mutex_low);
-		return chunk.m_cpos != (pos >> ChunkSizeBits) && ::can_move_through(chunk[pos & ChunkSizeMask]);
-	}
-
-	void reset(glm::ivec3 cpos, BlockRenderer& renderer)
-	{
-		Chunk& c = get(cpos);
-		c.m_mutex.lock();
-		if (c.m_cpos != cpos) { c.m_mutex.unlock(); return; }
-		c.buffer(renderer);
-		c.m_mutex.unlock();
-	}
-
-private:
-	Chunk& get(glm::ivec3 a)
-	{
-		a &= MapSizeMask;
-		assert(0 <= a.x && a.x < MapSize);
-		assert(0 <= a.y && a.y < MapSize);
-		assert(0 <= a.z && a.z < MapSize);
-		return m_map[((a.x * MapSize) + a.y) * MapSize + a.z];
 	}
 
 private:
@@ -1002,35 +947,19 @@ Chunks g_chunks;
 void CachedChunk::init(glm::ivec3 cpos)
 {
 	cached = true;
-	chunk = g_chunks.low_lock(cpos);
-	if (!chunk && !mc.load(cpos))
+	chunk = &g_chunks.get(cpos);
+	if (chunk->get_cpos() != cpos)
 	{
-		generate_terrain(mc, cpos);
-		mc.save(cpos);
+		chunk = nullptr;
+		if (!mc.load(cpos))
+		{
+			generate_terrain(mc, cpos);
+			mc.save(cpos);
+		}
 	}
 }
-
-CachedChunk::~CachedChunk() { if (cached && chunk) chunk->m_mutex_low.unlock(); }
 
 Block CachedChunk::operator[](glm::ivec3 pos) { if (!cached) init(pos >> ChunkSizeBits); return chunk ? (*chunk)[pos & ChunkSizeMask] : mc[pos & ChunkSizeMask]; }
-
-void ReCachedChunk::init(glm::ivec3 cpos)
-{
-	if (cpos == cached) return;
-	cached = cpos;
-	if (chunk) chunk->m_mutex_low.unlock();
-	chunk = g_chunks.low_lock(cpos);
-	if (!chunk && !mc.load(cpos))
-	{
-		mc.clear();
-		generate_terrain(mc, cpos);
-		mc.save(cpos);
-	}
-}
-
-ReCachedChunk::~ReCachedChunk() { if (chunk) chunk->m_mutex_low.unlock(); }
-
-Block ReCachedChunk::operator[](glm::ivec3 pos) { init(pos >> ChunkSizeBits); return chunk ? (*chunk)[pos & ChunkSizeMask] : mc[pos & ChunkSizeMask]; }
 
 /*class AutoVecLock;
 
@@ -1105,10 +1034,8 @@ VisibleChunks visible_chunks;
 
 const int E = Directions::Bits + 1;
 
-void raytrace(glm::ivec3 cpos, glm::ivec3 photon, glm::ivec3 dir)
+void raytrace(Chunk* chunk, glm::ivec3 photon, glm::ivec3 dir)
 {
-	Chunk* chunk = g_chunks.low_lock(cpos);
-	assert(chunk);
 	const int MaxDist2 = sqr(RenderDistance * ChunkSize);
 	const int B = ChunkSizeBits + E;
 	glm::ivec3 svoxel = photon >> E, voxel = svoxel;
@@ -1116,22 +1043,15 @@ void raytrace(glm::ivec3 cpos, glm::ivec3 photon, glm::ivec3 dir)
 	{
 		do photon += dir; while ((photon >> E) == voxel);
 		glm::ivec3 cvoxel = photon >> B;
-		if (chunk->cpos() != cvoxel)
+		if (chunk->get_cpos() != cvoxel) while (true)
 		{
-			chunk->m_mutex_low.unlock();
-			chunk = g_chunks.low_lock(cvoxel);
-			if (!chunk) return; // TODO: chunk not loaded yet. Render it as big fog cube. Need to retrace it again once it is loaded.
-			// Advance photon until it leaves empty chunk
-			while (chunk->empty())
-			{
-				do photon += dir; while ((photon >> B) == cvoxel);
-				voxel = photon >> E;
-				if (glm::distance2(voxel, svoxel) > MaxDist2) { chunk->m_mutex_low.unlock(); return; }
-				cvoxel = photon >> B;
-				chunk->m_mutex_low.unlock();
-				chunk = g_chunks.low_lock(cvoxel);
-				if (!chunk) return;
-			}
+			chunk = &g_chunks.get(cvoxel);
+			if (chunk->get_cpos() != cvoxel) return; // TODO: chunk not loaded yet. Render it as big fog cube. Need to retrace it again once it is loaded.
+			if (!chunk->empty()) break;
+			do photon += dir; while ((photon >> B) == cvoxel);
+			voxel = photon >> E;
+			if (glm::distance2(voxel, svoxel) > MaxDist2) return;
+			cvoxel = photon >> B;
 		}
 		voxel = photon >> E;
 		if (glm::distance2(voxel, svoxel) > MaxDist2) break;
@@ -1140,13 +1060,15 @@ void raytrace(glm::ivec3 cpos, glm::ivec3 photon, glm::ivec3 dir)
 		visible_chunks.add(cvoxel);
 		if (!can_see_through(block)) break;
 	}
-	chunk->m_mutex_low.unlock();
 }
 
 // which chunks must be rendered from the center chunk?
 void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 {
 	if (rays_remaining == 0) return;
+
+	Chunk* chunk = &g_chunks.get(cpos);
+	assert(chunk->get_cpos() == cpos);
 
 	float k = 1 << E;
 	glm::ivec3 origin = glm::ivec3(glm::floor(player::position * k));
@@ -1160,7 +1082,7 @@ void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 		glm::ivec3 dir = directions[ray_it++];
 		if (ray_it == directions.size()) ray_it = 0;
 		rays_remaining -= 1;
-		if (frustum.contains_point(player::position + glm::vec3(dir))) raytrace(cpos, origin, dir);
+		if (frustum.contains_point(player::position + glm::vec3(dir))) raytrace(chunk, origin, dir);
 		if ((q++ % 2048) == 0 && ta.elapsed() > budget) break;
 	}
 	visible_chunks.sort(cpos);
@@ -1194,16 +1116,12 @@ void edit_block(glm::ivec3 pos, Block block)
 	glm::ivec3 p = pos & ChunkSizeMask;
 	static BlockRenderer renderer;
 
-	Chunk* c = g_chunks.lock(cpos);
-	if (c)
-	{
-		c->m_mutex_low.lock();
-		c->set(p, block);
-		c->save(cpos);
-		c->m_mutex_low.unlock();
-		c->buffer(renderer);
-		c->unlock();
-	}
+	Chunk& c = g_chunks.get(cpos);
+	if (c.get_cpos() != cpos) return;
+
+	c.set(p, block);
+	c.save(cpos);
+	c.buffer(renderer);
 
 	if (p.x == 0) g_chunks.reset(cpos - ix, renderer);
 	if (p.y == 0) g_chunks.reset(cpos - iy, renderer);
@@ -1631,11 +1549,10 @@ bool select_cube(glm::ivec3& sel_cube, int& sel_face)
 	float* ma = glm::value_ptr(player::orientation);
 	glm::vec3 dir(ma[4], ma[5], ma[6]);
 
-	ReCachedChunk cc;
 	for (glm::ivec3 d : select_sphere)
 	{
 		glm::ivec3 cube = p + d;
-		if (cc[cube] != Empty && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
+		if (g_chunks.selectable_block(cube) && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
 		{
 			sel_cube = cube;
 			return true;
@@ -1842,13 +1759,12 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	{
 		if (!frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
 		{
-			Chunk* c = g_chunks.try_lock(cpos);
-			if (!c) continue;
+			Chunk& chunk = g_chunks.get(cpos);
+			if (chunk.get_cpos() != cpos || !chunk.renderable()) continue;
 			glm::ivec3 pos = cpos * ChunkSize;
 			glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
-			stats::vertex_count += c->render();
+			stats::vertex_count += chunk.render();
 			stats::chunk_count += 1;
-			c->unlock();
 		}
 	}
 }
@@ -1962,24 +1878,18 @@ int main(int, char**)
 
 	// Wait for 3x3 chunks around player's starting position to load
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-	player::cposx = cplayer.x;
-	player::cposy = cplayer.y;
-	player::cposz = cplayer.z;
 	Timestamp tq;
-	FOR2(x, cplayer.x-1, cplayer.x+1)
-	FOR2(y, cplayer.y-1, cplayer.y+1)
-	FOR2(z, cplayer.z-1, cplayer.z+1)
+	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1)
 	{
-		while (!g_chunks.loaded(glm::ivec3(x, y, z)))
+		while (true)
 		{
+			glm::ivec3 p(x, y, z);
+			Chunk& chunk = g_chunks.get(p + cplayer);
+			if (chunk.get_cpos() == p + cplayer) break;
 			usleep(10000);
-			assert(tq.elapsed_ms() < 2);
+			assert(tq.elapsed_ms() < 5000);
 		}
 	}
-
-	Chunk* chunk = g_chunks.low_lock(cplayer);
-	assert(chunk);
-	chunk->unlock();
 
 	Timestamp t0;
 	while (!glfwWindowShouldClose(window))
@@ -1992,9 +1902,7 @@ int main(int, char**)
 		glm::mat4 matrix = glm::translate(perspective_rotation, -player::position);
 		Frustum frustum(matrix);
 		glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-		player::cposx = cplayer.x;
-		player::cposy = cplayer.y;
-		player::cposz = cplayer.z;
+		player::cpos = compress_ivec3(cplayer);
 
 		Timestamp tb;
 		update_render_list(cplayer, frustum);

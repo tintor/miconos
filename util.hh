@@ -57,7 +57,7 @@ struct BitCube
 	void operator=(const BitCube<N>& q) { memcpy(&m_words[0], q.m_words[0], Z * sizeof(Word)); }
 	void set(glm::ivec3 a) { int i = index(a); m_words[i / W] |= mask(i); }
 	void clear(glm::ivec3 a) { int i = index(a); m_words[i / W] &= ~mask(i); }
-	bool operator[](glm::ivec3 a) { int i = index(a); return (m_words[i / W] & mask(i)) != 0; }	
+	bool operator[](glm::ivec3 a) { int i = index(a); return (m_words[i / W] & mask(i)) != 0; }
 
 	bool xset(glm::ivec3 a)
 	{
@@ -65,7 +65,7 @@ struct BitCube
 		Word w = m_words[i / W] | mask(i);
 		if (m_words[i / W] == w) return false;
 		m_words[i / W] = w;
-		return true; 
+		return true;
 	}
 private:
 	static uint mask(int index) { return 1u << (index % W); }
@@ -191,7 +191,7 @@ struct Sphere : public std::vector<glm::ivec3>
 		FOR2(x, -size, size) FOR2(y, -size, size) FOR2(z, -size, size)
 		{
 			glm::ivec3 d(x, y, z);
-			if (glm::dot(d, d) > 0 && glm::dot(d, d) <= size * size) push_back(d);
+			if (glm::dot(d, d) <= size * size) push_back(d);
 		}
 		std::sort(begin(), end(), [](glm::ivec3 a, glm::ivec3 b) { return glm::length2(a) < glm::length2(b); });
 	}
