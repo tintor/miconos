@@ -12,15 +12,10 @@ add_subdirectory(glfw)
 include_directories(glfw/include)
 include_directories(lodepng)
 include_directories(tinycthread)
-include_directories(rocksdb/include)
-
-add_custom_command(OUTPUT ${CMAKE_SOURCE_DIR}/rocksdb/librocksdb.dylib COMMAND make shared_lib -j WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/rocksdb)
-
-set(ROCKSDB ${CMAKE_SOURCE_DIR}/rocksdb/librocksdb.dylib)
 
 if (APPLE)
-    target_link_libraries(arena glfw ${GLFW_LIBRARIES} ${ROCKSDB})
+    target_link_libraries(arena glfw ${GLFW_LIBRARIES})
 else()
     find_package(GLEW REQUIRED)
-    target_link_libraries(arena glfw dl ${GLEW_LIBRARIES} ${GLFW_LIBRARIES} ${ROCKSDB})
+    target_link_libraries(arena glfw dl ${GLEW_LIBRARIES} ${GLFW_LIBRARIES})
 endif()

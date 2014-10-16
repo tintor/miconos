@@ -73,7 +73,7 @@ struct BitCube
 		return true;
 	}
 private:
-	static uint mask(int index) { return 1u << (index % W); }
+	static Word mask(int index) { return Word(1) << (index % W); }
 	int index(glm::ivec3 a) { return (a.x*N + a.y)*N + a.z; }
 private:
 	std::array<Word, Z> m_words;
@@ -232,6 +232,7 @@ private:
 
 // =================
 
+// TODO: Use O(logN) algorithm
 template<int Bits>
 uint64_t z_order(glm::ivec3 a)
 {
@@ -245,7 +246,7 @@ uint64_t z_order(glm::ivec3 a)
 	{
 		glm::ivec3 b = a & 1;
 		a >>= 1;
-		e |= ((b.x * 2 + b.y) * 2 + b.z) << w;
+		e |= uint64_t((b.x * 2 + b.y) * 2 + b.z) << w;
 		w += 3;
 	}
 	return e;
@@ -262,6 +263,7 @@ uint64_t z_order(glm::ivec3 a)
 void array_file_init(void*& map, int& fd);
 bool array_file_open(const char* prefix, glm::ivec3 pos, const char* suffix, void*& map, int& fd, size_t size);
 void array_file_close(void*& map, int& fd, size_t size);
+void array_file_save(int fd);
 
 template<typename Element, size_t Size>
 struct ArrayFile
@@ -271,7 +273,7 @@ struct ArrayFile
 	bool open(const char* prefix, glm::ivec3 pos, const char* suffix) { return array_file_open(prefix, pos, suffix, m_map, m_fd, Size * sizeof(Element)); }
 	void close() { return array_file_close(m_map, m_fd, Size * sizeof(Element)); }
 	Element* data() { return reinterpret_cast<Element*>(m_map); }
-	void save() { fsync(m_fd); }
+	void save() { array_file_save(m_fd); }
 
 private:
 	void* m_map;
