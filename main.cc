@@ -29,7 +29,8 @@
 
 // Textures:
 // - TODO: re-sort triangles inside chunk buffer (for axis chunks only) as player moves
-// - TODO: allow alpha blending: for Ice, Water and Glass blocks
+// - TODO: nicer transparency for blocks with holes like leaves (render all backfaces)
+// - TODO: nicer transpaarency for translucent blocks without holes (only render backfaces at the end of group of same translucent blocks)
 // - BUGS: render inside faces for leaves (use interior opaque leaf textures to optimize rendering of dense trees?)
 // - TODO: async texture loading on startup
 // - TODO: downsampling or use lower-res textures
@@ -1243,110 +1244,28 @@ struct Chunk : public MapChunk
 		if (!empty())
 		{
 			glm::ivec3 cpos = get_cpos();
-			{
-				CachedChunk cc;
-				int x = 0;
-				FOR(y, ChunkSize) FOR(z, ChunkSize)
-				{
-					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Block::none)
-					{
-						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
-						renderer.m_pos = pos;
-						renderer.m_block = block;
-						if (can_see_through(cc[pos - ix])) renderer.draw_quad(0);
-					}
-				}
-			}
-			{
-				CachedChunk cc;
-				int x = ChunkSize-1;
-				FOR(y, ChunkSize) FOR(z, ChunkSize)
-				{
-					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Block::none)
-					{
-						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
-						renderer.m_pos = pos;
-						renderer.m_block = block;
-						if (can_see_through(cc[pos + ix])) renderer.draw_quad(1);
-					}
-				}
-			}
-			{
-				CachedChunk cc;
-				int y = 0;
-				FOR(x, ChunkSize) FOR(z, ChunkSize)
-				{
-					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Block::none)
-					{
-						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
-						renderer.m_pos = pos;
-						renderer.m_block = block;
-						if (can_see_through(cc[pos - iy])) renderer.draw_quad(2);
-					}
-				}
-			}
-			{
-				CachedChunk cc;
-				int y = ChunkSize-1;
-				FOR(x, ChunkSize) FOR(z, ChunkSize)
-				{
-					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Block::none)
-					{
-						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
-						renderer.m_pos = pos;
-						renderer.m_block = block;
-						if (can_see_through(cc[pos + iy])) renderer.draw_quad(3);
-					}
-				}
-			}
-			{
-				CachedChunk cc;
-				int z = 0;
-				FOR(x, ChunkSize) FOR(y, ChunkSize)
-				{
-					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Block::none)
-					{
-						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
-						renderer.m_pos = pos;
-						renderer.m_block = block;
-						if (can_see_through(cc[pos - iz])) renderer.draw_quad(4);
-					}
-				}
-			}
-			{
-				CachedChunk cc;
-				int z = ChunkSize-1;
-				FOR(x, ChunkSize) FOR(y, ChunkSize)
-				{
-					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Block::none)
-					{
-						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
-						renderer.m_pos = pos;
-						renderer.m_block = block;
-						if (can_see_through(cc[pos + iz])) renderer.draw_quad(5);
-					}
-				}
-			}
+			CachedChunk cc[6];
 			FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
 			{
 				glm::ivec3 p(x, y, z);
 				Block block = operator[](p);
 				if (block != Block::none)
 				{
-					renderer.m_pos = cpos * ChunkSize + p;
+					glm::ivec3 pos = cpos * ChunkSize + p;
+					renderer.m_pos = p;
 					renderer.m_block = block;
-					if (x != 0 && can_see_through(operator[](p - ix))) renderer.draw_quad(0);
-					if (x != ChunkSize-1 && can_see_through(operator[](p + ix))) renderer.draw_quad(1);
-					if (y != 0 && can_see_through(operator[](p - iy))) renderer.draw_quad(2);
-					if (y != ChunkSize-1 && can_see_through(operator[](p + iy))) renderer.draw_quad(3);
-					if (z != 0 && can_see_through(operator[](p - iz))) renderer.draw_quad(4);
-					if (z != ChunkSize-1 && can_see_through(operator[](p + iz))) renderer.draw_quad(5);
+					Block q;
+
+					#define draw_face(Cond, Axis, Face) \
+						q = (Cond) ? operator[](p Axis) : cc[Face][pos Axis]; \
+						if (can_see_through(q) && q != block) renderer.draw_quad(Face)
+
+					draw_face(x != 0,           -ix, 0);
+					draw_face(x != ChunkSize-1, +ix, 1);
+					draw_face(y != 0,           -iy, 2);
+					draw_face(y != ChunkSize-1, +iy, 3);
+					draw_face(z != 0,           -iz, 4);
+					draw_face(z != ChunkSize-1, +iz, 5);
 				}
 			}
 		}
@@ -2436,11 +2355,16 @@ void render_gui()
 			*e++ = { texture, light, glm::u8vec2(u, v), pos[(0+a)%4] };
 		}
 
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glEnable(GL_BLEND);
+
 		glm::ivec3 pos(0, 0, 0);
 		glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 18 * (block_count - 1), vertices, GL_STREAM_DRAW);
 		glDrawArrays(GL_TRIANGLES, 0, 18 * (block_count - 1));
 		glUseProgram(0);
+
+		glDisable(GL_BLEND);
 
 		text->Reset(width, height, matrix);
 		text->PrintAt(width / 2 - height / 40, height / 2 - height / 40, 0, block_name[(uint)carousel_block], strlen(block_name[(uint)carousel_block]));
@@ -2577,6 +2501,8 @@ int main(int, char**)
 		Timestamp tc;
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		glEnable(GL_DEPTH_TEST);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glEnable(GL_BLEND);
 		render_world_blocks(matrix, frustum);
 		glDisable(GL_DEPTH_TEST);
 		render_gui();
