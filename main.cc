@@ -1,11 +1,9 @@
-// TODO After removing locks and merging MapChunks into Chunks:
-// - main thread should unload chunks that are too far (to make room for new ones)
-// - model_frame() is too slow! -> PROFILE!
+// UNDONE: main thread should unload chunks that are too far (to make room for new ones)
+// BUG: stray blue pixels on quad seams!
+// BUG: model_frame() is too slow! -> PROFILE!
 // - chunk loading/buffering too slow! -> PROFILE!
 // - raytracer too slow! -> PROFILE! new counter: rays / second
 // - compare perf with past changes, to avoid regressions!
-
-// BUG: stray blue pixels on quad seams!
 
 // TODO:
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
@@ -20,17 +18,21 @@
 // # gravity mode: planar (2 degrees of freedom orientation), spherical (2 degrees of freedom orientation), zero-g (3 degrees of freedom orientation)
 
 // # PERF level-of-detail rendering
+// - geometry shader to generate 6 vertices from Quad (try to reduce memory bandwidth when sending vertices)
 // - triangle reduction for far away chunks:
-//	- remove interior quads not visible from far outside
+//	- remove interior quads not visible from far outside (ie. cave close to the surface OR back side of far away wall)
 //    - remove small lone blocks, fill small lone holes
 //    - two concave quads at 90 degrees can be converted into slope (even if not far!)
 // - chunk reduction:
 //    - combine 2x2x2 chunks that are far to be able to optimize their triangles better and to reduce the total number of chunks as render distances are increasing
 //		- should help with ray-tracing as well, as ray will hit (and make visible) 2x2x2 chunk as single unit
 
-// Textures with 100% transparent pixels:
-// - need to re-sort triangles inside chunk buffer (for axis chunks only) as player moves
-// - load textures with transparent pixels: BDCraft!
+// Textures:
+// - TODO: re-sort triangles inside chunk buffer (for axis chunks only) as player moves
+// - TODO: allow alpha blending: for Ice, Water and Glass blocks
+// - BUGS: render inside faces for leaves (use interior opaque leaf textures to optimize rendering of dense trees?)
+// - TODO: async texture loading on startup
+// - TODO: downsampling or use lower-res textures
 
 // # client / server:
 // - terrain generation on server
@@ -73,6 +75,9 @@
 #include "auto.hh"
 #include "unistd.h"
 
+#define LODEPNG_COMPILE_CPP
+#include "lodepng/lodepng.h"
+
 std::mutex stderr_mutex;
 
 void sigsegv_handler(int sig)
@@ -107,12 +112,546 @@ const int ChunkSize = 1 << ChunkSizeBits, SuperChunkSize = 1 << SuperChunkSizeBi
 const int ChunkSizeMask = ChunkSize - 1, SuperChunkSizeMask = SuperChunkSize - 1, MapSizeMask = MapSize - 1;
 const int ChunkSize3 = ChunkSize * ChunkSize * ChunkSize;
 
-const int RenderDistance = 63;
+const int RenderDistance = 32;
 static_assert(RenderDistance < MapSize / 2, "");
 
 Sphere render_sphere(RenderDistance);
 
-typedef unsigned char Block;
+// ========================
+
+#define FuncStr(E) #E,
+#define FuncCount(E) +1
+#define FuncList(E) E,
+
+#define Blocks(A, F, B) A \
+	F(none) \
+	F(leaves_acacia) \
+	F(leaves_big_oak) \
+	F(leaves_birch) \
+	F(leaves_jungle) \
+	F(leaves_oak) \
+	F(leaves_spruce) \
+	F(test) \
+	F(log_acacia) \
+	F(log_big_oak) \
+	F(log_birch) \
+	F(log_jungle) \
+	F(log_oak) \
+	F(log_spruce) \
+	F(planks_acacia) \
+	F(planks_big_oak) \
+	F(planks_birch) \
+	F(planks_jungle) \
+	F(planks_oak) \
+	F(planks_spruce) \
+	F(bookshelf) \
+	F(bedrock) \
+	F(brick) \
+	F(cactus) \
+	F(cauldron) \
+	F(clay) \
+	F(coal_block) \
+	F(coal_ore) \
+	F(cobblestone) \
+	F(dirt) \
+	F(daylight_detector) \
+	F(furnace) \
+	F(pumpkin) \
+	F(quartz_block) \
+	F(quartz_ore) \
+	F(glass_white) \
+	F(gold_block) \
+	F(gold_ore) \
+	F(grass) \
+	F(hay_block) \
+	F(iron_block) \
+	F(iron_ore) \
+	F(ice_packed) \
+	F(red_sand) \
+	F(red_sandstone) \
+	F(red_sandstone_smooth) \
+	F(red_sandstone_carved) \
+	F(redstone_block) \
+	F(redstone_lamp_off) \
+	F(redstone_lamp_on) \
+	F(redstone_ore) \
+	F(sand) \
+	F(sandstone) \
+	F(sandstone_smooth) \
+	F(sandstone_carved) \
+	F(stone) \
+	F(stone_andesite) \
+	F(stone_diorite) \
+	F(stone_granite) \
+	F(soul_sand) \
+	F(coarse_dirt) \
+	F(cobblestone_mossy) \
+	F(command_block) \
+	F(crafting_table) \
+	F(diamond_block) \
+	F(diamond_ore) \
+	F(emerald_block) \
+	F(emerald_ore) \
+	F(enchanting_table) \
+	F(dirt_podzol) \
+	F(grass_snowed) \
+	F(gravel) \
+	F(ice) \
+	F(lapis_block) \
+	F(lapis_ore) \
+	F(lava_still) \
+	F(lava_flow) \
+	F(melon) \
+	F(tnt) \
+	F(mycelium) \
+	F(nether_brick) \
+	F(netherrack) \
+	F(obsidian) \
+	F(netherreator) \
+	F(piston) \
+	F(piston_sticky) \
+	F(prismarine_bricks) \
+	F(prismarine_dark) \
+	F(prismarine_rough) \
+	F(sea_lantern) \
+	F(slime) \
+	F(snow) \
+	F(sponge) \
+	F(stonebrick) \
+	F(stonebrick_mossy) \
+	F(stonebrick_cracked) \
+	F(stonebrick_carved) \
+	F(water_still2) \
+	B
+
+const char* block_name[] = Blocks({, FuncStr, });
+static const uint block_count = Blocks(0, FuncCount, +0);
+static_assert(block_count <= 256, "");
+enum class Block : uint8_t Blocks({, FuncList, });
+
+static_assert((uint)Block::none == 0, "common in conditions");
+
+#define BlockTextures(A, F, B) A \
+	F(leaves_acacia) \
+	F(leaves_big_oak) \
+	F(leaves_birch) \
+	F(leaves_jungle) \
+	F(leaves_oak) \
+	F(leaves_spruce) \
+	F(lava_flow) \
+	F(lava_flow_1) \
+	F(lava_flow_2) \
+	F(lava_flow_3) \
+	F(lava_flow_4) \
+	F(lava_flow_5) \
+	F(lava_flow_6) \
+	F(lava_flow_7) \
+	F(lava_flow_8) \
+	F(lava_flow_9) \
+	F(lava_flow_10) \
+	F(lava_flow_11) \
+	F(lava_flow_12) \
+	F(lava_flow_13) \
+	F(lava_flow_14) \
+	F(lava_flow_15) \
+	F(lava_flow_16) \
+	F(lava_flow_17) \
+	F(lava_flow_18) \
+	F(lava_flow_19) \
+	F(lava_flow_20) \
+	F(lava_flow_21) \
+	F(lava_flow_22) \
+	F(lava_flow_23) \
+	F(lava_flow_24) \
+	F(lava_flow_25) \
+	F(lava_flow_26) \
+	F(lava_flow_27) \
+	F(lava_flow_28) \
+	F(lava_flow_29) \
+	F(lava_flow_30) \
+	F(lava_flow_31) \
+	F(lava_still) \
+	F(lava_still_1) \
+	F(lava_still_2) \
+	F(lava_still_3) \
+	F(lava_still_4) \
+	F(lava_still_5) \
+	F(lava_still_6) \
+	F(lava_still_7) \
+	F(lava_still_8) \
+	F(lava_still_9) \
+	F(lava_still_10) \
+	F(lava_still_11) \
+	F(lava_still_12) \
+	F(lava_still_13) \
+	F(lava_still_14) \
+	F(lava_still_15) \
+	F(lava_still_16) \
+	F(lava_still_17) \
+	F(lava_still_18) \
+	F(lava_still_19) \
+	F(lava_still_20) \
+	F(lava_still_21) \
+	F(lava_still_22) \
+	F(lava_still_23) \
+	F(lava_still_24) \
+	F(lava_still_25) \
+	F(lava_still_26) \
+	F(lava_still_27) \
+	F(lava_still_28) \
+	F(lava_still_29) \
+	F(lava_still_30) \
+	F(lava_still_31) \
+	F(water_still2) \
+	F(water_still_1) \
+	F(water_still_2) \
+	F(water_still_3) \
+	F(water_still_4) \
+	F(water_still_5) \
+	F(water_still_6) \
+	F(water_still_7) \
+	F(water_still_8) \
+	F(water_still_9) \
+	F(water_still_10) \
+	F(water_still_11) \
+	F(water_still_12) \
+	F(water_still_13) \
+	F(water_still_14) \
+	F(water_still_15) \
+	F(water_still_16) \
+	F(water_still_17) \
+	F(water_still_18) \
+	F(water_still_19) \
+	F(water_still_20) \
+	F(water_still_21) \
+	F(water_still_22) \
+	F(water_still_23) \
+	F(water_still_24) \
+	F(water_still_25) \
+	F(water_still_26) \
+	F(water_still_27) \
+	F(water_still_28) \
+	F(water_still_29) \
+	F(water_still_30) \
+	F(water_still_31) \
+	F(pumpkin_face_off) \
+	F(pumpkin_face_on) \
+	F(furnace_front_on) \
+	F(ff_1) \
+	F(ff_2) \
+	F(ff_3) \
+	F(ff_4) \
+	F(ff_5) \
+	F(ff_6) \
+	F(ff_7) \
+	F(ff_8) \
+	F(ff_9) \
+	F(ff_10) \
+	F(ff_11) \
+	F(ff_12) \
+	F(ff_13) \
+	F(ff_14) \
+	F(ff_15) \
+	F(sea_lantern) \
+	F(sl_1) \
+	F(sl_2) \
+	F(sl_3) \
+	F(sl_4) \
+	F(test0) \
+	F(test1) \
+	F(test2) \
+	F(test3) \
+	F(test4) \
+	F(test5) \
+	F(pumpkin_side) \
+	F(pumpkin_top) \
+	F(log_acacia) \
+	F(log_acacia_top) \
+	F(log_big_oak) \
+	F(log_big_oak_top) \
+	F(log_birch) \
+	F(log_birch_top) \
+	F(log_jungle) \
+	F(log_jungle_top) \
+	F(log_oak) \
+	F(log_oak_top) \
+	F(log_spruce) \
+	F(log_spruce_top) \
+	F(planks_acacia) \
+	F(planks_big_oak) \
+	F(planks_birch) \
+	F(planks_jungle) \
+	F(planks_oak) \
+	F(planks_spruce) \
+	F(bookshelf) \
+	F(bedrock) \
+	F(brick) \
+	F(cactus_bottom) \
+	F(cactus_side) \
+	F(cactus_top) \
+	F(cauldron_side) \
+	F(cauldron_bottom) \
+	F(cauldron_top) \
+	F(clay) \
+	F(coal_ore) \
+	F(cobblestone) \
+	F(dirt) \
+	F(daylight_detector_side) \
+	F(daylight_detector_top) \
+	F(furnace_front_off) \
+	F(furnace_side) \
+	F(furnace_top) \
+	F(glass_white) \
+	F(gold_block) \
+	F(gold_ore) \
+	F(grass_side) \
+	F(grass_top) \
+	F(hay_block_side) \
+	F(hay_block_top) \
+	F(iron_block) \
+	F(iron_ore) \
+	F(ice_packed) \
+	F(quartz_block_bottom) \
+	F(quartz_block_top) \
+	F(quartz_block_side) \
+	F(quartz_ore) \
+	F(red_sand) \
+	F(red_sandstone_normal) \
+	F(red_sandstone_smooth) \
+	F(red_sandstone_carved) \
+	F(red_sandstone_bottom) \
+	F(red_sandstone_top) \
+	F(redstone_block) \
+	F(redstone_lamp_off) \
+	F(redstone_lamp_on) \
+	F(redstone_lamp_top_off) \
+	F(redstone_lamp_top_on) \
+	F(redstone_ore) \
+	F(sand) \
+	F(sandstone_bottom) \
+	F(sandstone_top) \
+	F(sandstone_normal) \
+	F(sandstone_smooth) \
+	F(sandstone_carved) \
+	F(stone) \
+	F(stone_andesite) \
+	F(stone_diorite) \
+	F(stone_granite) \
+	F(soul_sand) \
+	F(coal_block) \
+	F(coarse_dirt) \
+	F(cobblestone_mossy) \
+	F(command_block) \
+	F(crafting_table_front) \
+	F(crafting_table_bottom) \
+	F(crafting_table_side) \
+	F(crafting_table_side2) \
+	F(crafting_table_top) \
+	F(destroy_stage_0) \
+	F(destroy_stage_1) \
+	F(destroy_stage_2) \
+	F(destroy_stage_3) \
+	F(destroy_stage_4) \
+	F(destroy_stage_5) \
+	F(destroy_stage_6) \
+	F(destroy_stage_7) \
+	F(destroy_stage_8) \
+	F(destroy_stage_9) \
+	F(diamond_block) \
+	F(diamond_ore) \
+	F(emerald_block) \
+	F(emerald_ore) \
+	F(enchanting_table_bottom) \
+	F(enchanting_table_side) \
+	F(enchanting_table_top) \
+	F(dirt_podzol_top) \
+	F(dirt_podzol_side) \
+	F(grass_side_snowed) \
+	F(gravel) \
+	F(ice) \
+	F(lapis_block) \
+	F(lapis_ore) \
+	F(melon_side) \
+	F(melon_top) \
+	F(tnt_side) \
+	F(tnt_bottom) \
+	F(tnt_top) \
+	F(mycelium_side) \
+	F(mycelium_top) \
+	F(nether_brick) \
+	F(netherrack) \
+	F(obsidian) \
+	F(netherreator) \
+	F(netherreator_base) \
+	F(piston_bottom) \
+	F(piston_side) \
+	F(piston_top_normal) \
+	F(piston_top_sticky) \
+	F(prismarine_bricks) \
+	F(prismarine_dark) \
+	F(prismarine_rough) \
+	F(slime) \
+	F(snow) \
+	F(sponge) \
+	F(stonebrick) \
+	F(stonebrick_mossy) \
+	F(stonebrick_cracked) \
+	F(stonebrick_carved) \
+	B
+
+const char* block_texture_name[] = BlockTextures({, FuncStr, });
+static const uint block_texture_count = BlockTextures(0, FuncCount, +0);
+static_assert(block_texture_count <= 65535, "");
+enum class BlockTexture : uint16_t BlockTextures({, FuncList, });
+
+bool is_leaves(BlockTexture a) { return a >= BlockTexture::leaves_acacia && a <= BlockTexture::leaves_spruce; }
+bool is_leaves(Block a) { return a >= Block::leaves_acacia && a <= Block::leaves_spruce; }
+
+static_assert((uint)BlockTexture::leaves_acacia == 0, "used in shader");
+static_assert((uint)BlockTexture::leaves_spruce == 5, "used in shader");
+static_assert((uint)BlockTexture::lava_flow == 6, "used in shader");
+static_assert((uint)BlockTexture::lava_still == 38, "used in shader");
+static_assert((uint)BlockTexture::water_still2 == 70, "used in shader");
+static_assert((uint)BlockTexture::pumpkin_face_off == 102, "used in shader");
+static_assert((uint)BlockTexture::pumpkin_face_on == 103, "used in shader");
+static_assert((uint)BlockTexture::furnace_front_on == 104, "used in shader");
+static_assert((uint)BlockTexture::sea_lantern == 120, "used in shader");
+
+#define FAIL { fprintf(stderr, "Failed at line %d\n", __LINE__); assert(false); exit(1); }
+
+#define SC(A) case Block::A: return BlockTexture::A
+#define S2(A, XY, Z) case Block::A: return (face < 4) ? BlockTexture::XY : BlockTexture::Z;
+#define S3(A, XY, ZMIN, ZMAX) case Block::A: return (face < 4) ? BlockTexture::XY : ((face == 4) ? BlockTexture::ZMIN : BlockTexture::ZMAX);
+
+BlockTexture get_block_texture(Block block, int face)
+{
+	switch (block)
+	{
+	case Block::none: FAIL;
+	SC(leaves_acacia);
+	SC(leaves_big_oak);
+	SC(leaves_birch);
+	SC(leaves_jungle);
+	SC(leaves_oak);
+	SC(leaves_spruce);
+	S2(log_acacia, log_acacia, log_acacia_top);
+	S2(log_big_oak, log_big_oak, log_big_oak_top);
+	S2(log_birch, log_birch, log_birch_top);
+	S2(log_jungle, log_jungle, log_jungle_top);
+	S2(log_oak, log_oak, log_oak_top);
+	S2(log_spruce, log_spruce, log_spruce_top);
+	SC(planks_acacia); \
+	SC(planks_big_oak); \
+	SC(planks_birch); \
+	SC(planks_jungle); \
+	SC(planks_oak); \
+	SC(planks_spruce); \
+	S2(bookshelf, bookshelf, planks_oak);
+	SC(bedrock);
+	SC(brick);
+	S3(cactus, cactus_side, cactus_bottom, cactus_top);
+	S3(cauldron, cauldron_side, cauldron_bottom, cauldron_top);
+	SC(clay);
+	SC(cobblestone);
+	SC(dirt);
+	S3(daylight_detector, daylight_detector_side, daylight_detector_side, daylight_detector_top);
+	SC(glass_white);
+	S3(grass, grass_side, dirt, grass_top);
+	S2(hay_block, hay_block_side, hay_block_top);
+	SC(ice_packed);
+	SC(coarse_dirt);
+	SC(cobblestone_mossy);
+	SC(command_block);
+	case Block::crafting_table:
+		if (face == 0) return BlockTexture::crafting_table_front;
+		if (face == 1) return BlockTexture::crafting_table_side;
+		if (face == 2) return BlockTexture::crafting_table_side2;
+		if (face == 3) return BlockTexture::crafting_table_front;
+		if (face == 4) return BlockTexture::crafting_table_bottom;
+		if (face == 5) return BlockTexture::crafting_table_top;
+		FAIL;
+	case Block::test: return BlockTexture(uint(BlockTexture::test0) + face);
+	SC(coal_ore);
+	SC(coal_block);
+	SC(iron_block);
+	SC(iron_ore);
+	SC(gold_block);
+	SC(gold_ore);
+	SC(diamond_block);
+	SC(diamond_ore);
+	SC(emerald_block);
+	SC(emerald_ore);
+	S3(enchanting_table, enchanting_table_side, enchanting_table_bottom, enchanting_table_top);
+	S3(dirt_podzol, dirt_podzol_side, dirt, dirt_podzol_top);
+	S3(grass_snowed, grass_side_snowed, dirt, snow);
+	SC(gravel);
+	case Block::furnace:
+		if (face == 0) return BlockTexture::furnace_front_on;
+		if (face == 1) return BlockTexture::furnace_side;
+		if (face == 2) return BlockTexture::furnace_side;
+		if (face == 3) return BlockTexture::furnace_side;
+		if (face == 4) return BlockTexture::furnace_top;
+		if (face == 5) return BlockTexture::furnace_top;
+		FAIL;
+	case Block::pumpkin:
+		if (face == 0) return BlockTexture::pumpkin_face_off;
+		if (face == 1) return BlockTexture::pumpkin_side;
+		if (face == 2) return BlockTexture::pumpkin_side;
+		if (face == 3) return BlockTexture::pumpkin_side;
+		if (face == 4) return BlockTexture::pumpkin_top;
+		if (face == 5) return BlockTexture::pumpkin_top;
+		FAIL;
+	S3(quartz_block, quartz_block_side, quartz_block_bottom, quartz_block_top) \
+	SC(quartz_ore);
+	SC(ice);
+	SC(lapis_block);
+	SC(lapis_ore);
+	SC(lava_flow);
+	SC(lava_still);
+	S2(melon, melon_side, melon_top);
+	S3(tnt, tnt_side, tnt_bottom, tnt_top);
+	S3(mycelium, mycelium_side, dirt, mycelium_top);
+	SC(nether_brick);
+	SC(netherrack);
+	SC(obsidian);
+	S2(netherreator, netherreator, netherreator_base);
+	S3(piston, piston_side, piston_bottom, piston_top_normal);
+	S3(piston_sticky, piston_side, piston_bottom, piston_top_sticky);
+	SC(prismarine_bricks);
+	SC(prismarine_dark);
+	SC(prismarine_rough);
+	SC(redstone_block);
+	SC(redstone_ore);
+	S2(redstone_lamp_off, redstone_lamp_off, redstone_lamp_top_off);
+	S2(redstone_lamp_on, redstone_lamp_on, redstone_lamp_top_on);
+	SC(red_sand);
+	S3(red_sandstone, red_sandstone_normal, red_sandstone_bottom, red_sandstone_top);
+	S3(red_sandstone_smooth, red_sandstone_smooth, red_sandstone_bottom, red_sandstone_top);
+	S3(red_sandstone_carved, red_sandstone_carved, red_sandstone_bottom, red_sandstone_top);
+	SC(sand);
+	S3(sandstone, sandstone_normal, sandstone_bottom, sandstone_top);
+	S3(sandstone_smooth, sandstone_smooth, sandstone_bottom, sandstone_top);
+	S3(sandstone_carved, sandstone_carved, sandstone_bottom, sandstone_top);
+	SC(stone);
+	SC(stone_andesite);
+	SC(stone_diorite);
+	SC(stone_granite);
+	SC(soul_sand);
+	SC(sea_lantern);
+	SC(slime);
+	SC(snow);
+	SC(sponge);
+	SC(stonebrick);
+	SC(stonebrick_mossy);
+	SC(stonebrick_cracked);
+	SC(stonebrick_carved);
+	SC(water_still2);
+	}
+	FAIL;
+}
+#undef SC
+#undef S2
+#undef S3
 
 // ===============
 
@@ -141,21 +680,12 @@ namespace Cube
 	Initialize { FOR(i, 8) corner[i] = glm::ivec3(i&1, (i>>1)&1, (i>>2)&1); }
 }
 
-Block Color(int r, int g, int b, int a)
-{
-	assert(0 <= r && r < 4 && 0 <= g && g < 4 && 0 <= b && b < 4 && 0 <= a && a < 4);
-	return r + g * 4 + b * 16 + a * 64;
-}
-
-static const Block Empty = 0;
-static const Block Leaves = 255;
-
 // ============================
 
 struct Heightmap
 {
 	int height[ChunkSize * MapSize][ChunkSize * MapSize];
-	bool hasTree[ChunkSize * MapSize][ChunkSize * MapSize];
+	uint8_t treeType[ChunkSize * MapSize][ChunkSize * MapSize];
 	Block color[ChunkSize * MapSize][ChunkSize * MapSize];
 	glm::ivec2 last[MapSize][MapSize];
 
@@ -166,7 +696,7 @@ struct Heightmap
 
 	void Populate(int cx, int cy);
 	int& Height(int x, int y) { return height[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
-	bool& HasTree(int x, int y) { return hasTree[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
+	uint8_t& TreeType(int x, int y) { return treeType[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
 	Block& Color(int x, int y) { return color[x & (ChunkSize * MapSize - 1)][y & (ChunkSize * MapSize - 1)]; }
 };
 
@@ -178,7 +708,10 @@ int GetHeight(int x, int y)
 
 Block GetColor(int x, int y)
 {
-	return std::min<int>(63, floorf((1 + noise(glm::vec2(x, y) * -0.024f, 6, 0.5f, 0.5f, false)) * 8)) + 64 * 3;
+	static Block surface[] = { Block::lava_flow, Block::lava_still, Block::netherrack, Block::red_sand,
+		Block::sand, Block::coarse_dirt, Block::dirt, Block::grass, Block::grass_snowed, Block::snow };
+	float n = noise(glm::vec2(x, y) * -0.003f, 8, 0.5f, 0.75f, false);
+	return surface[((int)(n * 8) + 4) % 10];
 }
 
 float Tree(int x, int y)
@@ -186,15 +719,15 @@ float Tree(int x, int y)
 	return noise(glm::vec2(x+321398, y+8901) * 0.002f, 4, 2.0f, 0.5f, true);
 }
 
-bool GetHasTree(int x, int y)
+uint8_t GetTreeType(int x, int y)
 {
 	float a = Tree(x, y);
 	FOR2(xx, -1, 1) FOR2(yy, -1, 1)
 	{
 		if ((xx != 0 || yy != 0) && a <= Tree(x + xx, y + yy))
-			return false;
+			return 0;
 	}
-	return true;
+	return 1 + (uint)(noise(glm::vec2(x, y) * 0.245f, 1.0f, 0.5f, 0.5f, true) * 60) % 6;
 }
 
 void Heightmap::Populate(int cx, int cy)
@@ -204,7 +737,7 @@ void Heightmap::Populate(int cx, int cy)
 		FOR(x, ChunkSize) FOR(y, ChunkSize)
 		{
 			Height(x + cx * ChunkSize, y + cy * ChunkSize) = GetHeight(x + cx * ChunkSize, y + cy * ChunkSize);
-			HasTree(x + cx * ChunkSize, y + cy * ChunkSize) = GetHasTree(x + cx * ChunkSize, y + cy * ChunkSize);
+			TreeType(x + cx * ChunkSize, y + cy * ChunkSize) = GetTreeType(x + cx * ChunkSize, y + cy * ChunkSize);
 			Color(x + cx * ChunkSize, y + cy * ChunkSize) = GetColor(x + cx * ChunkSize, y + cy * ChunkSize);
 		}
 		last[cx & MapSizeMask][cy & MapSizeMask] = glm::ivec2(cx, cy);
@@ -231,7 +764,7 @@ Block generate_block(glm::ivec3 pos)
 			if (sy <= 0)
 			{
 				int64_t sz = sy + sqr<int64_t>(pos.z - CraterCenter.z);
-				if (sz <= 0) return Empty;
+				if (sz <= 0) return Block::none;
 			}
 		}
 	}
@@ -244,7 +777,35 @@ Block generate_block(glm::ivec3 pos)
 		if (sy <= 0)
 		{
 			int64_t sz = sy + sqr<int64_t>(pos.z - MoonCenter.z);
-			if (sz <= 0) return heightmap->Color(pos.x, pos.y);
+			if (sz <= 0)
+			{
+				double q = noise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
+				static Block ores[6] = { Block::gold_ore, Block::coal_ore, Block::diamond_ore, Block::redstone_ore, Block::emerald_ore, Block::lapis_ore};
+				if (q >= 0.6) return ores[uint(pos.x ^ pos.y ^ pos.z) / 3 % 6];
+				return Block::stone;
+			}
+		}
+	}
+
+	if (pos.x >= 0 && pos.x < 64 && pos.z == 3 && pos.y >= 0 && pos.y < 16 && (pos.x % 3) == 0 && (pos.y % 3) == 0)
+	{
+		int i = (pos.x / 3) * 6 + pos.y / 3 + 1;
+		if (i < block_count) return (Block)i;
+	}
+
+	// Tree
+	if (heightmap->TreeType(pos.x, pos.y))
+	{
+		int height = heightmap->Height(pos.x, pos.y);
+		if (pos.z > height && pos.z < height + 6) return Block(uint(Block::log_acacia) + heightmap->TreeType(pos.x, pos.y) - 1);
+	}
+	else for(glm::ivec2 i : { glm::ivec2(0, -1), glm::ivec2(0, 1), glm::ivec2(-1, 0), glm::ivec2(1, 0) })
+	{
+		if (heightmap->TreeType(pos.x + i.x, pos.y + i.y))
+		{
+			int height = heightmap->Height(pos.x + i.x, pos.y + i.y);
+			if (pos.z > height + 2 && pos.z < height + 6) return Block(uint(Block::leaves_acacia) + heightmap->TreeType(pos.x + i.x, pos.y + i.y) - 1);
+			break;
 		}
 	}
 
@@ -252,31 +813,18 @@ Block generate_block(glm::ivec3 pos)
 	{
 		// clouds
 		double q = noise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
-		if (q < -0.35) return Color(3, 3, 3, 2);
+		if (q < -0.35) return Block::ice_packed;
 	}
 	else if (pos.z <= heightmap->Height(pos.x, pos.y))
 	{
 		// ground and caves
 		double q = noise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
-		return q < -0.25 ? Empty : heightmap->Color(pos.x, pos.y);
+		static Block ores[6] = { Block::gold_ore, Block::coal_ore, Block::diamond_ore, Block::redstone_ore, Block::emerald_ore, Block::lapis_ore};
+		if (q >= 0.6) return ores[uint(pos.x ^ pos.y ^ pos.z) / 3 % 6];
+		if (q >= -0.25) return heightmap->Color(pos.x, pos.y);
 	}
 
-	// Tree
-	if (heightmap->HasTree(pos.x, pos.y))
-	{
-		int height = heightmap->Height(pos.x, pos.y);
-		if (pos.z > height && pos.z < height + 6) return Color(0, 0, 3, 3);
-	}
-	else for(glm::ivec2 i : { glm::ivec2(0, -1), glm::ivec2(0, 1), glm::ivec2(-1, 0), glm::ivec2(1, 0) })
-	{
-		if (heightmap->HasTree(pos.x + i.x, pos.y + i.y))
-		{
-			int height = heightmap->Height(pos.x + i.x, pos.y + i.y);
-			if (pos.z > height + 2 && pos.z < height + 6) return Leaves;
-			break;
-		}
-	}
-	return Empty;
+	return Block::none;
 }
 
 struct MapChunk
@@ -288,7 +836,7 @@ struct MapChunk
 	{
 		m_block = block;
 		m_count = 0;
-		FOR(i, ChunkSize3) if (m_block[i] != Empty) m_count += 1;
+		FOR(i, ChunkSize3) if (m_block[i] != Block::none) m_count += 1;
 	}
 
 	Block operator[](glm::ivec3 a) { return m_block[index(a)]; }
@@ -299,8 +847,8 @@ struct MapChunk
 	void set(glm::ivec3 a, Block b)
 	{
 		Block& q = m_block[index(a)];
-		if (b != Empty && q == Empty) m_count += 1;
-		if (b == Empty && q != Empty) m_count -= 1;
+		if (b != Block::none && q == Block::none) m_count += 1;
+		if (b == Block::none && q != Block::none) m_count -= 1;
 		q = b;
 	}
 
@@ -426,7 +974,6 @@ struct SuperChunkManager
 			generate_chunk(mc, cpos); // mc is useless here!
 			m_lock.lock();
 			sc->not_null.cube().set(cpos & SuperChunkSizeMask);
-			sc->not_null.save();
 		}
 
 		return blocks;
@@ -452,7 +999,11 @@ struct SuperChunkManager
 	void save()
 	{
 		AutoLock(m_lock);
-		for (auto it : m_map) it.second->blocks.save();
+		for (auto it : m_map)
+		{
+			it.second->blocks.save();
+			it.second->not_null.save();
+		}
 	}
 
 	AutoVecLockManager chunk_locks;
@@ -465,28 +1016,24 @@ SuperChunkManager g_scm;
 
 // ============================
 
-// FOR(x, 4) FOR(y, 4) FOR(z, 4) set(glm::ivec3(x*2, y*2, z*2+45), Color(x, y, z, 3));
-
-// ============================
-
 struct Quad
 {
 	glm::u8vec3 pos[4];
-	uint8_t color;
+	BlockTexture texture;
 	uint8_t light;
 	uint16_t plane;
 };
 
 bool operator<(const Quad& a, const Quad& b)
 {
-	if (a.color != b.color) return a.color < b.color;
+	if (a.texture != b.texture) return a.texture < b.texture;
 	return a.plane < b.plane;
 }
 
 struct Vertex
 {
-	GLubyte color;
-	GLubyte light;
+	BlockTexture texture;
+	uint8_t light;
 	glm::u8vec2 uv;
 	glm::u8vec3 pos;
 };
@@ -540,7 +1087,7 @@ struct BlockRenderer
 {
 	std::vector<Quad> m_quads;
 	glm::ivec3 m_pos;
-	GLubyte m_color;
+	Block m_block;
 
 	std::vector<Quad> m_xy, m_yx;
 
@@ -577,9 +1124,9 @@ struct BlockRenderer
 		while (a != m_quads.end())
 		{
 			auto b = a + 1;
-			while (b != m_quads.end() && a->color == b->color && a->plane == b->plane) b += 1;
+			while (b != m_quads.end() && a->texture == b->texture && a->plane == b->plane) b += 1;
 
-			if (a->color == Leaves)
+			if (is_leaves(a->texture))
 			{
 				while (a < b) *w++ = *a++;
 				continue;
@@ -609,25 +1156,25 @@ struct BlockRenderer
 		m_quads.resize(w - m_quads.begin());
 
 		vertices.resize(6 * m_quads.size());
-		auto v = vertices.begin();
+		Vertex* e = vertices.data();
 		for (Quad q : m_quads)
 		{
-			uint tv = non_zero(q.pos[1] - q.pos[0]);
-			uint tu = non_zero(q.pos[3] - q.pos[0]);
-			*v++ = { q.color, q.light, glm::u8vec2( 0,  0), q.pos[0] };
-			*v++ = { q.color, q.light, glm::u8vec2( 0, tv), q.pos[1] };
-			*v++ = { q.color, q.light, glm::u8vec2(tu, tv), q.pos[2] };
-			*v++ = { q.color, q.light, glm::u8vec2( 0,  0), q.pos[0] };
-			*v++ = { q.color, q.light, glm::u8vec2(tu, tv), q.pos[2] };
-			*v++ = { q.color, q.light, glm::u8vec2(tu,  0), q.pos[3] };
-		}
-	}
+			glm::u8vec3 d = q.pos[2] - q.pos[0];
+			uint u, v;
+			uint face = q.plane >> 8;
+			if (face < 2) { u = d.y; v = d.z; }
+			else if (face < 4) { u = d.x; v = d.z; }
+			else { u = d.y; v = d.x; }
 
-	static uint non_zero(glm::u8vec3 a)
-	{
-		FOR(i, 3) if (a[i] != 0) return a[i];
-		assert(false);
-		return 0;
+			// How much to rotate each face?
+			int a = (face == 0 || face == 3 || face == 5) ? 0 : 1;
+			*e++ = { q.texture, q.light, glm::u8vec2(u, 0), q.pos[(1+a)%4] };
+			*e++ = { q.texture, q.light, glm::u8vec2(0, 0), q.pos[(2+a)%4] };
+			*e++ = { q.texture, q.light, glm::u8vec2(0, v), q.pos[(3+a)%4] };
+			*e++ = { q.texture, q.light, glm::u8vec2(u, 0), q.pos[(1+a)%4] };
+			*e++ = { q.texture, q.light, glm::u8vec2(0, v), q.pos[(3+a)%4] };
+			*e++ = { q.texture, q.light, glm::u8vec2(u, v), q.pos[(0+a)%4] };
+		}
 	}
 };
 
@@ -643,8 +1190,8 @@ struct CachedChunk
 	MapChunk mc;
 };
 
-bool can_move_through(Block block) { return block == Empty; }
-bool can_see_through(Block block) { return block == Empty || block == Leaves; }
+bool can_move_through(Block block) { return block == Block::none || block == Block::water_still2; }
+bool can_see_through(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white || block == Block::water_still2; }
 
 typedef uint64_t CompressedIVec3;
 
@@ -702,11 +1249,11 @@ struct Chunk : public MapChunk
 				FOR(y, ChunkSize) FOR(z, ChunkSize)
 				{
 					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Empty)
+					if (block != Block::none)
 					{
 						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
-						renderer.m_color = block;
+						renderer.m_block = block;
 						if (can_see_through(cc[pos - ix])) renderer.draw_quad(0);
 					}
 				}
@@ -717,11 +1264,11 @@ struct Chunk : public MapChunk
 				FOR(y, ChunkSize) FOR(z, ChunkSize)
 				{
 					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Empty)
+					if (block != Block::none)
 					{
 						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
-						renderer.m_color = block;
+						renderer.m_block = block;
 						if (can_see_through(cc[pos + ix])) renderer.draw_quad(1);
 					}
 				}
@@ -732,11 +1279,11 @@ struct Chunk : public MapChunk
 				FOR(x, ChunkSize) FOR(z, ChunkSize)
 				{
 					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Empty)
+					if (block != Block::none)
 					{
 						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
-						renderer.m_color = block;
+						renderer.m_block = block;
 						if (can_see_through(cc[pos - iy])) renderer.draw_quad(2);
 					}
 				}
@@ -747,11 +1294,11 @@ struct Chunk : public MapChunk
 				FOR(x, ChunkSize) FOR(z, ChunkSize)
 				{
 					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Empty)
+					if (block != Block::none)
 					{
 						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
-						renderer.m_color = block;
+						renderer.m_block = block;
 						if (can_see_through(cc[pos + iy])) renderer.draw_quad(3);
 					}
 				}
@@ -762,11 +1309,11 @@ struct Chunk : public MapChunk
 				FOR(x, ChunkSize) FOR(y, ChunkSize)
 				{
 					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Empty)
+					if (block != Block::none)
 					{
 						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
-						renderer.m_color = block;
+						renderer.m_block = block;
 						if (can_see_through(cc[pos - iz])) renderer.draw_quad(4);
 					}
 				}
@@ -777,11 +1324,11 @@ struct Chunk : public MapChunk
 				FOR(x, ChunkSize) FOR(y, ChunkSize)
 				{
 					Block block = operator[](glm::ivec3(x, y, z));
-					if (block != Empty)
+					if (block != Block::none)
 					{
 						glm::ivec3 pos = cpos * ChunkSize + glm::ivec3(x, y, z);
 						renderer.m_pos = pos;
-						renderer.m_color = block;
+						renderer.m_block = block;
 						if (can_see_through(cc[pos + iz])) renderer.draw_quad(5);
 					}
 				}
@@ -790,10 +1337,10 @@ struct Chunk : public MapChunk
 			{
 				glm::ivec3 p(x, y, z);
 				Block block = operator[](p);
-				if (block != Empty)
+				if (block != Block::none)
 				{
 					renderer.m_pos = cpos * ChunkSize + p;
-					renderer.m_color = block;
+					renderer.m_block = block;
 					if (x != 0 && can_see_through(operator[](p - ix))) renderer.draw_quad(0);
 					if (x != ChunkSize-1 && can_see_through(operator[](p + ix))) renderer.draw_quad(1);
 					if (y != 0 && can_see_through(operator[](p - iy))) renderer.draw_quad(2);
@@ -885,7 +1432,7 @@ public:
 	bool selectable_block(glm::ivec3 pos)
 	{
 		Chunk& chunk = get(pos >> ChunkSizeBits);
-		return chunk.get_cpos() == (pos >> ChunkSizeBits) && chunk[pos & ChunkSizeMask] != Empty;
+		return chunk.get_cpos() == (pos >> ChunkSizeBits) && chunk[pos & ChunkSizeMask] != Block::none;
 	}
 
 	bool can_move_through(glm::ivec3 pos)
@@ -1038,7 +1585,7 @@ void raytrace(Chunk* chunk, glm::ivec3 photon, glm::ivec3 dir)
 		voxel = photon >> E;
 		if (glm::distance2(voxel, svoxel) > MaxDist2) break;
 		Block block = (*chunk)[voxel & ChunkSizeMask];
-		if (block == Empty) continue;
+		if (block == Block::none) continue;
 		visible_chunks.add(cvoxel);
 		if (!can_see_through(block)) break;
 	}
@@ -1092,6 +1639,11 @@ bool selection = false;
 bool wireframe = false;
 bool show_counters = true;
 
+Block carousel_block = Block(1);
+double scroll_y = 0, scroll_dy = 0;
+Timestamp ts_carousel;
+bool show_carousel = false;
+
 void edit_block(glm::ivec3 pos, Block block)
 {
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
@@ -1112,39 +1664,9 @@ void edit_block(glm::ivec3 pos, Block block)
 	if (p.z == ChunkSizeMask) g_chunks.reset(cpos + iz, renderer);
 }
 
-void on_edit_key(int key)
-{
-	Block block = g_chunks.get_block(sel_cube);
-
-	int r = block % 4;
-	int g = (block / 4) % 4;
-	int b = (block / 16) % 4;
-	int a = block % 64;
-
-	if (key == GLFW_KEY_Z)
-	{
-		block = Color((r + 1) % 4, g, b, a);
-		edit_block(sel_cube, block);
-	}
-	if (key == GLFW_KEY_X)
-	{
-		block = Color(r, (g + 1) % 4, b, a);
-		edit_block(sel_cube, block);
-	}
-	if (key == GLFW_KEY_C)
-	{
-		block = Color(r, g, (b + 1) % 4, a);
-		edit_block(sel_cube, block);
-	}
-	if (key == GLFW_KEY_V)
-	{
-		block = Color(r, g, b, (a + 1) % 4);
-		edit_block(sel_cube, block);
-	}
-}
-
 void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
+	show_carousel = false;
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
 		g_scm.save();
@@ -1184,38 +1706,41 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 			player::flying = !player::flying;
 			player::velocity = glm::vec3(0, 0, 0);
 		}
-		else if (selection)
-		{
-			on_edit_key(key);
-		}
-	}
-	else if (action == GLFW_REPEAT)
-	{
-		if (selection)
-		{
-			on_edit_key(key);
-		}
 	}
 }
 
 void on_mouse_button(GLFWwindow* window, int button, int action, int mods)
 {
+	show_carousel = false;
+
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection)
 	{
-		edit_block(sel_cube, Empty);
+		edit_block(sel_cube, Block::none);
 	}
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
 	{
 		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
-		edit_block(sel_cube + dir[sel_face], g_chunks.get_block(sel_cube));
+		edit_block(sel_cube + dir[sel_face], carousel_block);
 	}
+}
+
+void on_scroll(GLFWwindow* window, double x, double y)
+{
+	ts_carousel = Timestamp();
+	show_carousel = true;
+	scroll_dy = y / 5;
+	scroll_y += scroll_dy;
+	if (scroll_y < 0) scroll_y = 0;
+	if (scroll_y > (block_count - 2)) scroll_y = (block_count - 2);
+	carousel_block = Block(uint(std::round(scroll_y)) + 1);
 }
 
 void model_init(GLFWwindow* window)
 {
 	glfwSetKeyCallback(window, on_key);
 	glfwSetMouseButtonCallback(window, on_mouse_button);
+	glfwSetScrollCallback(window, on_scroll);
 	glfwSetCursorPos(window, 0, 0);
 }
 
@@ -1441,6 +1966,7 @@ void model_move_player(GLFWwindow* window, float dt)
 	glm::vec3 p = player::position;
 	if (dir.x != 0 || dir.y != 0 || dir.z != 0)
 	{
+		show_carousel = false;
 		dir = glm::normalize(dir);
 	}
 	while (dt > 0)
@@ -1551,6 +2077,7 @@ void model_frame(GLFWwindow* window, double delta_ms)
 	static double last_cursor_y = 0;
 	if (cursor_x != last_cursor_x || cursor_y != last_cursor_y)
 	{
+		show_carousel = false;
 		player::yaw += (cursor_x - last_cursor_x) / 150;
 		player::pitch += (cursor_y - last_cursor_y) / 150;
 		if (player::pitch > M_PI / 2 * 0.999) player::pitch = M_PI / 2 * 0.999;
@@ -1585,7 +2112,7 @@ Initialize
 	{
 		glm::vec3 normal = glm::normalize(glm::cross(glm::vec3(Cube::corner[b] - Cube::corner[a]), glm::vec3(Cube::corner[c] - Cube::corner[a])));
 		float cos_angle = std::max<float>(0, -glm::dot(normal, light_direction));
-		float light = glm::clamp<float>(0.3f + cos_angle * 0.7f, 0, 1);
+		float light = glm::clamp<float>(0.4f + cos_angle * 0.6f, 0, 1);
 		light_cache[a][b][c] = (uint) floorf(glm::clamp<float>(light * 256, 0, 255));
 	}
 }
@@ -1601,9 +2128,10 @@ GLuint block_matrix_loc;
 GLuint block_sampler_loc;
 GLuint block_pos_loc;
 GLuint block_tick_loc;
+GLuint block_foglimit2_loc;
 GLuint block_eye_loc;
 GLuint block_position_loc;
-GLuint block_color_loc;
+GLuint block_block_texture_loc;
 GLuint block_light_loc;
 GLuint block_uv_loc;
 
@@ -1612,37 +2140,105 @@ GLuint line_buffer;
 
 int g_tick;
 
-void load_noise_texture(int size)
+struct BlockTextureLoader
 {
-	GLubyte* image = new GLubyte[size * size * 3];
-	FOR(x, size) FOR(y, size)
+	BlockTextureLoader();
+	void load(BlockTexture block_texture);
+	void load_textures();
+
+private:
+	uint m_width, m_height, m_size;
+	std::vector<uint8_t> m_pixels;
+};
+
+BlockTextureLoader::BlockTextureLoader()
+{
+	uint8_t* image;
+	char filename[1024];
+	snprintf(filename, sizeof(filename), "bdc_blocks/%s.png", block_texture_name[0]);
+	uint error = lodepng_decode32_file(&image, &m_width, &m_height, filename);
+	if (error)
 	{
-		glm::vec2 p = glm::vec2(x+32131, y+908012) * (1.0f / size);
-		float f = noise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
-		f = fabs(f);
-		f = std::min<float>(f, 1);
-		f = std::max<float>(f, -1);
-		GLubyte a = (int) std::min<float>(255, floorf(f * 256));
-		image[(x + y * size) * 3] = a;
-
-		p = glm::vec2(x+9420234, y+9808312) * (1.0f / size);
-		f = noise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
-		f = fabs(f);
-		f = std::min<float>(f, 1);
-		f = std::max<float>(f, -1);
-		a = (int) std::min<float>(255, floorf(f * 256));
-		image[(x + y * size) * 3 + 1] = a;
-
-		p = glm::vec2(x+983322, y+1309329) * (1.0f / size);
-		f = noise(p * 32.f, 10, 1 / sqrt(2), 1, false) * 3;
-		f = fabs(f);
-		f = std::min<float>(f, 1);
-		f = std::max<float>(f, -1);
-		a = (int) std::min<float>(255, floorf(f * 256));
-		image[(x + y * size) * 3 + 2] = a;
+		fprintf(stderr, "lodepgn_decode32_file(%s) error %u: %s\n", filename, error, lodepng_error_text(error));
+		exit(1);
 	}
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, size, size, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
-	delete[] image;
+	free(image);
+	m_size = m_width * m_height * 4;
+}
+
+void BlockTextureLoader::load(BlockTexture tex)
+{
+	unsigned char* image;
+	unsigned iwidth, iheight;
+	char filename[1024];
+	if (tex > BlockTexture::lava_still && tex <= BlockTexture::lava_still_31) return;
+	if (tex > BlockTexture::lava_flow && tex <= BlockTexture::lava_flow_31) return;
+	if (tex > BlockTexture::water_still2 && tex <= BlockTexture::water_still_31) return;
+	if (tex > BlockTexture::furnace_front_on && tex <= BlockTexture::ff_15) return;
+	if (tex > BlockTexture::sea_lantern && tex <= BlockTexture::sl_4) return;
+	snprintf(filename, sizeof(filename), "bdc_blocks/%s.png", block_texture_name[uint(tex)]);
+	unsigned error = lodepng_decode32_file(&image, &iwidth, &iheight, filename);
+	if (error)
+	{
+		fprintf(stderr, "lodepgn_decode32_file(%s) error %u: %s\n", filename, error, lodepng_error_text(error));
+		exit(1);
+	}
+	Auto(free(image));
+	fprintf(stderr, "Loaded %s, %u x %u\n", filename, iwidth, iheight);
+
+	assert(m_width == iwidth && (iheight % m_height) == 0);
+
+	if (is_leaves(tex) || tex == BlockTexture::grass_top)
+	{
+		glm::u8vec4* pixel = (glm::u8vec4*)image;
+		FOR(j, m_width * m_height)
+		{
+			pixel[j].r = 0;
+			pixel[j].b = 0;
+		}
+	}
+
+	uint frames = 1;
+	if (tex == BlockTexture::lava_still || tex == BlockTexture::lava_flow || tex == BlockTexture::water_still2) frames = 32;
+	if (tex == BlockTexture::furnace_front_on) frames = 16;
+	if (tex == BlockTexture::sea_lantern) frames = 5;
+	memcpy(m_pixels.data() + uint(tex) * m_size, image, m_size * frames);
+}
+
+void BlockTextureLoader::load_textures()
+{
+	float ta = glfwGetTime();
+	m_pixels.resize(m_width * m_height * 4 * block_texture_count);
+
+	// Use 7 instead of 8 threads to avoid the same thread from having to load all animated textures
+	std::thread threads[7];
+	FOR(i, 7)
+	{
+		threads[i] = std::move(std::thread([](BlockTextureLoader* self, int k)
+		{
+			FOR(j, block_texture_count)
+			{
+				if (j % 7 == k) self->load((BlockTexture)j);
+			}
+		}, this, i));
+	}
+	FOR(i, 7) threads[i].join();
+
+	glGenTextures(1, &block_texture);
+	glBindTexture(GL_TEXTURE_2D_ARRAY, block_texture);
+	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, m_width, m_height, block_texture_count, 0, GL_RGBA, GL_UNSIGNED_BYTE, m_pixels.data());
+
+	uint e = glGetError();
+	fprintf(stderr, "GLError = %u\n", e);
+	assert(e == 0);
+
+	float tb = glfwGetTime();
+	printf("Textures loaded in %lf ms\n", (tb - ta) * 1000);
+	fflush(stdout);
 }
 
 void render_init()
@@ -1650,14 +2246,10 @@ void render_init()
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
 	glEnable(GL_CULL_FACE);
 
-	glGenTextures(1, &block_texture);
-	glBindTexture(GL_TEXTURE_2D, block_texture);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-	//load_noise_texture(512);
-	load_png_texture("noise.png");
+	{
+		BlockTextureLoader loader;
+		loader.load_textures();
+	}
 
 	light_direction = glm::normalize(light_direction);
 
@@ -1673,9 +2265,10 @@ void render_init()
 	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
 	block_pos_loc = glGetUniformLocation(block_program, "pos");
 	block_tick_loc = glGetUniformLocation(block_program, "tick");
+	block_foglimit2_loc = glGetUniformLocation(block_program, "foglimit2");
 	block_eye_loc = glGetUniformLocation(block_program, "eye");
 	block_position_loc = glGetAttribLocation(block_program, "position");
-	block_color_loc = glGetAttribLocation(block_program, "color");
+	block_block_texture_loc = glGetAttribLocation(block_program, "block_texture");
 	block_light_loc = glGetAttribLocation(block_program, "light");
 	block_uv_loc = glGetAttribLocation(block_program, "uv");
 
@@ -1695,7 +2288,7 @@ void render_init()
 void BlockRenderer::draw_quad(int face)
 {
 	Quad q;
-	q.color = m_color;
+	q.texture = get_block_texture(m_block, face);
 	const int* f = Cube::faces[face];
 	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;
@@ -1712,9 +2305,11 @@ void BlockRenderer::render(Chunk& mc, glm::ivec3 pos, Block block)
 {
 }
 
+const float foglimit2 = sqr(0.8 * RenderDistance * ChunkSize);
+
 void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 {
-	glBindTexture(GL_TEXTURE_2D, block_texture);
+	glBindTexture(GL_TEXTURE_2D_ARRAY, block_texture);
 	if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	Auto(if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
 
@@ -1722,15 +2317,16 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player::position));
 	glUniform1i(block_tick_loc, g_tick++);
+	glUniform1f(block_foglimit2_loc, foglimit2);
 
 	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
 	glEnableVertexAttribArray(block_position_loc);
-	glEnableVertexAttribArray(block_color_loc);
+	glEnableVertexAttribArray(block_block_texture_loc);
 	glEnableVertexAttribArray(block_light_loc);
 	glEnableVertexAttribArray(block_uv_loc);
 
 	glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->pos);
-	glVertexAttribIPointer(block_color_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->color);
+	glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), &((Vertex*)0)->texture);
 	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 	glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
@@ -1766,11 +2362,7 @@ void render_gui()
 		if (selection)
 		{
 			Block block = g_chunks.get_block(sel_cube);
-			int r = block % 4;
-			int g = (block / 4) % 4;
-			int b = (block / 16) % 4;
-			int a = block / 64;
-			text->Printf("selected: [%d %d %d], color [%u %u %u %u]", sel_cube.x, sel_cube.y, sel_cube.z, r, g, b, a);
+			text->Printf("selected: %s at [%d %d %d]", block_name[(uint)block], sel_cube.x, sel_cube.y, sel_cube.z);
 		}
 		else
 		{
@@ -1779,10 +2371,84 @@ void render_gui()
 	}
 
 	console.Render(text, glfwGetTime());
-
 	glUseProgram(0);
 
-	if (selection)
+	if (show_carousel)
+	{
+		if (scroll_dy <= 0.1 / 5) scroll_y += (std::round(scroll_y) - scroll_y) * 0.05;
+
+		glBindTexture(GL_TEXTURE_2D_ARRAY, block_texture);
+		glUseProgram(block_program);
+		glm::mat4 view;
+		view = glm::rotate(view, float(M_PI * 1.75), glm::vec3(1,0,0));
+		view = glm::rotate(view, float(M_PI * 0.25), glm::vec3(0,0,1));
+		view = glm::translate(view, glm::vec3(-128,-128,-128));
+		view = glm::ortho<float>(-8 * width / height, 8 * width / height, -8, 8, -64, 64) * view;
+		view = glm::translate(view, glm::vec3(-scroll_y, scroll_y, -1));
+		glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(view));
+
+		glm::vec3 eye(8, 8, 8);
+		glUniform3fv(block_eye_loc, 1, glm::value_ptr(eye));
+		glUniform1i(block_tick_loc, g_tick);
+		glUniform1f(block_foglimit2_loc, 1e30);
+
+		glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
+		glEnableVertexAttribArray(block_position_loc);
+		glEnableVertexAttribArray(block_block_texture_loc);
+		glEnableVertexAttribArray(block_light_loc);
+		glEnableVertexAttribArray(block_uv_loc);
+
+		glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->pos);
+		glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->texture);
+		glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
+		glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
+
+		Vertex vertices[18 * (block_count - 1)];
+		Vertex* e = vertices;
+		FOR(i, block_count-1) FOR(face, 6)
+		{
+			if (face != 0 && face != 2 && face != 5) continue;
+
+			const int* f = Cube::faces[face];
+			uint8_t light = 255;
+			if (face == 2) light = 127;
+			if (face == 5) light = 127 + 64;
+			if (face == 0) light = 255;
+
+			glm::ivec3 w(128+i, 128-i, 128);
+			glm::u8vec3 pos[4];
+			FOR(j, 4) pos[j] = glm::u8vec3(w + Cube::corner[f[j]]);
+
+			glm::u8vec3 d = pos[2] - pos[0];
+			uint u, v;
+			if (face < 2) { u = d.y; v = d.z; }
+			else if (face < 4) { u = d.x; v = d.z; }
+			else { u = d.y; v = d.x; }
+
+			// How much to rotate each face?
+			int a = (face == 0 || face == 3 || face == 5) ? 0 : 1;
+			BlockTexture texture = get_block_texture(Block(i+1), face);
+			*e++ = { texture, light, glm::u8vec2(u, 0), pos[(1+a)%4] };
+			*e++ = { texture, light, glm::u8vec2(0, 0), pos[(2+a)%4] };
+			*e++ = { texture, light, glm::u8vec2(0, v), pos[(3+a)%4] };
+			*e++ = { texture, light, glm::u8vec2(u, 0), pos[(1+a)%4] };
+			*e++ = { texture, light, glm::u8vec2(0, v), pos[(3+a)%4] };
+			*e++ = { texture, light, glm::u8vec2(u, v), pos[(0+a)%4] };
+		}
+
+		glm::ivec3 pos(0, 0, 0);
+		glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
+		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 18 * (block_count - 1), vertices, GL_STREAM_DRAW);
+		glDrawArrays(GL_TRIANGLES, 0, 18 * (block_count - 1));
+		glUseProgram(0);
+
+		text->Reset(width, height, matrix);
+		text->PrintAt(width / 2 - height / 40, height / 2 - height / 40, 0, block_name[(uint)carousel_block], strlen(block_name[(uint)carousel_block]));
+
+		if (ts_carousel.elapsed_ms() >= 1000) show_carousel = false;
+	}
+
+	if (selection || show_carousel)
 	{
 		glUseProgram(line_program);
 		glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
@@ -1810,6 +2476,23 @@ void OnError(int error, const char* message)
 }
 
 double Timestamp::milisec_per_tick = 0;
+
+std::atomic<Timestamp> stall_ts;
+
+void stall_alarm_thread()
+{
+	while (true)
+	{
+		usleep(1000);
+		Timestamp a = stall_ts;
+		if (a.elapsed_ms() > 5000)
+		{
+			fprintf(stderr, "main thread stalled :(\n");
+			// TODO print callstack of main thread!
+			exit(1);
+		}
+	}
+}
 
 int main(int, char**)
 {
@@ -1866,14 +2549,19 @@ int main(int, char**)
 			Chunk& chunk = g_chunks.get(p + cplayer);
 			if (chunk.get_cpos() == p + cplayer) break;
 			usleep(10000);
+			glfwPollEvents();
 			assert(tq.elapsed_ms() < 5000);
 		}
 	}
 
 	Timestamp t0;
+	stall_ts = t0;
+	std::thread stall_alarm(stall_alarm_thread);
+
 	while (!glfwWindowShouldClose(window))
 	{
 		Timestamp ta;
+		stall_ts = ta;
 		double frame_ms = t0.elapsed_ms(ta);
 		t0 = ta;
 		glfwPollEvents();

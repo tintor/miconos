@@ -260,7 +260,7 @@ void Text::Printf(const char* format, ...)
 
 void Text::PrintAt(float x, float y, float n, const char* text, int length)
 {
-	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, n, text);
+	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, (n == 0) ? m_ts : n, text);
 	text_draw_buffers(m_positionBuffer, m_uvBuffer, text_position_loc, text_uv_loc, length);
 }
 

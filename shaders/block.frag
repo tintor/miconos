@@ -1,9 +1,10 @@
 #version 150
 
 uniform vec3 eye;
-uniform sampler2D sampler;
+uniform sampler2DArray sampler;
 
-//in float material;
+in float fragment_light;
+in float fragment_texture;
 in vec2 fragment_uv;
 in vec3 fragment_color;
 in float fog_factor;
@@ -14,12 +15,8 @@ const vec3 fog_color = vec3(0.2, 0.4, 1);
 
 void main()
 {
-	color = texture(sampler, fragment_uv).xyz * fragment_color;
-	/*if (material <= 204.5 && material >= 203.5)
-        {
-            vec2 f = floor(fragment_uv * 4);
-	    if (int(f.x + f.y) % 2 == 0)
-		color = vec3(1,1,1) - color;
-        }*/
+	vec4 color4 = texture(sampler, vec3(fragment_uv.x, fragment_uv.y, fragment_texture));
+	if (color4.w == 0.00) discard;
+	color = color4.xyz * fragment_light;
 	color = mix(color, fog_color, fog_factor);
 }
