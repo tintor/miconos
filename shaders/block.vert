@@ -37,21 +37,29 @@ void main()
                 p.z += sin((ftick * pi / (16.0 * speed)) + (p.z + d2)*0.9 + (p.x + d3)*0.9) * magnitude;
         p.y += sin((ftick * pi / (15.0 * speed)) + (p.z + d2) + (p.x + d3)) * (magnitude/1.0);
     }
-    if (block_texture == 6 || block_texture == 38 || block_texture == 70) // lava_flow / lava_still / water_still
+    if (block_texture == 6 || block_texture == 38) // lava_flow / lava_still
     {
-        fragment_texture = block_texture + ((tick / 10) % 32);
+        fragment_texture = block_texture + ((tick / 8) % 32);
     }
-    if (block_texture == 102) // pumpkin_face
+    if (block_texture == 70) // water_still
+    {
+        fragment_texture = block_texture + ((tick / 8) % 64);
+    }
+    if (block_texture == 134) // pumpkin_face
     {
         fragment_texture = block_texture + ((tick / 40) % 2);
     }
-    if (block_texture == 104) // furnace_front_on
+    if (block_texture == 136) // furnace_front_on
     {
         fragment_texture = block_texture + ((tick / 10) % 16);
     }
-    if (block_texture == 120) // sea_lantern
+    if (block_texture == 152) // sea_lantern
     {
-        fragment_texture = block_texture + ((tick / 40) % 5);
+        fragment_texture = block_texture + ((tick / 20) % 5);
+    }
+    if (block_texture == 157 || block_texture == 159) // redstone_lamp
+    {
+        fragment_texture = block_texture + ((tick / 40) % 2);
     }
     fragment_light = light / 255.0f;
 

@@ -265,14 +265,14 @@ bool array_file_open(const char* prefix, glm::ivec3 pos, const char* suffix, voi
 void array_file_close(void*& map, int& fd, size_t size);
 void array_file_save(int fd);
 
-template<typename Element, size_t Size>
+template<size_t Size>
 struct ArrayFile
 {
 	ArrayFile() { array_file_init(m_map, m_fd); }
 	~ArrayFile() { close(); }
-	bool open(const char* prefix, glm::ivec3 pos, const char* suffix) { return array_file_open(prefix, pos, suffix, m_map, m_fd, Size * sizeof(Element)); }
-	void close() { return array_file_close(m_map, m_fd, Size * sizeof(Element)); }
-	Element* data() { return reinterpret_cast<Element*>(m_map); }
+	bool open(const char* prefix, glm::ivec3 pos, const char* suffix) { return array_file_open(prefix, pos, suffix, m_map, m_fd, Size); }
+	void close() { return array_file_close(m_map, m_fd, Size); }
+	void* data() { return m_map; }
 	void save() { array_file_save(m_fd); }
 
 private:

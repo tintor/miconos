@@ -152,7 +152,6 @@ Sphere render_sphere(RenderDistance);
 	F(leaves_jungle) \
 	F(leaves_oak) \
 	F(leaves_spruce) \
-	F(test) \
 	F(log_acacia) \
 	F(log_big_oak) \
 	F(log_birch) \
@@ -190,15 +189,12 @@ Sphere render_sphere(RenderDistance);
 	F(ice_packed) \
 	F(red_sand) \
 	F(red_sandstone) \
-	F(red_sandstone_smooth) \
 	F(red_sandstone_carved) \
 	F(redstone_block) \
-	F(redstone_lamp_off) \
-	F(redstone_lamp_on) \
+	F(redstone_lamp) \
 	F(redstone_ore) \
 	F(sand) \
 	F(sandstone) \
-	F(sandstone_smooth) \
 	F(sandstone_carved) \
 	F(stone) \
 	F(stone_andesite) \
@@ -330,7 +326,7 @@ static_assert((uint)Block::none == 0, "common in conditions");
 	F(lava_still_29) \
 	F(lava_still_30) \
 	F(lava_still_31) \
-	F(water_still2) \
+	F(water_still) \
 	F(water_still_1) \
 	F(water_still_2) \
 	F(water_still_3) \
@@ -362,6 +358,38 @@ static_assert((uint)Block::none == 0, "common in conditions");
 	F(water_still_29) \
 	F(water_still_30) \
 	F(water_still_31) \
+	F(water_still_32) \
+	F(water_still_33) \
+	F(water_still_34) \
+	F(water_still_35) \
+	F(water_still_36) \
+	F(water_still_37) \
+	F(water_still_38) \
+	F(water_still_39) \
+	F(water_still_40) \
+	F(water_still_41) \
+	F(water_still_42) \
+	F(water_still_43) \
+	F(water_still_44) \
+	F(water_still_45) \
+	F(water_still_46) \
+	F(water_still_47) \
+	F(water_still_48) \
+	F(water_still_49) \
+	F(water_still_50) \
+	F(water_still_51) \
+	F(water_still_52) \
+	F(water_still_53) \
+	F(water_still_54) \
+	F(water_still_55) \
+	F(water_still_56) \
+	F(water_still_57) \
+	F(water_still_58) \
+	F(water_still_59) \
+	F(water_still_60) \
+	F(water_still_61) \
+	F(water_still_62) \
+	F(water_still_63) \
 	F(pumpkin_face_off) \
 	F(pumpkin_face_on) \
 	F(furnace_front_on) \
@@ -385,12 +413,10 @@ static_assert((uint)Block::none == 0, "common in conditions");
 	F(sl_2) \
 	F(sl_3) \
 	F(sl_4) \
-	F(test0) \
-	F(test1) \
-	F(test2) \
-	F(test3) \
-	F(test4) \
-	F(test5) \
+	F(redstone_lamp_off) \
+	F(redstone_lamp_on) \
+	F(redstone_lamp_top_off) \
+	F(redstone_lamp_top_on) \
 	F(pumpkin_side) \
 	F(pumpkin_top) \
 	F(log_acacia) \
@@ -445,21 +471,15 @@ static_assert((uint)Block::none == 0, "common in conditions");
 	F(quartz_ore) \
 	F(red_sand) \
 	F(red_sandstone_normal) \
-	F(red_sandstone_smooth) \
 	F(red_sandstone_carved) \
 	F(red_sandstone_bottom) \
 	F(red_sandstone_top) \
 	F(redstone_block) \
-	F(redstone_lamp_off) \
-	F(redstone_lamp_on) \
-	F(redstone_lamp_top_off) \
-	F(redstone_lamp_top_on) \
 	F(redstone_ore) \
 	F(sand) \
 	F(sandstone_bottom) \
 	F(sandstone_top) \
 	F(sandstone_normal) \
-	F(sandstone_smooth) \
 	F(sandstone_carved) \
 	F(stone) \
 	F(stone_andesite) \
@@ -540,11 +560,13 @@ static_assert((uint)BlockTexture::leaves_acacia == 0, "used in shader");
 static_assert((uint)BlockTexture::leaves_spruce == 5, "used in shader");
 static_assert((uint)BlockTexture::lava_flow == 6, "used in shader");
 static_assert((uint)BlockTexture::lava_still == 38, "used in shader");
-static_assert((uint)BlockTexture::water_still2 == 70, "used in shader");
-static_assert((uint)BlockTexture::pumpkin_face_off == 102, "used in shader");
-static_assert((uint)BlockTexture::pumpkin_face_on == 103, "used in shader");
-static_assert((uint)BlockTexture::furnace_front_on == 104, "used in shader");
-static_assert((uint)BlockTexture::sea_lantern == 120, "used in shader");
+static_assert((uint)BlockTexture::water_still == 70, "used in shader");
+static_assert((uint)BlockTexture::pumpkin_face_off == 134, "used in shader");
+static_assert((uint)BlockTexture::pumpkin_face_on == 135, "used in shader");
+static_assert((uint)BlockTexture::furnace_front_on == 136, "used in shader");
+static_assert((uint)BlockTexture::sea_lantern == 152, "used in shader");
+static_assert((uint)BlockTexture::redstone_lamp_off == 157, "used in shader");
+static_assert((uint)BlockTexture::redstone_lamp_top_off == 159, "used in shader");
 
 #define FAIL { fprintf(stderr, "Failed at line %d\n", __LINE__); assert(false); exit(1); }
 
@@ -600,7 +622,6 @@ BlockTexture get_block_texture(Block block, int face)
 		if (face == 4) return BlockTexture::crafting_table_bottom;
 		if (face == 5) return BlockTexture::crafting_table_top;
 		FAIL;
-	case Block::test: return BlockTexture(uint(BlockTexture::test0) + face);
 	SC(coal_ore);
 	SC(coal_block);
 	SC(iron_block);
@@ -652,15 +673,12 @@ BlockTexture get_block_texture(Block block, int face)
 	SC(prismarine_rough);
 	SC(redstone_block);
 	SC(redstone_ore);
-	S2(redstone_lamp_off, redstone_lamp_off, redstone_lamp_top_off);
-	S2(redstone_lamp_on, redstone_lamp_on, redstone_lamp_top_on);
+	S2(redstone_lamp, redstone_lamp_off, redstone_lamp_top_off);
 	SC(red_sand);
 	S3(red_sandstone, red_sandstone_normal, red_sandstone_bottom, red_sandstone_top);
-	S3(red_sandstone_smooth, red_sandstone_smooth, red_sandstone_bottom, red_sandstone_top);
 	S3(red_sandstone_carved, red_sandstone_carved, red_sandstone_bottom, red_sandstone_top);
 	SC(sand);
 	S3(sandstone, sandstone_normal, sandstone_bottom, sandstone_top);
-	S3(sandstone_smooth, sandstone_smooth, sandstone_bottom, sandstone_top);
 	S3(sandstone_carved, sandstone_carved, sandstone_bottom, sandstone_top);
 	SC(stone);
 	SC(stone_andesite);
@@ -675,14 +693,14 @@ BlockTexture get_block_texture(Block block, int face)
 	SC(stonebrick_mossy);
 	SC(stonebrick_cracked);
 	SC(stonebrick_carved);
-	S1(water8, water_still2);
-	S1(water7, water_still2);
-	S1(water6, water_still2);
-	S1(water5, water_still2);
-	S1(water4, water_still2);
-	S1(water3, water_still2);
-	S1(water2, water_still2);
-	S1(water1, water_still2);
+	S1(water8, water_still);
+	S1(water7, water_still);
+	S1(water6, water_still);
+	S1(water5, water_still);
+	S1(water4, water_still);
+	S1(water3, water_still);
+	S1(water2, water_still);
+	S1(water1, water_still);
 	}
 	FAIL;
 }
@@ -695,7 +713,7 @@ BlockTexture get_block_texture(Block block, int face)
 // - .not_null 4k, 1bit per chunk, marking which chunks are not null (ie. not yet initialized)
 // - .block 128MB, blocks (uses file system hole punching to save space!)
 
-template<int N>
+/*template<int N>
 struct BitCubeFile : public ArrayFile<BitCube<N>, 1>
 {
 	BitCube<N>& cube() { return *ArrayFile<BitCube<N>, 1>::data(); }
@@ -706,7 +724,7 @@ struct BlockCubeFile : public ArrayFile<Block, 1lu<<(3*Power)>
 {
 	Block* chunk(glm::ivec3 cpos) { return ArrayFile<Block, 1lu<<(3*Power)>::data() + ChunkSize3 * z_order<Power - ChunkSizeBits>(cpos); }
 	Block& block(glm::ivec3 pos) { return ArrayFile<Block, 1lu<<(3*Power)>::data()[z_order<Power>(pos)]; }
-};
+};*/
 
 // ===============
 
@@ -911,10 +929,15 @@ void generate_chunk(MapChunk& mc, glm::ivec3 cpos)
 
 struct SuperChunk
 {
+	static const uint BlockCubeFileSize = (1 << (3 * (ChunkSizeBits + SuperChunkSizeBits))) * sizeof(Block);
+	typedef BitCube<(1 << SuperChunkSizeBits)> BitCubeExplored;
+
 	glm::ivec3 scpos;
 	int refs;
-	BlockCubeFile<ChunkSizeBits + SuperChunkSizeBits> blocks;
-	BitCubeFile<(1 << SuperChunkSizeBits)> not_null;
+	ArrayFile<BlockCubeFileSize + sizeof(BitCubeExplored)> file;
+
+	BitCubeExplored& explored() { return *reinterpret_cast<BitCubeExplored*>(reinterpret_cast<uint8_t*>(file.data()) + BlockCubeFileSize); }
+	Block* chunk(glm::ivec3 cpos) { return reinterpret_cast<Block*>(file.data()) + ChunkSize3 * z_order<SuperChunkSizeBits>(cpos); }
 };
 
 #include <unordered_map>
@@ -991,18 +1014,17 @@ struct SuperChunkManager
 			sc = new SuperChunk;
 			sc->scpos = scpos;
 			sc->refs = 0;
-			if (!sc->blocks.open("world", scpos, "blocks")) exit(1);
-			if (!sc->not_null.open("world", scpos, "not_null")) exit(1);
+			if (!sc->file.open("world", scpos, "sc")) exit(1);
 			m_map[scpos] = sc;
 		}
 		sc->refs += 1;
 
-		Block* blocks = sc->blocks.chunk(cpos & SuperChunkSizeMask);
+		Block* blocks = sc->chunk(cpos & SuperChunkSizeMask);
 		m_lock.unlock();
 		AutoVecLock _(cpos, chunk_locks);
 		m_lock.lock();
 
-		if (!sc->not_null.cube()[cpos & SuperChunkSizeMask])
+		if (!sc->explored()[cpos & SuperChunkSizeMask])
 		{
 			if (!generate) return nullptr;
 			m_lock.unlock();
@@ -1010,7 +1032,7 @@ struct SuperChunkManager
 			mc.reset(blocks);
 			generate_chunk(mc, cpos); // mc is useless here!
 			m_lock.lock();
-			sc->not_null.cube().set(cpos & SuperChunkSizeMask);
+			sc->explored().set(cpos & SuperChunkSizeMask);
 		}
 
 		return blocks;
@@ -1025,9 +1047,8 @@ struct SuperChunkManager
 		assert(sc->refs > 0);
 		if (--sc->refs == 0)
 		{
-			sc->blocks.save();
-			sc->blocks.close();
-			sc->not_null.close();
+			sc->file.save();
+			sc->file.close();
 			delete sc;
 			m_map.erase(m_map.find(scpos));
 		}
@@ -1038,8 +1059,7 @@ struct SuperChunkManager
 		AutoLock(m_lock);
 		for (auto it : m_map)
 		{
-			it.second->blocks.save();
-			it.second->not_null.save();
+			it.second->file.save();
 		}
 	}
 
@@ -2110,7 +2130,7 @@ BlockTextureLoader::BlockTextureLoader()
 {
 	uint8_t* image;
 	char filename[1024];
-	snprintf(filename, sizeof(filename), "bdc_blocks/%s.png", block_texture_name[0]);
+	snprintf(filename, sizeof(filename), "bdc256/%s.png", block_texture_name[0]);
 	uint error = lodepng_decode32_file(&image, &m_width, &m_height, filename);
 	if (error)
 	{
@@ -2128,10 +2148,10 @@ void BlockTextureLoader::load(BlockTexture tex)
 	char filename[1024];
 	if (tex > BlockTexture::lava_still && tex <= BlockTexture::lava_still_31) return;
 	if (tex > BlockTexture::lava_flow && tex <= BlockTexture::lava_flow_31) return;
-	if (tex > BlockTexture::water_still2 && tex <= BlockTexture::water_still_31) return;
+	if (tex > BlockTexture::water_still && tex <= BlockTexture::water_still_63) return;
 	if (tex > BlockTexture::furnace_front_on && tex <= BlockTexture::ff_15) return;
 	if (tex > BlockTexture::sea_lantern && tex <= BlockTexture::sl_4) return;
-	snprintf(filename, sizeof(filename), "bdc_blocks/%s.png", block_texture_name[uint(tex)]);
+	snprintf(filename, sizeof(filename), "bdc256/%s.png", block_texture_name[uint(tex)]);
 	unsigned error = lodepng_decode32_file(&image, &iwidth, &iheight, filename);
 	if (error)
 	{
@@ -2154,7 +2174,8 @@ void BlockTextureLoader::load(BlockTexture tex)
 	}
 
 	uint frames = 1;
-	if (tex == BlockTexture::lava_still || tex == BlockTexture::lava_flow || tex == BlockTexture::water_still2) frames = 32;
+	if (tex == BlockTexture::water_still) frames = 64;
+	if (tex == BlockTexture::lava_still || tex == BlockTexture::lava_flow) frames = 32;
 	if (tex == BlockTexture::furnace_front_on) frames = 16;
 	if (tex == BlockTexture::sea_lantern) frames = 5;
 	memcpy(m_pixels.data() + uint(tex) * m_size, image, m_size * frames);
@@ -2354,7 +2375,7 @@ void render_gui()
 		glEnableVertexAttribArray(block_uv_loc);
 
 		glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->pos);
-		glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->texture);
+		glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), &((Vertex*)0)->texture);
 		glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
 		glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
 
