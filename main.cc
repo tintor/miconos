@@ -9,6 +9,7 @@
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
 // # Raytracing:
+// - Revert back to simpler model with flood fill of all can-see-through blocks
 // - Fix annoying missing far chunks until raytracer completes the scan.
 // - MAYBE generate ray in screen space (avoids testing all directions against frustum + adapts to different resolutions)
 
@@ -45,6 +46,25 @@
 // - login users
 // - chat
 
+// # database:
+// - save player position on exit
+// - compress block files (to save space and to reduce write amplification)
+
+// # rendering:
+// - static models: enchanting table, torch, cactus, water (different amounts)
+// - texture overlays: redstone powder, ladder, railroad
+// - 2d sprites: fire, plants, grass, flowers, web, ...
+// - directional blocks: crafting table, furnace, pumpkin
+
+// # survival mode:
+// - tool rendering
+// - digging
+// - inventory with 2x2 crafting
+// - inventory items with icons
+// - dropping items on the ground (ie. by hand or when digging)
+// - 3x3 crafting table UI
+// - furnace UI
+
 // sky:
 // - day/night cycle
 // - sun with bloom effect (shaders)
@@ -61,7 +81,7 @@
 
 // # water:
 // # - animated / reflective surface (shaders)
-// # - simple water (minecraft) with darker light in depth (flood fill lake!)
+// # - flowing water sim (with conservation of mass): have several water block types with 1/8, 2/8...8/8 of volume filled with water
 
 // # ambient lighting and shadows
 
@@ -222,7 +242,14 @@ Sphere render_sphere(RenderDistance);
 	F(stonebrick_mossy) \
 	F(stonebrick_cracked) \
 	F(stonebrick_carved) \
-	F(water_still2) \
+	F(water1) \
+	F(water2) \
+	F(water3) \
+	F(water4) \
+	F(water5) \
+	F(water6) \
+	F(water7) \
+	F(water8) \
 	B
 
 const char* block_name[] = Blocks({, FuncStr, });
@@ -507,6 +534,7 @@ enum class BlockTexture : uint16_t BlockTextures({, FuncList, });
 
 bool is_leaves(BlockTexture a) { return a >= BlockTexture::leaves_acacia && a <= BlockTexture::leaves_spruce; }
 bool is_leaves(Block a) { return a >= Block::leaves_acacia && a <= Block::leaves_spruce; }
+bool is_water(Block a) { return a >= Block::water1 && a <= Block::water8; }
 
 static_assert((uint)BlockTexture::leaves_acacia == 0, "used in shader");
 static_assert((uint)BlockTexture::leaves_spruce == 5, "used in shader");
@@ -521,6 +549,7 @@ static_assert((uint)BlockTexture::sea_lantern == 120, "used in shader");
 #define FAIL { fprintf(stderr, "Failed at line %d\n", __LINE__); assert(false); exit(1); }
 
 #define SC(A) case Block::A: return BlockTexture::A
+#define S1(A, XYZ) case Block::A: return BlockTexture::XYZ
 #define S2(A, XY, Z) case Block::A: return (face < 4) ? BlockTexture::XY : BlockTexture::Z;
 #define S3(A, XY, ZMIN, ZMAX) case Block::A: return (face < 4) ? BlockTexture::XY : ((face == 4) ? BlockTexture::ZMIN : BlockTexture::ZMAX);
 
@@ -646,7 +675,14 @@ BlockTexture get_block_texture(Block block, int face)
 	SC(stonebrick_mossy);
 	SC(stonebrick_cracked);
 	SC(stonebrick_carved);
-	SC(water_still2);
+	S1(water8, water_still2);
+	S1(water7, water_still2);
+	S1(water6, water_still2);
+	S1(water5, water_still2);
+	S1(water4, water_still2);
+	S1(water3, water_still2);
+	S1(water2, water_still2);
+	S1(water1, water_still2);
 	}
 	FAIL;
 }
@@ -1191,8 +1227,8 @@ struct CachedChunk
 	MapChunk mc;
 };
 
-bool can_move_through(Block block) { return block == Block::none || block == Block::water_still2; }
-bool can_see_through(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white || block == Block::water_still2; }
+bool can_move_through(Block block) { return block == Block::none || is_water(block); }
+bool can_see_through(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white || is_water(block); }
 
 typedef uint64_t CompressedIVec3;
 
