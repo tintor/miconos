@@ -8,10 +8,7 @@
 // TODO:
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
-// # Raytracing:
-// - Revert back to simpler model with flood fill of all can-see-through blocks
-// - Fix annoying missing far chunks until raytracer completes the scan.
-// - MAYBE generate ray in screen space (avoids testing all directions against frustum + adapts to different resolutions)
+// - Revert back to simpler raytracing model with flood fill of all can-see-through blocks
 
 // # more proceduraly generated stuff!
 // - nicer generated trees! palms!
@@ -29,12 +26,10 @@
 //		- should help with ray-tracing as well, as ray will hit (and make visible) 2x2x2 chunk as single unit
 
 // Textures:
-// - TODO: re-sort triangles inside chunk buffer (for axis chunks only) as player moves
-// - TODO: nicer transparency for blocks with holes like leaves (render all backfaces)
-// - TODO: nicer transpaarency for translucent blocks without holes (only render backfaces at the end of group of same translucent blocks)
+// - re-sort triangles inside chunk buffer (for axis chunks only) as player moves
+// - nicer transparency for blocks with holes like leaves (render all backfaces)
+// - nicer transpaarency for translucent blocks without holes (only render backfaces at the end of group of same translucent blocks)
 // - BUGS: render inside faces for leaves (use interior opaque leaf textures to optimize rendering of dense trees?)
-// - TODO: async texture loading on startup
-// - TODO: downsampling or use lower-res textures
 
 // # client / server:
 // - terrain generation on server
@@ -1639,6 +1634,10 @@ void edit_block(glm::ivec3 pos, Block block)
 	if (p.z == ChunkSizeMask) g_chunks.reset(cpos + iz, renderer);
 }
 
+bool digging_on = false;
+Timestamp digging_start;
+glm::ivec3 digging_block;
+
 void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	show_carousel = false;
@@ -1680,6 +1679,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 		{
 			player::flying = !player::flying;
 			player::velocity = glm::vec3(0, 0, 0);
+			digging_on = false;
 		}
 	}
 }
@@ -1690,7 +1690,21 @@ void on_mouse_button(GLFWwindow* window, int button, int action, int mods)
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection)
 	{
-		edit_block(sel_cube, Block::none);
+		if (player::flying)
+		{
+			edit_block(sel_cube, Block::none);
+		}
+		else
+		{
+			digging_on = true;
+			digging_start = Timestamp();
+			digging_block = sel_cube;
+		}
+	}
+
+	if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_LEFT)
+	{
+		digging_on = false;
 	}
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
@@ -2072,6 +2086,43 @@ void model_frame(GLFWwindow* window, double delta_ms)
 	}
 
 	selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
+	if (digging_on)
+	{
+		if (selection)
+		{
+			if (sel_cube != digging_block)
+			{
+				digging_on = false;
+				digging_block = sel_cube;
+				digging_start = Timestamp();
+			}
+			else
+			{
+				if (digging_start.elapsed_ms() > 3500)
+				{
+					edit_block(sel_cube, Block::none);
+					digging_on = false;
+					selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
+					if (selection)
+					{
+						digging_on = true;
+						digging_block = sel_cube;
+						digging_start = Timestamp();
+					}
+				}
+			}
+		}
+		else
+		{
+			digging_on = false;
+		}
+	}
+	else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS && selection)
+	{
+		digging_on = true;
+		digging_block = sel_cube;
+		digging_start = Timestamp();
+	}
 }
 
 // Render
@@ -2343,6 +2394,11 @@ void render_gui()
 		else
 		{
 			text->Print("", 0);
+		}
+
+		if (digging_on)
+		{
+			text->Printf("digging for %.1f seconds", digging_start.elapsed_ms() / 1000);
 		}
 	}
 
