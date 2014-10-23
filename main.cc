@@ -2058,7 +2058,7 @@ bool select_cube(glm::ivec3& sel_cube, int& sel_face)
 	return false;
 }
 
-void model_frame(GLFWwindow* window, double delta_ms)
+void model_orientation(GLFWwindow* window)
 {
 	double cursor_x, cursor_y;
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
@@ -2079,42 +2079,35 @@ void model_frame(GLFWwindow* window, double delta_ms)
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
 		rays_remaining = directions.size();
 	}
+}
 
-	if (!console.IsVisible())
-	{
-		model_move_player(window, delta_ms * 1e-3);
-	}
-
-	selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
+void model_digging(GLFWwindow* window)
+{
 	if (digging_on)
 	{
-		if (selection)
+		if (!selection)
 		{
-			if (sel_cube != digging_block)
+			digging_on = false;
+			return;
+		}
+
+		if (sel_cube != digging_block)
+		{
+			digging_on = false;
+			digging_block = sel_cube;
+			digging_start = Timestamp();
+		}
+		else if (digging_start.elapsed_ms() > 3500)
+		{
+			edit_block(sel_cube, Block::none);
+			digging_on = false;
+			selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
+			if (selection)
 			{
-				digging_on = false;
+				digging_on = true;
 				digging_block = sel_cube;
 				digging_start = Timestamp();
 			}
-			else
-			{
-				if (digging_start.elapsed_ms() > 3500)
-				{
-					edit_block(sel_cube, Block::none);
-					digging_on = false;
-					selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
-					if (selection)
-					{
-						digging_on = true;
-						digging_block = sel_cube;
-						digging_start = Timestamp();
-					}
-				}
-			}
-		}
-		else
-		{
-			digging_on = false;
 		}
 	}
 	else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS && selection)
@@ -2123,6 +2116,14 @@ void model_frame(GLFWwindow* window, double delta_ms)
 		digging_block = sel_cube;
 		digging_start = Timestamp();
 	}
+}
+
+void model_frame(GLFWwindow* window, double delta_ms)
+{
+	model_orientation(window);
+	if (!console.IsVisible()) model_move_player(window, delta_ms * 1e-3);
+	selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
+	model_digging(window);
 }
 
 // Render
