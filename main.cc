@@ -1252,16 +1252,13 @@ struct BlockRenderer
 	MapChunk* mc;
 	CachedChunk* cc;
 
-	void draw_quad(int face);
-	void draw_quad(int face, int zmin, int zmax);
+	void draw_quad(int face, bool reverse = false);
+	void draw_quad(int face, int zmin, int zmax, bool reverse = false);
 
 	void draw_face(bool cond, int face)
 	{
 		Block q = cond ? (*mc)[m_pos + face_dir[face]] : cc[face][m_fpos + face_dir[face]];
-		if ((can_see_through(q) && q != m_block) || (face == 4 && is_water_partial(q)))
-		{
-			draw_quad(face);
-		}
+		if (can_see_through(q) && q != m_block) draw_quad(face);
 	}
 
 	void draw_water_side(bool cond, int face, int w)
@@ -1270,7 +1267,11 @@ struct BlockRenderer
 		if (is_water_partial(q))
 		{
 			int w2 = water_level_strict(q);
-			if (w > w2) draw_quad(face, w2, w);
+			if (w > w2)
+			{
+				draw_quad(face, w2, w);
+				draw_quad(face, w2, w, true);
+			}
 		}
 		else if (can_see_through_non_water(q)) { draw_quad(face, 0, w); return; }
 	}
@@ -1279,11 +1280,22 @@ struct BlockRenderer
 	{
 		Block q = (m_pos.z != CMin) ? (*mc)[m_pos - iz] : cc[4][m_fpos - iz];
 		if (q != Block::water15 && can_see_through(q)) draw_quad(4);
+		if (q == Block::none) draw_quad(4, true);
 	}
 
 	void draw_water_top(int w)
 	{
-		if (m_block == Block::water15) draw_face(m_pos.z != CMax, 5); else draw_quad(5, w, w);
+		if (m_block == Block::water15)
+		{
+			Block q = (m_pos.z != CMax) ? (*mc)[m_pos + iz] : cc[5][m_fpos + iz];
+			if (can_see_through_non_water(q)) draw_quad(5);
+			if (q == Block::none) draw_quad(5, true);
+		}
+		else
+		{
+			draw_quad(5, w, w);
+			draw_quad(5, w, w, true);
+		}
 	}
 
 	static bool combine(Quad& a, Quad b, int X, int Y)
@@ -2758,18 +2770,29 @@ void render_init()
 	g_chunks.start_threads();
 }
 
-void BlockRenderer::draw_quad(int face)
+void BlockRenderer::draw_quad(int face, bool reverse)
 {
 	Quad q;
 	q.texture = get_block_texture(m_block, face);
 	const int* f = Cube::faces[face];
 	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;
-	q.pos[0] = glm::u8vec3((w + Cube::corner[f[0]]) * 15);
-	q.pos[1] = glm::u8vec3((w + Cube::corner[f[1]]) * 15);
-	q.pos[2] = glm::u8vec3((w + Cube::corner[f[2]]) * 15);
-	q.pos[3] = glm::u8vec3((w + Cube::corner[f[3]]) * 15);
-	q.plane = (face << 8) | q.pos[0][face / 2];
+	if (reverse)
+	{
+		q.pos[0] = glm::u8vec3((w + Cube::corner[f[0]]) * 15);
+		q.pos[1] = glm::u8vec3((w + Cube::corner[f[3]]) * 15);
+		q.pos[2] = glm::u8vec3((w + Cube::corner[f[2]]) * 15);
+		q.pos[3] = glm::u8vec3((w + Cube::corner[f[1]]) * 15);
+		q.plane = ((face ^ 1) << 8) | q.pos[0][face / 2];
+	}
+	else
+	{
+		q.pos[0] = glm::u8vec3((w + Cube::corner[f[0]]) * 15);
+		q.pos[1] = glm::u8vec3((w + Cube::corner[f[1]]) * 15);
+		q.pos[2] = glm::u8vec3((w + Cube::corner[f[2]]) * 15);
+		q.pos[3] = glm::u8vec3((w + Cube::corner[f[3]]) * 15);
+		q.plane = (face << 8) | q.pos[0][face / 2];
+	}
 	m_quads.push_back(q);
 }
 
@@ -2778,18 +2801,29 @@ static glm::ivec3 adjust(glm::ivec3 v, int zmin, int zmax)
 	return glm::ivec3(v.x * 15, v.y * 15, (v.z == 0) ? zmin : zmax);
 }
 
-void BlockRenderer::draw_quad(int face, int zmin, int zmax)
+void BlockRenderer::draw_quad(int face, int zmin, int zmax, bool reverse)
 {
 	Quad q;
 	q.texture = get_block_texture(m_block, face);
 	const int* f = Cube::faces[face];
 	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;
-	q.pos[0] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[0]], zmin, zmax));
-	q.pos[1] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[1]], zmin, zmax));
-	q.pos[2] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[2]], zmin, zmax));
-	q.pos[3] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[3]], zmin, zmax));
-	q.plane = (face << 8) | q.pos[0][face / 2];
+	if (reverse)
+	{
+		q.pos[0] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[0]], zmin, zmax));
+		q.pos[1] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[3]], zmin, zmax));
+		q.pos[2] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[2]], zmin, zmax));
+		q.pos[3] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[1]], zmin, zmax));
+		q.plane = ((face ^ 1) << 8) | q.pos[0][face / 2];
+	}
+	else
+	{
+		q.pos[0] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[0]], zmin, zmax));
+		q.pos[1] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[1]], zmin, zmax));
+		q.pos[2] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[2]], zmin, zmax));
+		q.pos[3] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[3]], zmin, zmax));
+		q.plane = (face << 8) | q.pos[0][face / 2];
+	}
 	m_quads.push_back(q);
 }
 
