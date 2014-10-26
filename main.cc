@@ -1769,6 +1769,11 @@ namespace stats
 	float render_time_ms = 0;
 	float model_time_ms = 0;
 	float raytrace_time_ms = 0;
+
+	float collide_time_ms = 0;
+	float select_time_ms = 0;
+	float simulate_time_ms = 0;
+	float rebuild_time_ms = 0;
 }
 
 // Model
@@ -2531,15 +2536,13 @@ void model_simulate_blocks()
 		}
 	}
 
-	if (sim_active_chunks.size() > 0)
+	// shuffle sim_order
+	if (sim_active_chunks.size() > 0) FOR(i, ChunkSize2 / 4)
 	{
-		// shuffle sim_order
-		FOR(i, ChunkSize2 / 4)
-		{
-			std::swap(sim_order[rand() % ChunkSize2], sim_order[rand() % ChunkSize2]);
-		}
+		std::swap(sim_order[rand() % ChunkSize2], sim_order[rand() % ChunkSize2]);
 	}
 
+	Timestamp tb;
 	for (glm::ivec3 cpos : sim_active_chunks)
 	{
 		FOR(z, ChunkSize) for (glm::i8vec2 xy : sim_order)
@@ -2598,17 +2601,28 @@ void model_simulate_blocks()
 		}
 	}
 
+	Timestamp tc;
 	static BlockRenderer renderer;
 	for (Chunk* chunk : sim_dirty_chunks.array) chunk->buffer(renderer);
+	Timestamp td;
+
+	stats::simulate_time_ms = glm::mix<float>(stats::simulate_time_ms, tb.elapsed_ms(tc), 0.15f);
+	stats::rebuild_time_ms = glm::mix<float>(stats::rebuild_time_ms, tc.elapsed_ms(td), 0.15f);
 }
 
 void model_frame(GLFWwindow* window, double delta_ms)
 {
 	model_orientation(window);
+	Timestamp ta;
 	if (!console.IsVisible()) model_move_player(window, delta_ms * 1e-3);
+	Timestamp tb;
 	selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
+	Timestamp tc;
 	model_digging(window);
 	model_simulate_blocks();
+
+	stats::collide_time_ms = glm::mix<float>(stats::collide_time_ms, ta.elapsed_ms(tb), 0.15f);
+	stats::select_time_ms = glm::mix<float>(stats::select_time_ms, tb.elapsed_ms(tc), 0.15f);
 }
 
 // Render
@@ -2903,9 +2917,10 @@ void render_gui()
 	if (show_counters)
 	{
 		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
-		text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f",
+		text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.0f model:%1.0f [collide:%1.0f select:%1.0f simulate:%1.0f rebuild:%1.0f] raytrace:%2.0f %d%% render %2.0f",
 			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::vertex_count / 3000,
-			 stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms);
+			 stats::frame_time_ms, stats::model_time_ms, stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms, stats::rebuild_time_ms,
+			 stats::raytrace_time_ms, raytrace, stats::render_time_ms);
 
 		if (selection)
 		{
