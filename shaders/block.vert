@@ -61,6 +61,10 @@ void main()
     {
         fragment_texture = block_texture + ((tick / 40) % 2);
     }
+    if (block_texture == 161) // water_flow
+    {
+        fragment_texture = block_texture + ((tick / 8) % 32);
+    }
     fragment_light = light / 255.0f;
 
     gl_Position = matrix * vec4(p, 1);

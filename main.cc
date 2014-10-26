@@ -246,6 +246,8 @@ Sphere render_sphere(RenderDistance);
 	F(stonebrick_mossy) \
 	F(stonebrick_cracked) \
 	F(stonebrick_carved) \
+	F(water_source) \
+	F(water_drain) \
 	F(water1) \
 	F(water2) \
 	F(water3) \
@@ -432,6 +434,38 @@ static_assert((uint)Block::none == 0, "common in conditions");
 	F(redstone_lamp_on) \
 	F(redstone_lamp_top_off) \
 	F(redstone_lamp_top_on) \
+	F(water_flow) \
+	F(water_flow_1) \
+	F(water_flow_2) \
+	F(water_flow_3) \
+	F(water_flow_4) \
+	F(water_flow_5) \
+	F(water_flow_6) \
+	F(water_flow_7) \
+	F(water_flow_8) \
+	F(water_flow_9) \
+	F(water_flow_10) \
+	F(water_flow_11) \
+	F(water_flow_12) \
+	F(water_flow_13) \
+	F(water_flow_14) \
+	F(water_flow_15) \
+	F(water_flow_16) \
+	F(water_flow_17) \
+	F(water_flow_18) \
+	F(water_flow_19) \
+	F(water_flow_20) \
+	F(water_flow_21) \
+	F(water_flow_22) \
+	F(water_flow_23) \
+	F(water_flow_24) \
+	F(water_flow_25) \
+	F(water_flow_26) \
+	F(water_flow_27) \
+	F(water_flow_28) \
+	F(water_flow_29) \
+	F(water_flow_30) \
+	F(water_flow_31) \
 	F(pumpkin_side) \
 	F(pumpkin_top) \
 	F(log_acacia) \
@@ -560,6 +594,7 @@ static_assert((uint)Block::none == 0, "common in conditions");
 	F(stonebrick_mossy) \
 	F(stonebrick_cracked) \
 	F(stonebrick_carved) \
+	F(dispenser_front_vertical) \
 	B
 
 const char* block_texture_name[] = BlockTextures({, FuncStr, });
@@ -584,6 +619,7 @@ static_assert((uint)BlockTexture::furnace_front_on == 136, "used in shader");
 static_assert((uint)BlockTexture::sea_lantern == 152, "used in shader");
 static_assert((uint)BlockTexture::redstone_lamp_off == 157, "used in shader");
 static_assert((uint)BlockTexture::redstone_lamp_top_off == 159, "used in shader");
+static_assert((uint)BlockTexture::water_flow == 161, "used in shader");
 
 #define FAIL { fprintf(stderr, "Failed at line %d\n", __LINE__); assert(false); exit(1); }
 
@@ -725,6 +761,8 @@ BlockTexture get_block_texture(Block block, int face)
 	S1(water3, water_still);
 	S1(water2, water_still);
 	S1(water1, water_still);
+	S3(water_source, furnace_side, dispenser_front_vertical, furnace_top);
+	S3(water_drain,  furnace_side, furnace_top, dispenser_front_vertical);
 	}
 	FAIL;
 }
@@ -869,7 +907,7 @@ Block generate_block(glm::ivec3 pos)
 	if (pos.x >= 0 && pos.x < 64 && pos.z == 3 && pos.y >= 0 && pos.y < 16 && (pos.x % 3) == 0 && (pos.y % 3) == 0)
 	{
 		int i = (pos.x / 3) * 6 + pos.y / 3 + 1;
-		if (i < block_count) return (Block)i;
+		if (i < block_count && Block(i) != Block::water_source) return (Block)i;
 	}
 
 	// Tree
@@ -932,10 +970,7 @@ struct MapChunk
 	{
 		m_block = block;
 		m_count = 0;
-		FOR(i, ChunkSize3) if (m_block[i] != Block::none)
-		{
-			m_count += 1;
-		}
+		FOR(i, ChunkSize3) if (m_block[i] != Block::none) m_count += 1;
 	}
 
 	Block operator[](glm::ivec3 a) { return m_block[index(a)]; }
@@ -1375,17 +1410,17 @@ struct Chunk : public MapChunk
 					renderer.draw_quad(1, w);
 					renderer.draw_quad(2, w);
 					renderer.draw_quad(3, w);
-					draw_face(z != 0, -iz, 4);
+					draw_face(z != CMin, -iz, 4);
 					renderer.draw_quad(5, w);
 				}
 				else if (block != Block::none)
 				{
-					draw_face(x != 0,           -ix, 0);
-					draw_face(x != ChunkSize-1, +ix, 1);
-					draw_face(y != 0,           -iy, 2);
-					draw_face(y != ChunkSize-1, +iy, 3);
-					draw_face(z != 0,           -iz, 4);
-					draw_face(z != ChunkSize-1, +iz, 5);
+					draw_face(x != CMin, -ix, 0);
+					draw_face(x != CMax, +ix, 1);
+					draw_face(y != CMin, -iy, 2);
+					draw_face(y != CMax, +iy, 3);
+					draw_face(z != CMin, -iz, 4);
+					draw_face(z != CMax, +iz, 5);
 				}
 			}
 		}
@@ -2207,7 +2242,12 @@ void model_digging(GLFWwindow* window)
 }
 
 bool accepts_water(Block b) { return is_water_partial(b) || b == Block::none; }
-int water_level(Block b) { assert(b == Block::none || is_water(b)); return (b == Block::none) ? 0 : (int(b) - int(Block::water1) + 1); }
+int water_level(Block b)
+{
+	if (b == Block::none) return 0;
+	assert(b >= Block::water1 && b <= Block::water15);
+	return int(b) - int(Block::water1) + 1;
+}
 
 struct BlockRef
 {
@@ -2235,7 +2275,7 @@ struct DirtyChunks
 	}
 };
 
-static const int MaxActiveChunks = 20;
+static const int MaxActiveChunks = 10;
 std::vector<glm::ivec3> sim_active_chunks;
 DirtyChunks sim_dirty_chunks;
 
@@ -2264,15 +2304,13 @@ const char* block_name_safe(Block block)
 // returns true when src becomes empty
 bool water_flow(BlockRef& src, BlockRef& dest, int w)
 {
-	assert(is_water(dest) || dest == Block::none);
+	assert(water_level(dest) + w <= 15);
 	int base = (dest == Block::none) ? int(Block::water1) - 1 : int(dest.block);
 	update_block(dest, Block(base + w));
-	assert(is_water(dest));
 
 	int level = water_level(src);
-	assert(w > 0 && w <= level);
-	update_block(src, (w == level) ? Block::none : Block(int(src.block) - w));
-	assert(is_water(src) || src == Block::none);
+	assertf(w > 0 && w <= level, "w=%d level=%d", w, level);
+	update_block(src, (w == level) ? Block::none : Block(int(Block::water1) - 1 + level - w));
 	return w == level;
 }
 
@@ -2282,6 +2320,12 @@ Initialize
 {
 	sim_order.reserve(ChunkSize2);
 	FOR(x, ChunkSize) FOR(y, ChunkSize) sim_order.push_back(glm::i8vec2(x, y));
+}
+
+bool water_under(BlockRef b)
+{
+	BlockRef m((b.chunk->get_cpos() << ChunkSizeBits) + glm::ivec3(b.ipos) - iz);
+	return m.chunk && m.block == Block::water15;
 }
 
 void model_simulate_water(BlockRef b, glm::ivec3 bpos)
@@ -2297,23 +2341,23 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 		w -= flow;
 	}
 
-	// Flow to the side
-	if (w > 1)
+	// Flow sideways
+	if (w > 0)
 	{
 		ivector<BlockRef, 4> side;
 		for (auto v : { -ix, ix, -iy, iy })
 		{
 			BlockRef q(bpos + v);
-			if (q.chunk && accepts_water(q) && water_level(q) + 1 < w) side.push_back(q);
+			if (q.chunk && (q == Block::none || (q >= Block::water1 && q < b))) side.push_back(q);
 		}
 		while (side.size() > 0)
 		{
 			int e = rand() % side.size();
 			BlockRef m = side[e];
 			int wb = water_level(m);
-			if (wb + 1 < w)
+			if ((wb < w) && (w > 1 || water_under(m)))
 			{
-				int flow = (w - wb) / 2;
+				int flow = (w - wb + 1) / 2;
 				water_flow(b, m, flow);
 				w -= flow;
 			}
@@ -2322,72 +2366,87 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 		}
 	}
 
-	// Flow to the diagonal
-	if (w > 1)
+	// Flow diagonaly
+	if (w > 0)
 	{
 		ivector<BlockRef, 4> side;
 		FOR(j, 4)
 		{
 			glm::ivec3 xx((j%2)*2-1, 0, 0), yy(0, (j/2)*2-1, 0);
 			BlockRef px(bpos + xx), py(bpos + yy), q(bpos + xx + yy);
-			if (px.chunk && accepts_water(px) && py.chunk && accepts_water(py) && q.chunk && accepts_water(q) && water_level(q) + 1 < w) side.push_back(q);
+			if (px.chunk && accepts_water(px) && py.chunk && accepts_water(py) && q.chunk && (q == Block::none || (q >= Block::water1 && q < b))) side.push_back(q);
 		}
 		while (side.size() > 0)
 		{
 			int e = rand() % side.size();
 			BlockRef m = side[e];
 			int wb = water_level(m);
-			if (wb + 1 >= w)
+			if ((wb < w) && (w > 1 || water_under(m)))
 			{
-				side[e] = side[side.size() - 1];
-				side.pop_back();
-				continue;
+				int flow = (w - wb + 1) / 2;
+				water_flow(b, m, flow);
+				w -= flow;
 			}
-			int flow = (w - wb) / 2;
-			water_flow(b, m, flow);
-			w -= flow;
+			side[e] = side[side.size() - 1];
+			side.pop_back();
 		}
 	}
 
-	// Flow to the side down
-	if (w != 1) return;
-	ivector<BlockRef, 4> side;
-	for (auto v : { -ix, ix, -iy, iy })
+	// Flow down sideways
+	if (w == 1)
 	{
-		BlockRef p(bpos + v), q(bpos + v - iz);
-		if (p.chunk && p == Block::none && q.chunk && accepts_water(q)) side.push_back(q);
-	}
-	if (side.size() > 0)
-	{
-		BlockRef m = side[rand() % side.size()];
-		if (water_flow(b, m, 1)) return;
+		ivector<BlockRef, 4> side;
+		for (auto v : { -ix, ix, -iy, iy })
+		{
+			BlockRef p(bpos + v), q(bpos + v - iz);
+			if (p.chunk && p == Block::none && q.chunk && accepts_water(q)) side.push_back(q);
+		}
+		if (side.size() > 0)
+		{
+			BlockRef m = side[rand() % side.size()];
+			if (water_flow(b, m, 1)) return;
+		}
 	}
 
-	// Flow to diag down
-	assert(w == 1);
-	side.clear();
-	FOR(j, 4)
+	// Flow down diagonaly
+	if (w == 1)
 	{
-		glm::ivec3 xx((j%2)*2-1, 0, 0), yy(0, (j/2)*2-1, 0);
-		BlockRef p(bpos + xx + yy), px(bpos + xx), py(bpos + yy), q(bpos + xx + yy - iz);
-		if (p.chunk && p == Block::none && px.chunk && px == Block::none && py.chunk && py == Block::none && q.chunk && accepts_water(q)) side.push_back(q);
+		ivector<BlockRef, 4> side;
+		FOR(j, 4)
+		{
+			glm::ivec3 xx((j%2)*2-1, 0, 0), yy(0, (j/2)*2-1, 0);
+			BlockRef p(bpos + xx + yy), px(bpos + xx), py(bpos + yy), q(bpos + xx + yy - iz);
+			if (p.chunk && p == Block::none && px.chunk && px == Block::none && py.chunk && py == Block::none && q.chunk && accepts_water(q)) side.push_back(q);
+		}
+		if (side.size() > 0)
+		{
+			BlockRef m = side[rand() % side.size()];
+			if (water_flow(b, m, 1)) return;
+		}
 	}
-	if (side.size() > 0)
-	{
-		BlockRef m = side[rand() % side.size()];
-		if (water_flow(b, m, 1)) return;
-	}
-}
 
-void model_simulate_sand(BlockRef b, glm::ivec3 bpos)
-{
-	// Flow down
-	BlockRef m(bpos - iz);
-	if (m.chunk && (m == Block::none || is_water(m)))
+	// Evaporate
+	if (w == 1)
 	{
-		Block e = m.block;
-		update_block(m, b.block);
-		update_block(b, e);
+		if (rand() % 100 == 0)
+		{
+			update_block(b, Block::none);
+		}
+		else
+		{
+			g_chunks.get(bpos >> ChunkSizeBits).m_active = true;
+		}
+	}
+	if (w == 14)
+	{
+		if (rand() % 100 == 0)
+		{
+			update_block(b, Block::water15);
+		}
+		else
+		{
+			g_chunks.get(bpos >> ChunkSizeBits).m_active = true;
+		}
 	}
 }
 
@@ -2432,7 +2491,54 @@ void model_simulate_blocks()
 			glm::ivec3 bpos = glm::ivec3(xy.x, xy.y, z) + (cpos << ChunkSizeBits);
 			BlockRef b(bpos);
 			if (is_water(b)) model_simulate_water(b, bpos);
-			else if (is_sand(b)) model_simulate_sand(b, bpos);
+			else if (is_sand(b))
+			{
+				// Flow down swapping with water
+				BlockRef m(bpos - iz);
+				if (m.chunk && (m == Block::none || is_water(m)))
+				{
+					Block e = m.block;
+					update_block(m, b.block);
+					update_block(b, e);
+				}
+			}
+			else if (b == Block::water_source)
+			{
+				BlockRef m(bpos - iz);
+				if (!m.chunk) continue;
+				if (m == Block::none || is_water_partial(m))
+				{
+					int w = water_level(m);
+					update_block(m, Block(int(Block::water1) + w));
+				}
+			}
+			else if (b == Block::water_drain)
+			{
+				BlockRef m(bpos + iz);
+				if (m.chunk && is_water(m))
+				{
+					int w = water_level(m);
+					update_block(m, (w == 1) ? Block::none : Block(int(Block::water1) + w - 2));
+				}
+			}
+			else if (b == Block::soul_sand)
+			{
+				// Morth water around it
+				bool active = false;
+				for (auto v : { -ix, ix, -iy, iy, -iz, iz })
+				{
+					BlockRef q(bpos + v);
+					if (q.chunk && is_water(q)) { update_block(q, Block::soul_sand); active = true; }
+				}
+				if (!active && rand() % 10 == 0)
+				{
+					update_block(b, Block::none);
+				}
+				else
+				{
+					g_chunks.get(bpos >> ChunkSizeBits).m_active = true;
+				}
+			}
 		}
 	}
 
@@ -2524,6 +2630,7 @@ void BlockTextureLoader::load(BlockTexture tex)
 	if (tex > BlockTexture::lava_still && tex <= BlockTexture::lava_still_31) return;
 	if (tex > BlockTexture::lava_flow && tex <= BlockTexture::lava_flow_31) return;
 	if (tex > BlockTexture::water_still && tex <= BlockTexture::water_still_63) return;
+	if (tex > BlockTexture::water_flow && tex <= BlockTexture::water_flow_31) return;
 	if (tex > BlockTexture::furnace_front_on && tex <= BlockTexture::ff_15) return;
 	if (tex > BlockTexture::sea_lantern && tex <= BlockTexture::sl_4) return;
 	snprintf(filename, sizeof(filename), "bdc256/%s.png", block_texture_name[uint(tex)]);
@@ -2536,7 +2643,8 @@ void BlockTextureLoader::load(BlockTexture tex)
 	Auto(free(image));
 	fprintf(stderr, "Loaded %s, %u x %u\n", filename, iwidth, iheight);
 
-	assert(m_width == iwidth && (iheight % m_height) == 0);
+	assertf(m_width == iwidth, "m_wdith=%u iwidth=%u", m_width, iwidth);
+	assertf((iheight % m_height) == 0, "iheight=%u m_height=%u", iheight, m_height);
 
 	if (is_leaves(tex) || tex == BlockTexture::grass_top)
 	{
@@ -2550,6 +2658,7 @@ void BlockTextureLoader::load(BlockTexture tex)
 
 	uint frames = 1;
 	if (tex == BlockTexture::water_still) frames = 64;
+	if (tex == BlockTexture::water_flow) frames = 32;
 	if (tex == BlockTexture::lava_still || tex == BlockTexture::lava_flow) frames = 32;
 	if (tex == BlockTexture::furnace_front_on) frames = 16;
 	if (tex == BlockTexture::sea_lantern) frames = 5;
