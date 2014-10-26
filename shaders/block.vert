@@ -21,7 +21,7 @@ const float pi = 3.14159265f;
 
 void main()
 {
-    vec3 p = pos + position;
+    vec3 p = pos + position / 15.0f;
 
     fragment_texture = block_texture;
     if (block_texture <= 5) // leaves_***
@@ -69,5 +69,5 @@ void main()
     fog_factor = clamp(eye_dist_sqr / foglimit2, 0.0, 1.0);
     fog_factor *= fog_factor;
 
-    fragment_uv = uv;
+    fragment_uv = uv / 15.0f;
 }

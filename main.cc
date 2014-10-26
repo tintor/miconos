@@ -76,7 +76,6 @@
 
 // # water:
 // # - animated / reflective surface (shaders)
-// # - flowing water sim (with conservation of mass): have several water block types with 1/8, 2/8...8/8 of volume filled with water
 
 // # ambient lighting and shadows
 
@@ -94,25 +93,36 @@
 #define LODEPNG_COMPILE_CPP
 #include "lodepng/lodepng.h"
 
-std::mutex stderr_mutex;
-
 void sigsegv_handler(int sig)
 {
-	AutoLock(stderr_mutex);
 	fprintf(stderr, "Error: signal %d:\n", sig);
-	void* array[100];
-	backtrace_symbols_fd(array, backtrace(array, 100), STDERR_FILENO);
+	void* array[20];
+	backtrace_symbols_fd(array, backtrace(array, 20), STDERR_FILENO);
 	exit(1);
 }
 
 void __assert_rtn(const char* func, const char* file, int line, const char* cond)
 {
-	AutoLock(stderr_mutex);
-	fprintf(stderr, "Assertion failed: (%s), function %s, file %s, line %d.\n", cond, func, file, line);
-	void* array[100];
-	backtrace_symbols_fd(array, backtrace(array, 100), STDERR_FILENO);
+	fprintf(stderr, "Assertion: (%s), function %s, file %s, line %d.\n", cond, func, file, line);
+	void* array[20];
+	backtrace_symbols_fd(array, backtrace(array, 20), STDERR_FILENO);
 	exit(1);
 }
+
+void __assert_rtn_format(const char* func, const char* file, int line, const char* cond, const char* fmt, ...)
+{
+	va_list va;
+	va_start(va, fmt);
+	fprintf(stderr, "Assertion: (%s), ", cond);
+	vfprintf(stderr, fmt, va);
+	fprintf(stderr, ", function %s, file %s, line %d.\n", func, file, line);
+	va_end(va);
+	void* array[20];
+	backtrace_symbols_fd(array, backtrace(array, 20), STDERR_FILENO);
+	exit(1);
+}
+
+#define assertf(C, fmt, ...) do { if (!(C)) __assert_rtn_format(__func__, __FILE__, __LINE__, #C, fmt, __VA_ARGS__); } while(0)
 
 Initialize { signal(SIGSEGV, sigsegv_handler); }
 
@@ -125,7 +135,10 @@ int height;
 
 const int ChunkSizeBits = 4, SuperChunkSizeBits = 4, MapSizeBits = 7;
 const int ChunkSize = 1 << ChunkSizeBits, SuperChunkSize = 1 << SuperChunkSizeBits, MapSize = 1 << MapSizeBits;
+const int CMin = 0, CMax = ChunkSize - 1;
 const int ChunkSizeMask = ChunkSize - 1, SuperChunkSizeMask = SuperChunkSize - 1, MapSizeMask = MapSize - 1;
+
+const int ChunkSize2 = ChunkSize * ChunkSize;
 const int ChunkSize3 = ChunkSize * ChunkSize * ChunkSize;
 
 const int RenderDistance = 32;
@@ -241,6 +254,13 @@ Sphere render_sphere(RenderDistance);
 	F(water6) \
 	F(water7) \
 	F(water8) \
+	F(water9) \
+	F(water10) \
+	F(water11) \
+	F(water12) \
+	F(water13) \
+	F(water14) \
+	F(water15) \
 	B
 
 const char* block_name[] = Blocks({, FuncStr, });
@@ -549,7 +569,9 @@ enum class BlockTexture : uint16_t BlockTextures({, FuncList, });
 
 bool is_leaves(BlockTexture a) { return a >= BlockTexture::leaves_acacia && a <= BlockTexture::leaves_spruce; }
 bool is_leaves(Block a) { return a >= Block::leaves_acacia && a <= Block::leaves_spruce; }
-bool is_water(Block a) { return a >= Block::water1 && a <= Block::water8; }
+bool is_sand(Block a) { return a == Block::sand || a == Block::red_sand; }
+bool is_water(Block a) { return a >= Block::water1 && a <= Block::water15; }
+bool is_water_partial(Block a) { return a >= Block::water1 && a < Block::water15; }
 
 static_assert((uint)BlockTexture::leaves_acacia == 0, "used in shader");
 static_assert((uint)BlockTexture::leaves_spruce == 5, "used in shader");
@@ -688,6 +710,13 @@ BlockTexture get_block_texture(Block block, int face)
 	SC(stonebrick_mossy);
 	SC(stonebrick_cracked);
 	SC(stonebrick_carved);
+	S1(water15, water_still);
+	S1(water14, water_still);
+	S1(water13, water_still);
+	S1(water12, water_still);
+	S1(water11, water_still);
+	S1(water10, water_still);
+	S1(water9, water_still);
 	S1(water8, water_still);
 	S1(water7, water_still);
 	S1(water6, water_still);
@@ -871,22 +900,42 @@ Block generate_block(glm::ivec3 pos)
 		double q = noise(glm::vec3(pos) * 0.03f, 4, 0.5f, 0.5f, false);
 		static Block ores[6] = { Block::gold_ore, Block::coal_ore, Block::diamond_ore, Block::redstone_ore, Block::emerald_ore, Block::lapis_ore};
 		if (q >= 0.6) return ores[uint(pos.x ^ pos.y ^ pos.z) / 3 % 6];
-		if (q >= -0.25) return heightmap->Color(pos.x, pos.y);
+		if (q >= -0.25)
+		{
+			int d = heightmap->Height(pos.x, pos.y) - pos.z;
+			Block b = heightmap->Color(pos.x, pos.y);
+			if (d > 3 && is_sand(b)) b = Block::dirt;
+			return b;
+		}
 	}
 
 	return Block::none;
 }
 
+bool is_simulated(Block b) { return is_sand(b) || is_water(b); }
+
+static_assert(ChunkSize3 % 4096 == 0, "must be pagesize aligned");
+
+struct MapChunkLight
+{
+	MapChunkLight(Block* block) : m_block(block) { }
+	void set(glm::ivec3 a, Block b) { m_block[z_order<ChunkSizeBits>(a)] = b; }
+private:
+	Block* m_block;
+};
+
 struct MapChunk
 {
-	static_assert(ChunkSize3 % 4096 == 0, "must be pagesize aligned");
 	MapChunk() : m_block(nullptr), m_count(0) { }
 
 	void reset(Block* block)
 	{
 		m_block = block;
 		m_count = 0;
-		FOR(i, ChunkSize3) if (m_block[i] != Block::none) m_count += 1;
+		FOR(i, ChunkSize3) if (m_block[i] != Block::none)
+		{
+			m_count += 1;
+		}
 	}
 
 	Block operator[](glm::ivec3 a) { return m_block[index(a)]; }
@@ -896,21 +945,28 @@ struct MapChunk
 
 	void set(glm::ivec3 a, Block b)
 	{
-		Block& q = m_block[index(a)];
-		if (b != Block::none && q == Block::none) m_count += 1;
-		if (b == Block::none && q != Block::none) m_count -= 1;
-		q = b;
+		int i = index(a);
+		Block q = m_block[i];
+		if (b != Block::none)
+		{
+			if (q == Block::none) m_count += 1;
+		}
+		else
+		{
+			if (q != Block::none) m_count -= 1;
+		}
+		m_block[i] = b;
 	}
 
 private:
 	static int index(glm::ivec3 a) { return z_order<ChunkSizeBits>(a); }
 
 protected:
-	int m_count;
+	int m_count; // number of non-empty blocks
 	Block* m_block;
 };
 
-void generate_chunk(MapChunk& mc, glm::ivec3 cpos)
+void generate_chunk(MapChunkLight& mc, glm::ivec3 cpos)
 {
 	heightmap->Populate(cpos.x, cpos.y);
 	FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
@@ -1023,9 +1079,8 @@ struct SuperChunkManager
 		{
 			if (!generate) return nullptr;
 			m_lock.unlock();
-			MapChunk mc;
-			mc.reset(blocks);
-			generate_chunk(mc, cpos); // mc is useless here!
+			MapChunkLight mc(blocks);
+			generate_chunk(mc, cpos);
 			m_lock.lock();
 			sc->explored().set(cpos & SuperChunkSizeMask);
 		}
@@ -1090,6 +1145,14 @@ struct Vertex
 	glm::u8vec3 pos;
 };
 
+struct WVertex
+{
+	BlockTexture texture;
+	uint8_t light;
+	glm::u16vec2 uv;
+	glm::u16vec3 pos;
+};
+
 const float BlockRadius = sqrtf(3) / 2;
 
 struct VisibleChunks
@@ -1144,7 +1207,7 @@ struct BlockRenderer
 	std::vector<Quad> m_xy, m_yx;
 
 	void draw_quad(int face);
-	void render(Chunk& mc, glm::ivec3 pos, Block bs);
+	void draw_quad(int face, int height);
 
 	static bool combine(Quad& a, Quad b, int X, int Y)
 	{
@@ -1300,17 +1363,23 @@ struct Chunk : public MapChunk
 			{
 				glm::ivec3 p(x, y, z);
 				Block block = operator[](p);
-				if (block != Block::none)
+				glm::ivec3 pos = cpos * ChunkSize + p;
+				renderer.m_pos = p;
+				renderer.m_block = block;
+
+				#define draw_face(Cond, Axis, Face) { Block q = (Cond) ? operator[](p Axis) : cc[Face][pos Axis]; if (can_see_through(q) && q != block) renderer.draw_quad(Face); }
+				if (block >= Block::water1 && block < Block::water15)
 				{
-					glm::ivec3 pos = cpos * ChunkSize + p;
-					renderer.m_pos = p;
-					renderer.m_block = block;
-					Block q;
-
-					#define draw_face(Cond, Axis, Face) \
-						q = (Cond) ? operator[](p Axis) : cc[Face][pos Axis]; \
-						if (can_see_through(q) && q != block) renderer.draw_quad(Face)
-
+					int w = uint(block) - uint(Block::water1) + 1;
+					renderer.draw_quad(0, w);
+					renderer.draw_quad(1, w);
+					renderer.draw_quad(2, w);
+					renderer.draw_quad(3, w);
+					draw_face(z != 0, -iz, 4);
+					renderer.draw_quad(5, w);
+				}
+				else if (block != Block::none)
+				{
 					draw_face(x != 0,           -ix, 0);
 					draw_face(x != ChunkSize-1, +ix, 1);
 					draw_face(y != 0,           -iy, 2);
@@ -1341,6 +1410,7 @@ struct Chunk : public MapChunk
 		m_cpos = compress_ivec3(cpos);
 		buffer(renderer);
 		m_renderable = true;
+		m_active = true;
 	}
 
 	void unload() { m_cpos = NullChunk; m_renderable = false; }
@@ -1349,6 +1419,7 @@ struct Chunk : public MapChunk
 
 	glm::ivec3 get_cpos() { return decompress_ivec3(m_cpos); }
 
+	bool m_active;
 	friend class Chunks;
 private:
 	std::atomic<CompressedIVec3> m_cpos;
@@ -1420,13 +1491,16 @@ public:
 		c.m_renderable = true;
 	}
 
-	Chunk& get(glm::ivec3 a)
+	Chunk& get(glm::ivec3 cpos)
 	{
-		a &= MapSizeMask;
-		assert(0 <= a.x && a.x < MapSize);
-		assert(0 <= a.y && a.y < MapSize);
-		assert(0 <= a.z && a.z < MapSize);
-		return m_map[((a.x * MapSize) + a.y) * MapSize + a.z];
+		cpos &= MapSizeMask;
+		return m_map[((cpos.x * MapSize) + cpos.y) * MapSize + cpos.z];
+	}
+
+	Chunk* get_opt(glm::ivec3 cpos)
+	{
+		Chunk& chunk = get(cpos);
+		return (chunk.get_cpos() == cpos) ? &chunk : nullptr;
 	}
 
 private:
@@ -1614,6 +1688,18 @@ double scroll_y = 0, scroll_dy = 0;
 Timestamp ts_carousel;
 bool show_carousel = false;
 
+void activate_block(glm::ivec3 pos)
+{
+	glm::ivec3 a = (pos - ii) >> ChunkSizeBits;
+	glm::ivec3 b = (pos + ii) >> ChunkSizeBits;
+	FOR2(x, a.x, b.x) FOR2(y, a.y, b.y) FOR2(z, a.z, b.z)
+	{
+		glm::ivec3 cpos(x, y, z);
+		Chunk& chunk = g_chunks.get(cpos);
+		if (chunk.get_cpos() == cpos) chunk.m_active = true;
+	}
+}
+
 void edit_block(glm::ivec3 pos, Block block)
 {
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
@@ -1625,6 +1711,7 @@ void edit_block(glm::ivec3 pos, Block block)
 
 	c.set(p, block);
 	c.buffer(renderer);
+	activate_block(pos);
 
 	if (p.x == 0) g_chunks.reset(cpos - ix, renderer);
 	if (p.y == 0) g_chunks.reset(cpos - iy, renderer);
@@ -1645,6 +1732,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		g_scm.save();
 		glfwSetWindowShouldClose(window, GL_TRUE);
+		return;
 	}
 
 	if (console.IsVisible())
@@ -2118,12 +2206,247 @@ void model_digging(GLFWwindow* window)
 	}
 }
 
+bool accepts_water(Block b) { return is_water_partial(b) || b == Block::none; }
+int water_level(Block b) { assert(b == Block::none || is_water(b)); return (b == Block::none) ? 0 : (int(b) - int(Block::water1) + 1); }
+
+struct BlockRef
+{
+	Chunk* chunk;
+	glm::i8vec3 ipos;
+	Block block;
+
+	operator Block() { return block; }
+	BlockRef() { }
+	explicit BlockRef(glm::ivec3 p) : chunk(g_chunks.get_opt(p >> ChunkSizeBits)), ipos(p & ChunkSizeMask), block(chunk ? (*chunk)[glm::ivec3(ipos)] : Block::none) { }
+};
+
+static const int SimulationDistance = 6; // in chunks
+
+struct DirtyChunks
+{
+	enum { N = (SimulationDistance + 1/*neighbours*/) * 2 + 1 };
+	glm::ivec3 origin;
+	BitCube<N> set;
+	std::vector<Chunk*> array;
+
+	void add(glm::ivec3 a)
+	{
+		if (set.xset(a - origin)) array.push_back(&g_chunks.get(a));
+	}
+};
+
+static const int MaxActiveChunks = 20;
+std::vector<glm::ivec3> sim_active_chunks;
+DirtyChunks sim_dirty_chunks;
+
+void update_block(BlockRef& ref, Block b)
+{
+	ref.chunk->set(glm::ivec3(ref.ipos), b);
+	ref.block = b;
+	glm::ivec3 q(ref.ipos);
+	glm::ivec3 p = ref.chunk->get_cpos();
+	sim_dirty_chunks.add(p);
+	// TODO: only if there is a block in neighbor chunk => mark neighbor as dirty
+	if (q.x == CMin) sim_dirty_chunks.add(p - ix);
+	if (q.x == CMax) sim_dirty_chunks.add(p + ix);
+	if (q.y == CMin) sim_dirty_chunks.add(p - iy);
+	if (q.y == CMax) sim_dirty_chunks.add(p + iy);
+	if (q.z == CMin) sim_dirty_chunks.add(p - iz);
+	if (q.z == CMax) sim_dirty_chunks.add(p + iz);
+	activate_block(q + (p << ChunkSizeBits));
+}
+
+const char* block_name_safe(Block block)
+{
+	return ((int)block < block_count) ? block_name[(int)block] : "";
+}
+
+// returns true when src becomes empty
+bool water_flow(BlockRef& src, BlockRef& dest, int w)
+{
+	assert(is_water(dest) || dest == Block::none);
+	int base = (dest == Block::none) ? int(Block::water1) - 1 : int(dest.block);
+	update_block(dest, Block(base + w));
+	assert(is_water(dest));
+
+	int level = water_level(src);
+	assert(w > 0 && w <= level);
+	update_block(src, (w == level) ? Block::none : Block(int(src.block) - w));
+	assert(is_water(src) || src == Block::none);
+	return w == level;
+}
+
+Sphere simulation_sphere(SimulationDistance);
+std::vector<glm::i8vec2> sim_order;
+Initialize
+{
+	sim_order.reserve(ChunkSize2);
+	FOR(x, ChunkSize) FOR(y, ChunkSize) sim_order.push_back(glm::i8vec2(x, y));
+}
+
+void model_simulate_water(BlockRef b, glm::ivec3 bpos)
+{
+	int w = water_level(b);
+
+	// Flow down
+	BlockRef m(bpos - iz);
+	if (m.chunk && accepts_water(m.block))
+	{
+		int flow = std::min(w, 15 - water_level(m));
+		if (water_flow(b, m, flow)) return;
+		w -= flow;
+	}
+
+	// Flow to the side
+	if (w > 1)
+	{
+		ivector<BlockRef, 4> side;
+		for (auto v : { -ix, ix, -iy, iy })
+		{
+			BlockRef q(bpos + v);
+			if (q.chunk && accepts_water(q) && water_level(q) + 1 < w) side.push_back(q);
+		}
+		while (side.size() > 0)
+		{
+			int e = rand() % side.size();
+			BlockRef m = side[e];
+			int wb = water_level(m);
+			if (wb + 1 < w)
+			{
+				int flow = (w - wb) / 2;
+				water_flow(b, m, flow);
+				w -= flow;
+			}
+			side[e] = side[side.size() - 1];
+			side.pop_back();
+		}
+	}
+
+	// Flow to the diagonal
+	if (w > 1)
+	{
+		ivector<BlockRef, 4> side;
+		FOR(j, 4)
+		{
+			glm::ivec3 xx((j%2)*2-1, 0, 0), yy(0, (j/2)*2-1, 0);
+			BlockRef px(bpos + xx), py(bpos + yy), q(bpos + xx + yy);
+			if (px.chunk && accepts_water(px) && py.chunk && accepts_water(py) && q.chunk && accepts_water(q) && water_level(q) + 1 < w) side.push_back(q);
+		}
+		while (side.size() > 0)
+		{
+			int e = rand() % side.size();
+			BlockRef m = side[e];
+			int wb = water_level(m);
+			if (wb + 1 >= w)
+			{
+				side[e] = side[side.size() - 1];
+				side.pop_back();
+				continue;
+			}
+			int flow = (w - wb) / 2;
+			water_flow(b, m, flow);
+			w -= flow;
+		}
+	}
+
+	// Flow to the side down
+	if (w != 1) return;
+	ivector<BlockRef, 4> side;
+	for (auto v : { -ix, ix, -iy, iy })
+	{
+		BlockRef p(bpos + v), q(bpos + v - iz);
+		if (p.chunk && p == Block::none && q.chunk && accepts_water(q)) side.push_back(q);
+	}
+	if (side.size() > 0)
+	{
+		BlockRef m = side[rand() % side.size()];
+		if (water_flow(b, m, 1)) return;
+	}
+
+	// Flow to diag down
+	assert(w == 1);
+	side.clear();
+	FOR(j, 4)
+	{
+		glm::ivec3 xx((j%2)*2-1, 0, 0), yy(0, (j/2)*2-1, 0);
+		BlockRef p(bpos + xx + yy), px(bpos + xx), py(bpos + yy), q(bpos + xx + yy - iz);
+		if (p.chunk && p == Block::none && px.chunk && px == Block::none && py.chunk && py == Block::none && q.chunk && accepts_water(q)) side.push_back(q);
+	}
+	if (side.size() > 0)
+	{
+		BlockRef m = side[rand() % side.size()];
+		if (water_flow(b, m, 1)) return;
+	}
+}
+
+void model_simulate_sand(BlockRef b, glm::ivec3 bpos)
+{
+	// Flow down
+	BlockRef m(bpos - iz);
+	if (m.chunk && (m == Block::none || is_water(m)))
+	{
+		Block e = m.block;
+		update_block(m, b.block);
+		update_block(b, e);
+	}
+}
+
+void model_simulate_blocks()
+{
+	if (player::flying) return;
+
+	// TODO: fix SelectCube for non-cube models (like partial water)
+
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+
+	sim_dirty_chunks.set.clear();
+	sim_dirty_chunks.array.clear();
+	sim_dirty_chunks.origin = cplayer - ii * (DirtyChunks::N / 2);
+
+	sim_active_chunks.clear();
+	for (glm::ivec3 d : simulation_sphere)
+	{
+		glm::ivec3 cpos = cplayer + d;
+		Chunk& chunk = g_chunks.get(cpos);
+		if (chunk.get_cpos() == cpos && chunk.m_active)
+		{
+			sim_active_chunks.push_back(cpos);
+			chunk.m_active = false;
+			if (sim_active_chunks.size() == MaxActiveChunks) break;
+		}
+	}
+
+	if (sim_active_chunks.size() > 0)
+	{
+		// shuffle sim_order
+		FOR(i, ChunkSize2 / 4)
+		{
+			std::swap(sim_order[rand() % ChunkSize2], sim_order[rand() % ChunkSize2]);
+		}
+	}
+
+	for (glm::ivec3 cpos : sim_active_chunks)
+	{
+		FOR(z, ChunkSize) for (glm::i8vec2 xy : sim_order)
+		{
+			glm::ivec3 bpos = glm::ivec3(xy.x, xy.y, z) + (cpos << ChunkSizeBits);
+			BlockRef b(bpos);
+			if (is_water(b)) model_simulate_water(b, bpos);
+			else if (is_sand(b)) model_simulate_sand(b, bpos);
+		}
+	}
+
+	static BlockRenderer renderer;
+	for (Chunk* chunk : sim_dirty_chunks.array) chunk->buffer(renderer);
+}
+
 void model_frame(GLFWwindow* window, double delta_ms)
 {
 	model_orientation(window);
 	if (!console.IsVisible()) model_move_player(window, delta_ms * 1e-3);
 	selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
 	model_digging(window);
+	model_simulate_blocks();
 }
 
 // Render
@@ -2259,14 +2582,6 @@ void BlockTextureLoader::load_textures()
 	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
 	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
 	glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, m_width, m_height, block_texture_count, 0, GL_RGBA, GL_UNSIGNED_BYTE, m_pixels.data());
-
-	uint e = glGetError();
-	fprintf(stderr, "GLError = %u\n", e);
-	assert(e == 0);
-
-	float tb = glfwGetTime();
-	printf("Textures loaded in %lf ms\n", (tb - ta) * 1000);
-	fflush(stdout);
 }
 
 void render_init()
@@ -2320,17 +2635,32 @@ void BlockRenderer::draw_quad(int face)
 	const int* f = Cube::faces[face];
 	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;
-	q.pos[0] = glm::u8vec3(w + Cube::corner[f[0]]);
-	q.pos[1] = glm::u8vec3(w + Cube::corner[f[1]]);
-	q.pos[2] = glm::u8vec3(w + Cube::corner[f[2]]);
-	q.pos[3] = glm::u8vec3(w + Cube::corner[f[3]]);
+	q.pos[0] = glm::u8vec3((w + Cube::corner[f[0]]) * 15);
+	q.pos[1] = glm::u8vec3((w + Cube::corner[f[1]]) * 15);
+	q.pos[2] = glm::u8vec3((w + Cube::corner[f[2]]) * 15);
+	q.pos[3] = glm::u8vec3((w + Cube::corner[f[3]]) * 15);
 	q.plane = (face << 8) | q.pos[0][face / 2];
 	m_quads.push_back(q);
 }
 
-// every bit from 0 to 7 in block represents once vertex (can be off or on)
-void BlockRenderer::render(Chunk& mc, glm::ivec3 pos, Block block)
+static glm::ivec3 adjust(glm::ivec3 v, int height)
 {
+	return glm::ivec3(v.x * 15, v.y * 15, v.z * height);
+}
+
+void BlockRenderer::draw_quad(int face, int height)
+{
+	Quad q;
+	q.texture = get_block_texture(m_block, face);
+	const int* f = Cube::faces[face];
+	q.light = light_cache[f[0]][f[1]][f[2]];
+	glm::ivec3 w = m_pos & ChunkSizeMask;
+	q.pos[0] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[0]], height));
+	q.pos[1] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[1]], height));
+	q.pos[2] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[2]], height));
+	q.pos[3] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[3]], height));
+	q.plane = (face << 8) | q.pos[0][face / 2];
+	m_quads.push_back(q);
 }
 
 const float foglimit2 = sqr(0.8 * RenderDistance * ChunkSize);
@@ -2344,7 +2674,8 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	glUseProgram(block_program);
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player::position));
-	glUniform1i(block_tick_loc, g_tick++);
+	if (!player::flying) g_tick += 1;
+	glUniform1i(block_tick_loc, g_tick);
 	glUniform1f(block_foglimit2_loc, foglimit2);
 
 	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
@@ -2431,13 +2762,13 @@ void render_gui()
 		glEnableVertexAttribArray(block_light_loc);
 		glEnableVertexAttribArray(block_uv_loc);
 
-		glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->pos);
-		glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), &((Vertex*)0)->texture);
-		glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
-		glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
+		glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_SHORT, sizeof(WVertex), &((WVertex*)0)->pos);
+		glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(WVertex), &((WVertex*)0)->texture);
+		glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(WVertex), &((WVertex*)0)->light);
+		glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_SHORT, sizeof(WVertex), &((WVertex*)0)->uv);
 
-		Vertex vertices[18 * (block_count - 1)];
-		Vertex* e = vertices;
+		WVertex vertices[18 * (block_count - 1)];
+		WVertex* e = vertices;
 		FOR(i, block_count-1) FOR(face, 6)
 		{
 			if (face != 0 && face != 2 && face != 5) continue;
@@ -2449,10 +2780,10 @@ void render_gui()
 			if (face == 0) light = 255;
 
 			glm::ivec3 w(128+i, 128-i, 128);
-			glm::u8vec3 pos[4];
-			FOR(j, 4) pos[j] = glm::u8vec3(w + Cube::corner[f[j]]);
+			glm::u16vec3 pos[4];
+			FOR(j, 4) pos[j] = glm::u16vec3((w + Cube::corner[f[j]]) * 15);
 
-			glm::u8vec3 d = pos[2] - pos[0];
+			glm::u16vec3 d = pos[2] - pos[0];
 			uint u, v;
 			if (face < 2) { u = d.y; v = d.z; }
 			else if (face < 4) { u = d.x; v = d.z; }
@@ -2461,12 +2792,12 @@ void render_gui()
 			// How much to rotate each face?
 			int a = (face == 0 || face == 3 || face == 5) ? 0 : 1;
 			BlockTexture texture = get_block_texture(Block(i+1), face);
-			*e++ = { texture, light, glm::u8vec2(u, 0), pos[(1+a)%4] };
-			*e++ = { texture, light, glm::u8vec2(0, 0), pos[(2+a)%4] };
-			*e++ = { texture, light, glm::u8vec2(0, v), pos[(3+a)%4] };
-			*e++ = { texture, light, glm::u8vec2(u, 0), pos[(1+a)%4] };
-			*e++ = { texture, light, glm::u8vec2(0, v), pos[(3+a)%4] };
-			*e++ = { texture, light, glm::u8vec2(u, v), pos[(0+a)%4] };
+			*e++ = { texture, light, glm::u16vec2(u, 0), pos[(1+a)%4] };
+			*e++ = { texture, light, glm::u16vec2(0, 0), pos[(2+a)%4] };
+			*e++ = { texture, light, glm::u16vec2(0, v), pos[(3+a)%4] };
+			*e++ = { texture, light, glm::u16vec2(u, 0), pos[(1+a)%4] };
+			*e++ = { texture, light, glm::u16vec2(0, v), pos[(3+a)%4] };
+			*e++ = { texture, light, glm::u16vec2(u, v), pos[(0+a)%4] };
 		}
 
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2474,7 +2805,7 @@ void render_gui()
 
 		glm::ivec3 pos(0, 0, 0);
 		glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
-		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * 18 * (block_count - 1), vertices, GL_STREAM_DRAW);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(WVertex) * 18 * (block_count - 1), vertices, GL_STREAM_DRAW);
 		glDrawArrays(GL_TRIANGLES, 0, 18 * (block_count - 1));
 		glUseProgram(0);
 

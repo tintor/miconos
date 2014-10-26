@@ -58,8 +58,8 @@ struct BitCube
 	static const int Z = (N * N * N + W - 1) / W;
 	static const int Bytes = sizeof(Word) * Z;
 
-	void clear() { memset(&m_words[0], 0, Z * sizeof(Word)); }
-	void operator=(const BitCube<N>& q) { memcpy(&m_words[0], q.m_words[0], Z * sizeof(Word)); }
+	void clear() { FOR(i, Z) m_words[i] = 0; }
+	void operator=(const BitCube<N>& q) { FOR(i, Z) m_words[i] = q.m_words[i]; }
 	void set(glm::ivec3 a) { int i = index(a); m_words[i / W] |= mask(i); }
 	void clear(glm::ivec3 a) { int i = index(a); m_words[i / W] &= ~mask(i); }
 	bool operator[](glm::ivec3 a) { int i = index(a); return (m_words[i / W] & mask(i)) != 0; }
@@ -74,7 +74,7 @@ struct BitCube
 	}
 private:
 	static Word mask(int index) { return Word(1) << (index % W); }
-	int index(glm::ivec3 a) { return (a.x*N + a.y)*N + a.z; }
+	int index(glm::ivec3 a) { assert(a.x >= 0 && a.x < N && a.y >= 0 && a.y < N && a.z >= 0 && a.z < N); return (a.x*N + a.y)*N + a.z; }
 private:
 	std::array<Word, Z> m_words;
 };
@@ -113,7 +113,7 @@ bool intersects_line_polygon(Plucker line, const Plucker edges[size])
 	return true;
 }
 
-static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1);
+static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1), ii(1, 1, 1);
 
 template<typename T>
 void release(std::vector<T>& a) { std::vector<T> v; std::swap(a, v); }
