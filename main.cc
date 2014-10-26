@@ -1252,13 +1252,32 @@ struct BlockRenderer
 	MapChunk* mc;
 	CachedChunk* cc;
 
-	void draw_quad(int face, bool reverse = false);
-	void draw_quad(int face, int zmin, int zmax, bool reverse = false);
+	void draw_quad(int face, bool reverse, bool underwater_overlay);
+	void draw_quad(int face, int zmin, int zmax, bool reverse, bool underwater_overlay = false);
 
 	void draw_face(bool cond, int face)
 	{
 		Block q = cond ? (*mc)[m_pos + face_dir[face]] : cc[face][m_fpos + face_dir[face]];
-		if (can_see_through(q) && q != m_block) draw_quad(face);
+		if (q == Block::water15)
+		{
+			draw_quad(face, false, true);
+		}
+		else if (is_water(q) && face < 4)
+		{
+			if (q != m_block)
+			{
+				int w = water_level_strict(q);
+				draw_quad(face, 0, w, false, true);
+				draw_quad(face, w, 15, false, false);
+			}
+		}
+		else
+		{
+			if (can_see_through(q) && q != m_block)
+			{
+				draw_quad(face, false, false);
+			}
+		}
 	}
 
 	void draw_water_side(bool cond, int face, int w)
@@ -1269,18 +1288,22 @@ struct BlockRenderer
 			int w2 = water_level_strict(q);
 			if (w > w2)
 			{
-				draw_quad(face, w2, w);
+				draw_quad(face, w2, w, false);
 				draw_quad(face, w2, w, true);
 			}
 		}
-		else if (can_see_through_non_water(q)) { draw_quad(face, 0, w); return; }
+		else if (can_see_through_non_water(q))
+		{
+			draw_quad(face, 0, w, false);
+			draw_quad(face, 0, w, true);
+		}
 	}
 
 	void draw_water_bottom()
 	{
 		Block q = (m_pos.z != CMin) ? (*mc)[m_pos - iz] : cc[4][m_fpos - iz];
-		if (q != Block::water15 && can_see_through(q)) draw_quad(4);
-		if (q == Block::none) draw_quad(4, true);
+		if (q != Block::water15 && can_see_through(q)) draw_quad(4, false, false);
+		if (q == Block::none) draw_quad(4, true, false);
 	}
 
 	void draw_water_top(int w)
@@ -1288,12 +1311,12 @@ struct BlockRenderer
 		if (m_block == Block::water15)
 		{
 			Block q = (m_pos.z != CMax) ? (*mc)[m_pos + iz] : cc[5][m_fpos + iz];
-			if (can_see_through_non_water(q)) draw_quad(5);
-			if (q == Block::none) draw_quad(5, true);
+			if (can_see_through_non_water(q)) draw_quad(5, false, false);
+			if (q == Block::none) draw_quad(5, true, false);
 		}
 		else
 		{
-			draw_quad(5, w, w);
+			draw_quad(5, w, w, false);
 			draw_quad(5, w, w, true);
 		}
 	}
@@ -2753,7 +2776,7 @@ void render_init()
 	block_foglimit2_loc = glGetUniformLocation(block_program, "foglimit2");
 	block_eye_loc = glGetUniformLocation(block_program, "eye");
 	block_position_loc = glGetAttribLocation(block_program, "position");
-	block_block_texture_loc = glGetAttribLocation(block_program, "block_texture");
+	block_block_texture_loc = glGetAttribLocation(block_program, "block_texture_with_flag");
 	block_light_loc = glGetAttribLocation(block_program, "light");
 	block_uv_loc = glGetAttribLocation(block_program, "uv");
 
@@ -2770,10 +2793,11 @@ void render_init()
 	g_chunks.start_threads();
 }
 
-void BlockRenderer::draw_quad(int face, bool reverse)
+void BlockRenderer::draw_quad(int face, bool reverse, bool underwater_overlay)
 {
 	Quad q;
 	q.texture = get_block_texture(m_block, face);
+	if (underwater_overlay) q.texture = BlockTexture((int)q.texture | (1 << 15));
 	const int* f = Cube::faces[face];
 	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;
@@ -2801,10 +2825,11 @@ static glm::ivec3 adjust(glm::ivec3 v, int zmin, int zmax)
 	return glm::ivec3(v.x * 15, v.y * 15, (v.z == 0) ? zmin : zmax);
 }
 
-void BlockRenderer::draw_quad(int face, int zmin, int zmax, bool reverse)
+void BlockRenderer::draw_quad(int face, int zmin, int zmax, bool reverse, bool underwater_overlay)
 {
 	Quad q;
 	q.texture = get_block_texture(m_block, face);
+	if (underwater_overlay) q.texture = BlockTexture((int)q.texture | (1 << 15));
 	const int* f = Cube::faces[face];
 	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;

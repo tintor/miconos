@@ -6,7 +6,7 @@ uniform mat4 matrix;
 uniform ivec3 pos;
 
 in ivec3 position;
-in int block_texture;
+in int block_texture_with_flag;
 in uint light;
 in ivec2 uv;
 
@@ -14,6 +14,7 @@ out float fog_factor;
 out float fragment_light;
 out vec2 fragment_uv;
 out float fragment_texture;
+out float fragment_underwater_texture;
 
 uniform float foglimit2;
 
@@ -23,6 +24,17 @@ void main()
 {
     vec3 p = pos + position / 15.0f;
 
+    int flag = 1 << 15;
+    if ((block_texture_with_flag & flag) != 0)
+    {
+        fragment_underwater_texture = 70 + ((tick / 8) % 64);
+    }
+    else
+    {
+        fragment_underwater_texture = -1.f;
+    }
+
+    int block_texture = block_texture_with_flag & ~flag;
     fragment_texture = block_texture;
     if (block_texture <= 5) // leaves_***
     {
