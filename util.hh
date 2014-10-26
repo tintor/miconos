@@ -114,6 +114,7 @@ bool intersects_line_polygon(Plucker line, const Plucker edges[size])
 }
 
 static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1), ii(1, 1, 1);
+static const glm::ivec3 ia[3] = { ix, iy, iz };
 
 template<typename T>
 void release(std::vector<T>& a) { std::vector<T> v; std::swap(a, v); }

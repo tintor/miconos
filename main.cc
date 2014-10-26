@@ -607,6 +607,13 @@ bool is_leaves(Block a) { return a >= Block::leaves_acacia && a <= Block::leaves
 bool is_sand(Block a) { return a == Block::sand || a == Block::red_sand; }
 bool is_water(Block a) { return a >= Block::water1 && a <= Block::water15; }
 bool is_water_partial(Block a) { return a >= Block::water1 && a < Block::water15; }
+bool can_move_through(Block block) { return block == Block::none || is_water(block); }
+bool can_see_through_non_water(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white; }
+bool can_see_through(Block block) { return can_see_through_non_water(block) || is_water(block); }
+bool accepts_water(Block b) { return is_water_partial(b) || b == Block::none; }
+
+int water_level_strict(Block b) { assert(b >= Block::water1 && b <= Block::water15); return int(b) - int(Block::water1) + 1; }
+int water_level(Block b) { return (b == Block::none) ? 0 : water_level_strict(b); }
 
 static_assert((uint)BlockTexture::leaves_acacia == 0, "used in shader");
 static_assert((uint)BlockTexture::leaves_spruce == 5, "used in shader");
@@ -770,25 +777,7 @@ BlockTexture get_block_texture(Block block, int face)
 #undef S2
 #undef S3
 
-// ===============
-
-// - .not_null 4k, 1bit per chunk, marking which chunks are not null (ie. not yet initialized)
-// - .block 128MB, blocks (uses file system hole punching to save space!)
-
-/*template<int N>
-struct BitCubeFile : public ArrayFile<BitCube<N>, 1>
-{
-	BitCube<N>& cube() { return *ArrayFile<BitCube<N>, 1>::data(); }
-};
-
-template<int Power>
-struct BlockCubeFile : public ArrayFile<Block, 1lu<<(3*Power)>
-{
-	Block* chunk(glm::ivec3 cpos) { return ArrayFile<Block, 1lu<<(3*Power)>::data() + ChunkSize3 * z_order<Power - ChunkSizeBits>(cpos); }
-	Block& block(glm::ivec3 pos) { return ArrayFile<Block, 1lu<<(3*Power)>::data()[z_order<Power>(pos)]; }
-};*/
-
-// ===============
+// ============================
 
 namespace Cube
 {
@@ -908,6 +897,11 @@ Block generate_block(glm::ivec3 pos)
 	{
 		int i = (pos.x / 3) * 6 + pos.y / 3 + 1;
 		if (i < block_count && Block(i) != Block::water_source) return (Block)i;
+	}
+
+	if (pos.z == 0 && (pos.x == 81 || pos.x == 80) && pos.y <= -13 && pos.y >= -22)
+	{
+		return Block::water_source;
 	}
 
 	// Tree
@@ -1232,17 +1226,65 @@ private:
 };
 
 struct Chunk;
+static const glm::ivec3 face_dir[6] = { -ix, ix, -iy, iy, -iz, iz };
+
+struct CachedChunk
+{
+	CachedChunk() : initialized(false) { }
+	~CachedChunk() { if (mc.valid()) g_scm.release_chunk(release_cpos); }
+	void init(glm::ivec3 cpos);
+	Block operator[](glm::ivec3 pos);
+
+	bool initialized;
+	glm::ivec3 release_cpos;
+	MapChunk mc;
+};
 
 struct BlockRenderer
 {
 	std::vector<Quad> m_quads;
 	glm::ivec3 m_pos;
+	glm::ivec3 m_fpos;
 	Block m_block;
 
 	std::vector<Quad> m_xy, m_yx;
 
+	MapChunk* mc;
+	CachedChunk* cc;
+
 	void draw_quad(int face);
-	void draw_quad(int face, int height);
+	void draw_quad(int face, int zmin, int zmax);
+
+	void draw_face(bool cond, int face)
+	{
+		Block q = cond ? (*mc)[m_pos + face_dir[face]] : cc[face][m_fpos + face_dir[face]];
+		if ((can_see_through(q) && q != m_block) || (face == 4 && is_water_partial(q)))
+		{
+			draw_quad(face);
+		}
+	}
+
+	void draw_water_side(bool cond, int face, int w)
+	{
+		Block q = cond ? (*mc)[m_pos + face_dir[face]] : cc[face][m_fpos + face_dir[face]];
+		if (is_water_partial(q))
+		{
+			int w2 = water_level_strict(q);
+			if (w > w2) draw_quad(face, w2, w);
+		}
+		else if (can_see_through_non_water(q)) { draw_quad(face, 0, w); return; }
+	}
+
+	void draw_water_bottom()
+	{
+		Block q = (m_pos.z != CMin) ? (*mc)[m_pos - iz] : cc[4][m_fpos - iz];
+		if (q != Block::water15 && can_see_through(q)) draw_quad(4);
+	}
+
+	void draw_water_top(int w)
+	{
+		if (m_block == Block::water15) draw_face(m_pos.z != CMax, 5); else draw_quad(5, w, w);
+	}
 
 	static bool combine(Quad& a, Quad b, int X, int Y)
 	{
@@ -1328,21 +1370,6 @@ struct BlockRenderer
 	}
 };
 
-struct CachedChunk
-{
-	CachedChunk() : initialized(false) { }
-	~CachedChunk() { if (mc.valid()) g_scm.release_chunk(release_cpos); }
-	void init(glm::ivec3 cpos);
-	Block operator[](glm::ivec3 pos);
-
-	bool initialized;
-	glm::ivec3 release_cpos;
-	MapChunk mc;
-};
-
-bool can_move_through(Block block) { return block == Block::none || is_water(block); }
-bool can_see_through(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white || is_water(block); }
-
 typedef uint64_t CompressedIVec3;
 
 const CompressedIVec3 NullChunk = 0xFFFFFFFF;
@@ -1394,33 +1421,35 @@ struct Chunk : public MapChunk
 		{
 			glm::ivec3 cpos = get_cpos();
 			CachedChunk cc[6];
+			renderer.cc = cc;
+			renderer.mc = this;
 			FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
 			{
 				glm::ivec3 p(x, y, z);
 				Block block = operator[](p);
-				glm::ivec3 pos = cpos * ChunkSize + p;
+				if (block == Block::none) continue;
 				renderer.m_pos = p;
+				renderer.m_fpos = p + (cpos << ChunkSizeBits);
 				renderer.m_block = block;
 
-				#define draw_face(Cond, Axis, Face) { Block q = (Cond) ? operator[](p Axis) : cc[Face][pos Axis]; if (can_see_through(q) && q != block) renderer.draw_quad(Face); }
-				if (block >= Block::water1 && block < Block::water15)
+				if (block >= Block::water1 && block <= Block::water15)
 				{
 					int w = uint(block) - uint(Block::water1) + 1;
-					renderer.draw_quad(0, w);
-					renderer.draw_quad(1, w);
-					renderer.draw_quad(2, w);
-					renderer.draw_quad(3, w);
-					draw_face(z != CMin, -iz, 4);
-					renderer.draw_quad(5, w);
+					renderer.draw_water_side(x != CMin, 0, w);
+					renderer.draw_water_side(x != CMax, 1, w);
+					renderer.draw_water_side(y != CMin, 2, w);
+					renderer.draw_water_side(y != CMax, 3, w);
+					renderer.draw_water_bottom();
+					renderer.draw_water_top(w);
 				}
-				else if (block != Block::none)
+				else
 				{
-					draw_face(x != CMin, -ix, 0);
-					draw_face(x != CMax, +ix, 1);
-					draw_face(y != CMin, -iy, 2);
-					draw_face(y != CMax, +iy, 3);
-					draw_face(z != CMin, -iz, 4);
-					draw_face(z != CMax, +iz, 5);
+					renderer.draw_face(x != CMin, 0);
+					renderer.draw_face(x != CMax, 1);
+					renderer.draw_face(y != CMin, 2);
+					renderer.draw_face(y != CMax, 3);
+					renderer.draw_face(z != CMin, 4);
+					renderer.draw_face(z != CMax, 5);
 				}
 			}
 		}
@@ -2241,14 +2270,6 @@ void model_digging(GLFWwindow* window)
 	}
 }
 
-bool accepts_water(Block b) { return is_water_partial(b) || b == Block::none; }
-int water_level(Block b)
-{
-	if (b == Block::none) return 0;
-	assert(b >= Block::water1 && b <= Block::water15);
-	return int(b) - int(Block::water1) + 1;
-}
-
 struct BlockRef
 {
 	Chunk* chunk;
@@ -2752,22 +2773,22 @@ void BlockRenderer::draw_quad(int face)
 	m_quads.push_back(q);
 }
 
-static glm::ivec3 adjust(glm::ivec3 v, int height)
+static glm::ivec3 adjust(glm::ivec3 v, int zmin, int zmax)
 {
-	return glm::ivec3(v.x * 15, v.y * 15, v.z * height);
+	return glm::ivec3(v.x * 15, v.y * 15, (v.z == 0) ? zmin : zmax);
 }
 
-void BlockRenderer::draw_quad(int face, int height)
+void BlockRenderer::draw_quad(int face, int zmin, int zmax)
 {
 	Quad q;
 	q.texture = get_block_texture(m_block, face);
 	const int* f = Cube::faces[face];
 	q.light = light_cache[f[0]][f[1]][f[2]];
 	glm::ivec3 w = m_pos & ChunkSizeMask;
-	q.pos[0] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[0]], height));
-	q.pos[1] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[1]], height));
-	q.pos[2] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[2]], height));
-	q.pos[3] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[3]], height));
+	q.pos[0] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[0]], zmin, zmax));
+	q.pos[1] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[1]], zmin, zmax));
+	q.pos[2] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[2]], zmin, zmax));
+	q.pos[3] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[3]], zmin, zmax));
 	q.plane = (face << 8) | q.pos[0][face / 2];
 	m_quads.push_back(q);
 }
