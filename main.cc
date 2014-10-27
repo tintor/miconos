@@ -8,10 +8,16 @@
 // TODO:
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
 
+// TODO Selection:
+// - Improve block selection when underwater (not very usefull right now). Ray should go through water when under water!
+// - fix SelectCube for non-cube models (like partial water)
+
 // - Revert back to simpler raytracing model with flood fill of all can-see-through blocks
 
 // # more proceduraly generated stuff!
 // - nicer generated trees! palms!
+// - tree branch blocks
+// - use pentagon prisms for tree trunks (instead of cubes)
 
 // # gravity mode: planar (2 degrees of freedom orientation), spherical (2 degrees of freedom orientation), zero-g (3 degrees of freedom orientation)
 
@@ -28,7 +34,7 @@
 // Textures:
 // - re-sort triangles inside chunk buffer (for axis chunks only) as player moves
 // - nicer transparency for blocks with holes like leaves (render all backfaces)
-// - nicer transpaarency for translucent blocks without holes (only render backfaces at the end of group of same translucent blocks)
+// - nicer transparency for translucent blocks without holes (only render backfaces at the end of group of same translucent blocks)
 // - BUGS: render inside faces for leaves (use interior opaque leaf textures to optimize rendering of dense trees?)
 
 // # client / server:
@@ -1240,6 +1246,10 @@ struct CachedChunk
 	MapChunk mc;
 };
 
+bool enable_f4 = true;
+bool enable_f5 = true;
+bool enable_f6 = true;
+
 struct BlockRenderer
 {
 	std::vector<Quad> m_quads;
@@ -1249,15 +1259,18 @@ struct BlockRenderer
 
 	std::vector<Quad> m_xy, m_yx;
 
-	MapChunk* mc;
-	CachedChunk* cc;
+	MapChunk* m_mc;
+	CachedChunk* m_cc;
 
 	void draw_quad(int face, bool reverse, bool underwater_overlay);
 	void draw_quad(int face, int zmin, int zmax, bool reverse, bool underwater_overlay = false);
 
+	Block get(bool cond, int face, glm::ivec3 rel) { return cond ? (*m_mc)[m_pos + rel] : m_cc[face][m_fpos + rel]; }
+	Block get(bool cond, int face) { return get(cond, face, face_dir[face]); }
+
 	void draw_face(bool cond, int face)
 	{
-		Block q = cond ? (*mc)[m_pos + face_dir[face]] : cc[face][m_fpos + face_dir[face]];
+		Block q = get(cond, face);
 		if (q == Block::water15)
 		{
 			draw_quad(face, false, true);
@@ -1282,7 +1295,7 @@ struct BlockRenderer
 
 	void draw_water_side(bool cond, int face, int w)
 	{
-		Block q = cond ? (*mc)[m_pos + face_dir[face]] : cc[face][m_fpos + face_dir[face]];
+		Block q = get(cond, face);
 		if (is_water_partial(q))
 		{
 			int w2 = water_level_strict(q);
@@ -1301,7 +1314,7 @@ struct BlockRenderer
 
 	void draw_water_bottom()
 	{
-		Block q = (m_pos.z != CMin) ? (*mc)[m_pos - iz] : cc[4][m_fpos - iz];
+		Block q = get(m_pos.z != CMin, 4, -iz);
 		if (q != Block::water15 && can_see_through(q)) draw_quad(4, false, false);
 		if (q == Block::none) draw_quad(4, true, false);
 	}
@@ -1310,7 +1323,7 @@ struct BlockRenderer
 	{
 		if (m_block == Block::water15)
 		{
-			Block q = (m_pos.z != CMax) ? (*mc)[m_pos + iz] : cc[5][m_fpos + iz];
+			Block q = get(m_pos.z != CMax, 5, iz);
 			if (can_see_through_non_water(q)) draw_quad(5, false, false);
 			if (q == Block::none) draw_quad(5, true, false);
 		}
@@ -1318,6 +1331,42 @@ struct BlockRenderer
 		{
 			draw_quad(5, w, w, false);
 			draw_quad(5, w, w, true);
+		}
+	}
+
+	void generate_quads(glm::ivec3 cpos, MapChunk* mc)
+	{
+		CachedChunk cc[6];
+		m_cc = cc;
+		m_mc = mc;
+		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
+		{
+			glm::ivec3 p(x, y, z);
+			Block block = (*mc)[p];
+			if (block == Block::none) continue;
+			m_pos = p;
+			m_fpos = p + (cpos << ChunkSizeBits);
+			m_block = block;
+
+			if (block >= Block::water1 && block <= Block::water15)
+			{
+				int w = uint(block) - uint(Block::water1) + 1;
+				draw_water_side(x != CMin, 0, w);
+				draw_water_side(x != CMax, 1, w);
+				draw_water_side(y != CMin, 2, w);
+				draw_water_side(y != CMax, 3, w);
+				draw_water_bottom();
+				draw_water_top(w);
+			}
+			else
+			{
+				draw_face(x != CMin, 0);
+				draw_face(x != CMax, 1);
+				draw_face(y != CMin, 2);
+				draw_face(y != CMax, 3);
+				draw_face(z != CMin, 4);
+				draw_face(z != CMax, 5);
+			}
 		}
 	}
 
@@ -1344,7 +1393,7 @@ struct BlockRenderer
 		quads.resize(w);
 	}
 
-	void merge_quads(std::vector<Vertex>& vertices)
+	void merge_quads()
 	{
 		std::sort(m_quads.begin(), m_quads.end());
 		auto a = m_quads.begin(), w = a;
@@ -1381,7 +1430,10 @@ struct BlockRenderer
 			w = std::copy(m_xy.begin(), m_xy.end(), w);
 		}
 		m_quads.resize(w - m_quads.begin());
+	}
 
+	void export_vertices(std::vector<Vertex>& vertices)
+	{
 		vertices.resize(6 * m_quads.size());
 		Vertex* e = vertices.data();
 		for (Quad q : m_quads)
@@ -1443,53 +1495,33 @@ glm::ivec3 decompress_ivec3(CompressedIVec3 c)
 	return v;
 }
 
+double rebuild1_time_ms;
+double rebuild2_time_ms;
+double rebuild3_time_ms;
+
 struct Chunk : public MapChunk
 {
 	Chunk() : m_cpos(NullChunk) { }
 
-	void buffer(BlockRenderer& renderer)
+	void buffer(BlockRenderer& renderer, bool perf=false)
 	{
 		AutoLock(m_buffer_mutex);
-		release(m_vertices);
 		renderer.m_quads.clear();
-		if (!empty())
+		Timestamp ta;
+		if (!empty()) renderer.generate_quads(get_cpos(), this);
+		Timestamp tb;
+		if (!m_active) renderer.merge_quads(); // don't waste time merging if chunk will change soon
+		Timestamp tc;
+		renderer.export_vertices(m_vertices);
+		Timestamp td;
+		if (perf)
 		{
-			glm::ivec3 cpos = get_cpos();
-			CachedChunk cc[6];
-			renderer.cc = cc;
-			renderer.mc = this;
-			FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
-			{
-				glm::ivec3 p(x, y, z);
-				Block block = operator[](p);
-				if (block == Block::none) continue;
-				renderer.m_pos = p;
-				renderer.m_fpos = p + (cpos << ChunkSizeBits);
-				renderer.m_block = block;
-
-				if (block >= Block::water1 && block <= Block::water15)
-				{
-					int w = uint(block) - uint(Block::water1) + 1;
-					renderer.draw_water_side(x != CMin, 0, w);
-					renderer.draw_water_side(x != CMax, 1, w);
-					renderer.draw_water_side(y != CMin, 2, w);
-					renderer.draw_water_side(y != CMax, 3, w);
-					renderer.draw_water_bottom();
-					renderer.draw_water_top(w);
-				}
-				else
-				{
-					renderer.draw_face(x != CMin, 0);
-					renderer.draw_face(x != CMax, 1);
-					renderer.draw_face(y != CMin, 2);
-					renderer.draw_face(y != CMax, 3);
-					renderer.draw_face(z != CMin, 4);
-					renderer.draw_face(z != CMax, 5);
-				}
-			}
+			rebuild1_time_ms += ta.elapsed_ms(tb);
+			rebuild2_time_ms += tb.elapsed_ms(tc);
+			rebuild3_time_ms += tc.elapsed_ms(td);
 		}
-		renderer.merge_quads(m_vertices);
 		m_render_size = m_vertices.size();
+		m_dirty = false;
 	}
 
 	int render()
@@ -1519,6 +1551,7 @@ struct Chunk : public MapChunk
 	glm::ivec3 get_cpos() { return decompress_ivec3(m_cpos); }
 
 	bool m_active;
+	bool m_dirty;
 	friend class Chunks;
 private:
 	std::atomic<CompressedIVec3> m_cpos;
@@ -1774,6 +1807,9 @@ namespace stats
 	float select_time_ms = 0;
 	float simulate_time_ms = 0;
 	float rebuild_time_ms = 0;
+	float rebuild1_time_ms = 0;
+	float rebuild2_time_ms = 0;
+	float rebuild3_time_ms = 0;
 }
 
 // Model
@@ -1855,17 +1891,29 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	}
 	else if (action == GLFW_PRESS)
 	{
-		if (key == GLFW_KEY_F2)
+		if (key == GLFW_KEY_F1)
 		{
 			console.Show();
+		}
+		else if (key == GLFW_KEY_F2)
+		{
+			show_counters = !show_counters;
 		}
 		else if (key == GLFW_KEY_F3)
 		{
 			wireframe = !wireframe;
 		}
+		else if (key == GLFW_KEY_F4)
+		{
+			enable_f4 = !enable_f4;
+		}
+		else if (key == GLFW_KEY_F5)
+		{
+			enable_f5 = !enable_f5;
+		}
 		else if (key == GLFW_KEY_F6)
 		{
-			show_counters = !show_counters;
+			enable_f6 = !enable_f6;
 		}
 		else if (key == GLFW_KEY_TAB)
 		{
@@ -2323,22 +2371,21 @@ struct BlockRef
 
 static const int SimulationDistance = 6; // in chunks
 
-struct DirtyChunks
-{
-	enum { N = (SimulationDistance + 1/*neighbours*/) * 2 + 1 };
-	glm::ivec3 origin;
-	BitCube<N> set;
-	std::vector<Chunk*> array;
-
-	void add(glm::ivec3 a)
-	{
-		if (set.xset(a - origin)) array.push_back(&g_chunks.get(a));
-	}
-};
-
 static const int MaxActiveChunks = 10;
 std::vector<glm::ivec3> sim_active_chunks;
-DirtyChunks sim_dirty_chunks;
+
+void mark_dirty_chunk(glm::ivec3 pos)
+{
+	Chunk* chunk = g_chunks.get_opt(pos >> ChunkSizeBits);
+	if (enable_f5)
+	{
+		if (chunk && (*chunk)[pos & ChunkSizeMask] != Block::none) chunk->m_dirty = true;
+	}
+	else
+	{
+		if (chunk) chunk->m_dirty = true;
+	}
+}
 
 void update_block(BlockRef& ref, Block b)
 {
@@ -2346,14 +2393,14 @@ void update_block(BlockRef& ref, Block b)
 	ref.block = b;
 	glm::ivec3 q(ref.ipos);
 	glm::ivec3 p = ref.chunk->get_cpos();
-	sim_dirty_chunks.add(p);
+	ref.chunk->m_dirty = true;
 	// TODO: only if there is a block in neighbor chunk => mark neighbor as dirty
-	if (q.x == CMin) sim_dirty_chunks.add(p - ix);
-	if (q.x == CMax) sim_dirty_chunks.add(p + ix);
-	if (q.y == CMin) sim_dirty_chunks.add(p - iy);
-	if (q.y == CMax) sim_dirty_chunks.add(p + iy);
-	if (q.z == CMin) sim_dirty_chunks.add(p - iz);
-	if (q.z == CMax) sim_dirty_chunks.add(p + iz);
+	if (q.x == CMin) mark_dirty_chunk(p - ix);
+	if (q.x == CMax) mark_dirty_chunk(p + ix);
+	if (q.y == CMin) mark_dirty_chunk(p - iy);
+	if (q.y == CMax) mark_dirty_chunk(p + iy);
+	if (q.z == CMin) mark_dirty_chunk(p - iz);
+	if (q.z == CMax) mark_dirty_chunk(p + iz);
 	activate_block(q + (p << ChunkSizeBits));
 }
 
@@ -2515,13 +2562,8 @@ void model_simulate_blocks()
 {
 	if (player::flying) return;
 
-	// TODO: fix SelectCube for non-cube models (like partial water)
-
+	Timestamp tb;
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-
-	sim_dirty_chunks.set.clear();
-	sim_dirty_chunks.array.clear();
-	sim_dirty_chunks.origin = cplayer - ii * (DirtyChunks::N / 2);
 
 	sim_active_chunks.clear();
 	for (glm::ivec3 d : simulation_sphere)
@@ -2542,7 +2584,6 @@ void model_simulate_blocks()
 		std::swap(sim_order[rand() % ChunkSize2], sim_order[rand() % ChunkSize2]);
 	}
 
-	Timestamp tb;
 	for (glm::ivec3 cpos : sim_active_chunks)
 	{
 		FOR(z, ChunkSize) for (glm::i8vec2 xy : sim_order)
@@ -2564,7 +2605,7 @@ void model_simulate_blocks()
 			else if (b == Block::water_source)
 			{
 				BlockRef m(bpos - iz);
-				if (!m.chunk) continue;
+				if (!m.chunk || !enable_f6) continue;
 				if (m == Block::none || is_water_partial(m))
 				{
 					int w = water_level(m);
@@ -2602,12 +2643,7 @@ void model_simulate_blocks()
 	}
 
 	Timestamp tc;
-	static BlockRenderer renderer;
-	for (Chunk* chunk : sim_dirty_chunks.array) chunk->buffer(renderer);
-	Timestamp td;
-
 	stats::simulate_time_ms = glm::mix<float>(stats::simulate_time_ms, tb.elapsed_ms(tc), 0.15f);
-	stats::rebuild_time_ms = glm::mix<float>(stats::rebuild_time_ms, tc.elapsed_ms(td), 0.15f);
 }
 
 void model_frame(GLFWwindow* window, double delta_ms)
@@ -2895,18 +2931,30 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	stats::chunk_count = 0;
 	stats::vertex_count = 0;
 
+	rebuild1_time_ms = 0;
+	rebuild2_time_ms = 0;
+	rebuild3_time_ms = 0;
+
+	static BlockRenderer renderer;
 	for (glm::ivec3 cpos : visible_chunks)
 	{
 		if (!frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
 		{
 			Chunk& chunk = g_chunks.get(cpos);
 			if (chunk.get_cpos() != cpos || !chunk.renderable()) continue;
+
+			if (chunk.m_dirty) chunk.buffer(renderer, true);
 			glm::ivec3 pos = cpos * ChunkSize;
 			glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 			stats::vertex_count += chunk.render();
 			stats::chunk_count += 1;
 		}
 	}
+
+	stats::rebuild_time_ms = glm::mix<float>(stats::rebuild_time_ms, rebuild1_time_ms+rebuild2_time_ms+rebuild3_time_ms, 0.15f);
+	stats::rebuild1_time_ms = glm::mix<float>(stats::rebuild1_time_ms, rebuild1_time_ms, 0.15f);
+	stats::rebuild2_time_ms = glm::mix<float>(stats::rebuild2_time_ms, rebuild2_time_ms, 0.15f);
+	stats::rebuild3_time_ms = glm::mix<float>(stats::rebuild3_time_ms, rebuild3_time_ms, 0.15f);
 }
 
 void render_gui()
@@ -2917,10 +2965,14 @@ void render_gui()
 	if (show_counters)
 	{
 		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
-		text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.0f model:%1.0f [collide:%1.0f select:%1.0f simulate:%1.0f rebuild:%1.0f] raytrace:%2.0f %d%% render %2.0f",
-			 player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::vertex_count / 3000,
-			 stats::frame_time_ms, stats::model_time_ms, stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms, stats::rebuild_time_ms,
-			 stats::raytrace_time_ms, raytrace, stats::render_time_ms);
+		text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c",
+			player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::vertex_count / 3000,
+			stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms,
+			enable_f4 ? '4' : '-', enable_f5 ? '5' : '-', enable_f6 ? '6' : '-');
+
+		text->Printf("collide:%1.0f select:%1.0f simulate:%1.0f rebuild:%1.0f [%1.0f %1.0f %1.0f]",
+			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms,
+			stats::rebuild_time_ms, stats::rebuild1_time_ms, stats::rebuild2_time_ms, stats::rebuild3_time_ms);
 
 		if (selection)
 		{
@@ -2983,6 +3035,7 @@ void render_gui()
 			if (face == 5) light = 127 + 64;
 			if (face == 0) light = 255;
 
+			// TODO: reuse logic from BlockRenderer::generate_quads
 			glm::ivec3 w(128+i, 128-i, 128);
 			glm::u16vec3 pos[4];
 			FOR(j, 4) pos[j] = glm::u16vec3((w + Cube::corner[f[j]]) * 15);
