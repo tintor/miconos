@@ -1,9 +1,12 @@
 // UNDONE: main thread should unload chunks that are too far (to make room for new ones)
 // BUG: stray blue pixels on quad seams!
-// BUG: model_frame() is too slow! -> PROFILE!
+// BUG: some quad faces missing Underwater surface change!
+// BUG: model_frame() / simulate() is too slow! -> PROFILE!
 // - chunk loading/buffering too slow! -> PROFILE!
 // - raytracer too slow! -> PROFILE! new counter: rays / second
 // - compare perf with past changes, to avoid regressions!
+
+// TODO: player collision detection is too sticky and slow!
 
 // TODO:
 // - MacBook Air support: detect number of cores, non-retina resolution, auto-reduce render distance based on frame time
@@ -13,6 +16,9 @@
 // - fix SelectCube for non-cube models (like partial water)
 
 // - Revert back to simpler raytracing model with flood fill of all can-see-through blocks
+
+// TODO Simulation:
+// - nicer falling water model! (vertical column or vertical plate)
 
 // # more proceduraly generated stuff!
 // - nicer generated trees! palms!
@@ -36,6 +42,7 @@
 // - nicer transparency for blocks with holes like leaves (render all backfaces)
 // - nicer transparency for translucent blocks without holes (only render backfaces at the end of group of same translucent blocks)
 // - BUGS: render inside faces for leaves (use interior opaque leaf textures to optimize rendering of dense trees?)
+// - Can we turn off (in vertex shader) backface culling for quads with specific texture? (ie. water surface)
 
 // # client / server:
 // - terrain generation on server
@@ -48,18 +55,17 @@
 // - chat
 
 // # database:
-// - save player position on exit
 // - compress block files (to save space and to reduce write amplification)
 
 // # rendering:
-// - static models: enchanting table, torch, cactus, water (different amounts)
+// - static models: enchanting table, torch, cactus
 // - texture overlays: redstone powder, ladder, railroad
 // - 2d sprites: fire, plants, grass, flowers, web, ...
 // - directional blocks: crafting table, furnace, pumpkin
 
 // # survival mode:
 // - tool rendering
-// - digging
+// - digging rendering
 // - inventory with 2x2 crafting
 // - inventory items with icons
 // - dropping items on the ground (ie. by hand or when digging)
@@ -1495,6 +1501,112 @@ glm::ivec3 decompress_ivec3(CompressedIVec3 c)
 	return v;
 }
 
+// ===============
+
+struct Player
+{
+	// Persisted
+	glm::vec3 position;
+	float yaw, pitch;
+	glm::vec3 velocity;
+	bool creative_mode;
+	// TODO: active tool
+	// TODO: inventory items
+	// TODO: health
+	// TODO: armor
+
+	// Non-persisted
+	glm::ivec3 cpos;
+	std::atomic<CompressedIVec3> atomic_cpos;
+	glm::mat4 orientation;
+
+	bool digging_on;
+	Timestamp digging_start;
+	glm::ivec3 digging_block;
+
+	Player();
+	bool save();
+	void start_digging(glm::ivec3 cube);
+	void turn(float dx, float dy);
+};
+
+Player g_player;
+
+void Player::turn(float dx, float dy)
+{
+	yaw += dx;
+	pitch += dy;
+	if (pitch > M_PI / 2 * 0.999) pitch = M_PI / 2 * 0.999;
+	if (pitch < -M_PI / 2 * 0.999) pitch = -M_PI / 2 * 0.999;
+	orientation = glm::rotate(glm::rotate(glm::mat4(), -yaw, glm::vec3(0, 0, 1)), -pitch, glm::vec3(1, 0, 0));
+}
+
+void Player::start_digging(glm::ivec3 cube)
+{
+	digging_on = true;
+	digging_block = cube;
+	digging_start = Timestamp();
+}
+
+bool Player::save()
+{
+	FILE* file = fopen("player.json", "w");
+	CHECK(file);
+	fprintf(file, "{\n");
+	fprintf(file, "\tposition: [%f, %f, %f],\n", position.x, position.y, position.z);
+	fprintf(file, "\tyaw: %f,\n", yaw);
+	fprintf(file, "\tpitch: %f,\n", pitch);
+	fprintf(file, "\tvelocity: [%f, %f, %f],\n", velocity.x, velocity.y, velocity.z);
+	fprintf(file, "\tcreative_mode: %s,\n", creative_mode ? "true" : "false");
+	fprintf(file, "}\n");
+	fclose(file);
+	return true;
+}
+
+Player::Player()
+{
+	FILE* file = fopen("player.json", "r");
+	if (!file && errno == ENOENT)
+	{
+		// load defaults
+		position = glm::vec3(0, 0, 20);
+		yaw = 0;
+		pitch = 0;
+		velocity = glm::vec3(0, 0, 0);
+		creative_mode = true;
+	}
+	else
+	{
+		fscanf(file, "{\n");
+		#define load(A, F, ...) if (A != fscanf(file, F, __VA_ARGS__)) { fprintf(stderr, "Failed to parse: %s\n", F); exit(1); }
+		load(3, "\tposition: [%f, %f, %f],\n", &position.x, &position.y, &position.z);
+		load(1, "\tyaw: %f,\n", &yaw);
+		load(1, "\tpitch: %f,\n", &pitch);
+		load(3, "\tvelocity: [%f, %f, %f],\n", &velocity.x, &velocity.y, &velocity.z);
+		char creative[100];
+		load(1, "\tcreative_mode: %s,\n", creative);
+		#undef load
+		creative_mode = strcmp(creative, "true") == 0;
+		fscanf(file, "}\n");
+		fclose(file);
+	}
+	orientation = glm::rotate(glm::rotate(glm::mat4(), -yaw, glm::vec3(0, 0, 1)), -pitch, glm::vec3(1, 0, 0));
+	cpos = glm::ivec3(glm::floor(position)) >> ChunkSizeBits;
+	atomic_cpos = compress_ivec3(cpos);
+	digging_on = false;
+
+	/*char buffer[2048];
+	size_t read = fread(buffer, 1, sizeof(buffer) - 1, file);
+	fclose(file);
+	buffer[read] = 0;
+
+	char* p;
+	CHECK((p = strstr(buffer, "position: [")));
+	sscanf(p, "%lf, %lf, %lf", player)*/
+}
+
+// ===============
+
 double rebuild1_time_ms;
 double rebuild2_time_ms;
 double rebuild3_time_ms;
@@ -1564,21 +1676,6 @@ private:
 
 Console console;
 
-namespace player
-{
-//	glm::vec3 position = glm::vec3(MoonCenter) + glm::vec3(0, 0, MoonRadius + 10);
-	glm::vec3 position(0, 0, 20);
-	std::atomic<CompressedIVec3> cpos(compress_ivec3(glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits));
-	float yaw = 0;
-	float pitch = 0;
-	glm::mat4 orientation;
-	//float* m = glm::value_ptr(player::orientation);
-	//glm::vec3 forward(m[4], m[5], m[6]);
-	//glm::vec3 right(m[0], m[1], m[2]);
-	glm::vec3 velocity;
-	bool flying = true;
-}
-
 class Chunks
 {
 public:
@@ -1642,7 +1739,7 @@ private:
 		BlockRenderer renderer;
 		while (true)
 		{
-			glm::ivec3 cpos = decompress_ivec3(player::cpos);
+			glm::ivec3 cpos = decompress_ivec3(g_player.atomic_cpos);
 			if (cpos == last_cpos)
 			{
 				usleep(200);
@@ -1776,7 +1873,7 @@ void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 	assert(chunk->get_cpos() == cpos);
 
 	float k = 1 << E;
-	glm::ivec3 origin = glm::ivec3(glm::floor(player::position * k));
+	glm::ivec3 origin = glm::ivec3(glm::floor(g_player.position * k));
 
 	int64_t budget = 40 / Timestamp::milisec_per_tick;
 	Timestamp ta;
@@ -1787,7 +1884,7 @@ void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 		glm::ivec3 dir = directions[ray_it++];
 		if (ray_it == directions.size()) ray_it = 0;
 		rays_remaining -= 1;
-		if (frustum.contains_point(player::position + glm::vec3(dir))) raytrace(chunk, origin, dir);
+		if (frustum.contains_point(g_player.position + glm::vec3(dir))) raytrace(chunk, origin, dir);
 		if ((q++ % 2048) == 0 && ta.elapsed() > budget) break;
 	}
 	visible_chunks.sort(cpos);
@@ -1861,16 +1958,13 @@ void edit_block(glm::ivec3 pos, Block block)
 	if (p.z == ChunkSizeMask) g_chunks.reset(cpos + iz, renderer);
 }
 
-bool digging_on = false;
-Timestamp digging_start;
-glm::ivec3 digging_block;
-
 void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	show_carousel = false;
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
 		g_scm.save();
+		g_player.save();
 		glfwSetWindowShouldClose(window, GL_TRUE);
 		return;
 	}
@@ -1879,13 +1973,13 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		if (action == GLFW_PRESS || action == GLFW_REPEAT)
 		{
-			if (console.OnKey(key, mods))
-			{
-				// handled by console
-			}
-			else if (key == GLFW_KEY_F2)
+			if (key == GLFW_KEY_F1)
 			{
 				console.Hide();
+			}
+			else
+			{
+				console.OnKey(key, mods);
 			}
 		}
 	}
@@ -1917,9 +2011,9 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 		}
 		else if (key == GLFW_KEY_TAB)
 		{
-			player::flying = !player::flying;
-			player::velocity = glm::vec3(0, 0, 0);
-			digging_on = false;
+			g_player.creative_mode = !g_player.creative_mode;
+			g_player.velocity = glm::vec3(0, 0, 0);
+			g_player.digging_on = false;
 		}
 	}
 }
@@ -1928,23 +2022,14 @@ void on_mouse_button(GLFWwindow* window, int button, int action, int mods)
 {
 	show_carousel = false;
 
-	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection)
+	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection && g_player.creative_mode)
 	{
-		if (player::flying)
-		{
-			edit_block(sel_cube, Block::none);
-		}
-		else
-		{
-			digging_on = true;
-			digging_start = Timestamp();
-			digging_block = sel_cube;
-		}
+		edit_block(sel_cube, Block::none);
 	}
 
 	if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_LEFT)
 	{
-		digging_on = false;
+		g_player.digging_on = false;
 	}
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
@@ -1965,12 +2050,14 @@ void on_scroll(GLFWwindow* window, double x, double y)
 	carousel_block = Block(uint(std::round(scroll_y)) + 1);
 }
 
+bool last_cursor_init = false;
+double last_cursor_x, last_cursor_y;
+
 void model_init(GLFWwindow* window)
 {
 	glfwSetKeyCallback(window, on_key);
 	glfwSetMouseButtonCallback(window, on_mouse_button);
 	glfwSetScrollCallback(window, on_scroll);
-	glfwSetCursorPos(window, 0, 0);
 }
 
 int NeighborBit(int dx, int dy, int dz)
@@ -2137,13 +2224,13 @@ glm::vec3 gravity(glm::vec3 pos)
 
 void simulate(float dt, glm::vec3 dir)
 {
-	if (!player::flying)
+	if (!g_player.creative_mode)
 	{
-		player::velocity += gravity(player::position) * dt;
+		g_player.velocity += gravity(g_player.position) * dt;
 	}
-	player::position += dir * ((player::flying ? 20 : 10) * dt) + player::velocity * dt;
+	g_player.position += dir * ((g_player.creative_mode ? 20 : 10) * dt) + g_player.velocity * dt;
 
-	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
+	glm::ivec3 p = glm::ivec3(glm::floor(g_player.position));
 	FOR(i, 2)
 	{
 		// Resolve all collisions simultaneously
@@ -2152,15 +2239,15 @@ void simulate(float dt, glm::vec3 dir)
 		FOR2(x, p.x - 3, p.x + 3) FOR2(y, p.y - 3, p.y + 3) FOR2(z, p.z - 3, p.z + 3)
 		{
 			glm::ivec3 cube(x, y, z);
-			if (!g_chunks.can_move_through(cube) && 1 == sphere_vs_cube(player::position, 0.9, cube, cube_neighbors(cube)))
+			if (!g_chunks.can_move_through(cube) && 1 == sphere_vs_cube(g_player.position, 0.9, cube, cube_neighbors(cube)))
 			{
-				sum += player::position;
+				sum += g_player.position;
 				c += 1;
 			}
 		}
 		if (c == 0) break;
-		player::velocity = glm::vec3(0, 0, 0);
-		player::position = sum / (float)c;
+		g_player.velocity = glm::vec3(0, 0, 0);
+		g_player.position = sum / (float)c;
 	}
 }
 
@@ -2168,11 +2255,11 @@ void model_move_player(GLFWwindow* window, float dt)
 {
 	glm::vec3 dir(0, 0, 0);
 
-	float* m = glm::value_ptr(player::orientation);
+	float* m = glm::value_ptr(g_player.orientation);
 	glm::vec3 forward(m[4], m[5], m[6]);
 	glm::vec3 right(m[0], m[1], m[2]);
 
-	if (!player::flying)
+	if (!g_player.creative_mode)
 	{
 		forward.z = 0;
 		forward = glm::normalize(forward);
@@ -2187,12 +2274,12 @@ void model_move_player(GLFWwindow* window, float dt)
 	if (glfwGetKey(window, 'Q')) dir[2] += 1;
 	if (glfwGetKey(window, 'E')) dir[2] -= 1;
 
-	if (!player::flying && glfwGetKey(window, GLFW_KEY_SPACE))
+	if (!g_player.creative_mode && glfwGetKey(window, GLFW_KEY_SPACE))
 	{
-		player::velocity = gravity(player::position) * -0.5f;
+		g_player.velocity = gravity(g_player.position) * -0.5f;
 	}
 
-	glm::vec3 p = player::position;
+	glm::vec3 p = g_player.position;
 	if (dir.x != 0 || dir.y != 0 || dir.z != 0)
 	{
 		show_carousel = false;
@@ -2208,12 +2295,12 @@ void model_move_player(GLFWwindow* window, float dt)
 		simulate(0.008, dir);
 		dt -= 0.008;
 	}
-	if (p != player::position)
+	if (p != g_player.position)
 	{
 		rays_remaining = directions.size();
-		float* ma = glm::value_ptr(player::orientation);
+		float* ma = glm::value_ptr(g_player.orientation);
 		glm::vec3 direction(ma[4], ma[5], ma[6]);
-		glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+		glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
 		visible_chunks.cleanup(cplayer, direction);
 	}
 }
@@ -2282,14 +2369,14 @@ Sphere select_sphere(10);
 
 bool select_cube(glm::ivec3& sel_cube, int& sel_face)
 {
-	glm::ivec3 p = glm::ivec3(glm::floor(player::position));
-	float* ma = glm::value_ptr(player::orientation);
+	glm::ivec3 p = glm::ivec3(glm::floor(g_player.position));
+	float* ma = glm::value_ptr(g_player.orientation);
 	glm::vec3 dir(ma[4], ma[5], ma[6]);
 
 	for (glm::ivec3 d : select_sphere)
 	{
 		glm::ivec3 cube = p + d;
-		if (g_chunks.selectable_block(cube) && (sel_face = intersects_ray_cube(player::position, dir, cube)) != -1)
+		if (g_chunks.selectable_block(cube) && (sel_face = intersects_ray_cube(g_player.position, dir, cube)) != -1)
 		{
 			sel_cube = cube;
 			return true;
@@ -2302,20 +2389,20 @@ void model_orientation(GLFWwindow* window)
 {
 	double cursor_x, cursor_y;
 	glfwGetCursorPos(window, &cursor_x, &cursor_y);
-	static double last_cursor_x = 0;
-	static double last_cursor_y = 0;
+	if (!last_cursor_init)
+	{
+		last_cursor_init = true;
+		last_cursor_x = cursor_x;
+		last_cursor_y = cursor_y;
+	}
 	if (cursor_x != last_cursor_x || cursor_y != last_cursor_y)
 	{
 		show_carousel = false;
-		player::yaw += (cursor_x - last_cursor_x) / 150;
-		player::pitch += (cursor_y - last_cursor_y) / 150;
-		if (player::pitch > M_PI / 2 * 0.999) player::pitch = M_PI / 2 * 0.999;
-		if (player::pitch < -M_PI / 2 * 0.999) player::pitch = -M_PI / 2 * 0.999;
+		g_player.turn((cursor_x - last_cursor_x) / 150, (cursor_y - last_cursor_y) / 150);
 		last_cursor_x = cursor_x;
 		last_cursor_y = cursor_y;
-		player::orientation = glm::rotate(glm::rotate(glm::mat4(), -player::yaw, glm::vec3(0, 0, 1)), -player::pitch, glm::vec3(1, 0, 0));
-		perspective_rotation = glm::rotate(perspective, player::pitch, glm::vec3(1, 0, 0));
-		perspective_rotation = glm::rotate(perspective_rotation, player::yaw, glm::vec3(0, 1, 0));
+		perspective_rotation = glm::rotate(perspective, g_player.pitch, glm::vec3(1, 0, 0));
+		perspective_rotation = glm::rotate(perspective_rotation, g_player.yaw, glm::vec3(0, 1, 0));
 		perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
 		rays_remaining = directions.size();
 	}
@@ -2323,38 +2410,29 @@ void model_orientation(GLFWwindow* window)
 
 void model_digging(GLFWwindow* window)
 {
-	if (digging_on)
+	if (g_player.digging_on)
 	{
 		if (!selection)
 		{
-			digging_on = false;
+			g_player.digging_on = false;
 			return;
 		}
 
-		if (sel_cube != digging_block)
+		if (sel_cube != g_player.digging_block)
 		{
-			digging_on = false;
-			digging_block = sel_cube;
-			digging_start = Timestamp();
+			g_player.start_digging(sel_cube);
 		}
-		else if (digging_start.elapsed_ms() > 3500)
+		else if (g_player.digging_start.elapsed_ms() > 2000)
 		{
 			edit_block(sel_cube, Block::none);
-			digging_on = false;
+			g_player.digging_on = false;
 			selection = select_cube(/*out*/sel_cube, /*out*/sel_face);
-			if (selection)
-			{
-				digging_on = true;
-				digging_block = sel_cube;
-				digging_start = Timestamp();
-			}
+			if (selection) g_player.start_digging(sel_cube);
 		}
 	}
 	else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS && selection)
 	{
-		digging_on = true;
-		digging_block = sel_cube;
-		digging_start = Timestamp();
+		g_player.start_digging(sel_cube);
 	}
 }
 
@@ -2560,10 +2638,10 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 
 void model_simulate_blocks()
 {
-	if (player::flying) return;
+	if (g_player.creative_mode) return;
 
 	Timestamp tb;
-	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
 
 	sim_active_chunks.clear();
 	for (glm::ivec3 d : simulation_sphere)
@@ -2812,6 +2890,11 @@ void render_init()
 	light_direction = glm::normalize(light_direction);
 
 	perspective = glm::perspective<float>(M_PI / 180 * 90, width / (float)height, 0.03, 1000);
+	perspective_rotation = glm::rotate(perspective, g_player.pitch, glm::vec3(1, 0, 0));
+	perspective_rotation = glm::rotate(perspective_rotation, g_player.yaw, glm::vec3(0, 1, 0));
+	perspective_rotation = glm::rotate(perspective_rotation, float(M_PI / 2), glm::vec3(-1, 0, 0));
+	rays_remaining = directions.size();
+	last_cursor_init = false;
 	text = new Text;
 
 	line_program = load_program("line");
@@ -2912,8 +2995,8 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 
 	glUseProgram(block_program);
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
-	glUniform3fv(block_eye_loc, 1, glm::value_ptr(player::position));
-	if (!player::flying) g_tick += 1;
+	glUniform3fv(block_eye_loc, 1, glm::value_ptr(g_player.position));
+	if (!g_player.creative_mode) g_tick += 1;
 	glUniform1i(block_tick_loc, g_tick);
 	glUniform1f(block_foglimit2_loc, foglimit2);
 
@@ -2966,7 +3049,7 @@ void render_gui()
 	{
 		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
 		text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c",
-			player::position.x, player::position.y, player::position.z, stats::chunk_count, stats::vertex_count / 3000,
+			g_player.position.x, g_player.position.y, g_player.position.z, stats::chunk_count, stats::vertex_count / 3000,
 			stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms,
 			enable_f4 ? '4' : '-', enable_f5 ? '5' : '-', enable_f6 ? '6' : '-');
 
@@ -2984,9 +3067,9 @@ void render_gui()
 			text->Print("", 0);
 		}
 
-		if (digging_on)
+		if (g_player.digging_on)
 		{
-			text->Printf("digging for %.1f seconds", digging_start.elapsed_ms() / 1000);
+			text->Printf("digging for %.1f seconds", g_player.digging_start.elapsed_ms() / 1000);
 		}
 	}
 
@@ -3148,6 +3231,7 @@ int main(int, char**)
 	glfwSwapInterval(1/*VSYNC*/);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwGetFramebufferSize(window, &width, &height);
+	glfwPollEvents();
 
 	model_init(window);
 	render_init();
@@ -3165,7 +3249,7 @@ int main(int, char**)
 	Timestamp::init(a, b, c, d);
 
 	// Wait for 3x3 chunks around player's starting position to load
-	glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
 	Timestamp tq;
 	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1)
 	{
@@ -3192,10 +3276,10 @@ int main(int, char**)
 		t0 = ta;
 		glfwPollEvents();
 		model_frame(window, frame_ms);
-		glm::mat4 matrix = glm::translate(perspective_rotation, -player::position);
+		glm::mat4 matrix = glm::translate(perspective_rotation, -g_player.position);
 		Frustum frustum(matrix);
-		glm::ivec3 cplayer = glm::ivec3(glm::floor(player::position)) >> ChunkSizeBits;
-		player::cpos = compress_ivec3(cplayer);
+		g_player.cpos = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
+		g_player.atomic_cpos = compress_ivec3(g_player.cpos);
 
 		Timestamp tb;
 		update_render_list(cplayer, frustum);

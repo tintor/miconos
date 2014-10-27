@@ -38,7 +38,7 @@ private:
 
 // TODO make it work for vertical monitor setup
 const int ConsoleWidth = 130;
-const int ConsoleHeight = 38;
+const int ConsoleHeight = 37;
 
 class Console
 {
