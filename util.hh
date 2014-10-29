@@ -239,7 +239,7 @@ uint64_t z_order(glm::ivec3 a)
 {
 	// Z-order space filling curve!
 	static_assert(1 <= Bits && Bits <= 21, "");
-	assert(a.x >= 0 && a.x < (1 << Bits) && a.y >= 0 && a.y < (1 << Bits) && a.z >= 0 && a.z < (1 << Bits));
+	assert((uint)a.x < (1 << Bits) && (uint)a.y < (1 << Bits) && (uint)a.z < (1 << Bits));
 
 	uint64_t e = 0;
 	int w = 0;

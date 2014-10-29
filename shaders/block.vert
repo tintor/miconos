@@ -77,7 +77,7 @@ void main()
     {
         fragment_texture = block_texture + ((tick / 8) % 32);
     }
-    fragment_light = light / 255.0f;
+    fragment_light = (int(light) + 1) / 256.0f;
 
     gl_Position = matrix * vec4(p, 1);
 
