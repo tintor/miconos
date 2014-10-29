@@ -693,11 +693,20 @@ BlockTexture get_block_texture(Block block, int face)
 
 // ============================
 
+static const glm::ivec3 face_dir[6] = { -ix, ix, -iy, iy, -iz, iz };
+
+bool between(glm::ivec3 a, glm::ivec3 b, glm::ivec3 c)
+{
+	return a.x <= b.x && b.x <= c.x && a.y <= b.y && b.y <= c.y && a.z <= b.z && b.z <= c.z;
+}
+
 namespace Cube
 {
 	glm::ivec3 corner[8];
 	const int faces[6][4] = { { 0, 4, 6, 2 }/*xmin*/, { 1, 3, 7, 5 }/*xmax*/, { 0, 1, 5, 4 }/*ymin*/, { 2, 6, 7, 3 }/*ymax*/, { 0, 2, 3, 1 }/*zmin*/, { 4, 5, 7, 6 }/*zmax*/ };
 	glm::i8vec3 lightmap[6/*face*/][8/*vertex*/][4/*four blocks around vertex affecting light of vertex*/];
+	glm::i8vec3 lightmap2[6/*face*/][8/*vertex*/][4*3/*three blocks around four blocks around vertex affecting light of vertex*/];
+
 	Initialize
 	{
 		FOR(i, 8)
@@ -709,7 +718,17 @@ namespace Cube
 				if (f % 2 == 0) max[f / 2] -= 1;
 				if (f % 2 == 1) min[f / 2] += 1;
 				int p = 0;
-				FOR2(x, min.x, max.x) FOR2(y, min.y, max.y) FOR2(z, min.z, max.z) lightmap[f][i][p++] = glm::i8vec3(x, y, z);
+				int q = 0;
+				FOR2(x, min.x, max.x) FOR2(y, min.y, max.y) FOR2(z, min.z, max.z)
+				{
+					lightmap[f][i][p++] = glm::i8vec3(x, y, z);
+					FOR(ff, 6) if (ff != (f ^ 1))
+					{
+						glm::ivec3 b = glm::ivec3(x, y, z) + face_dir[ff];
+						if (!between(min, b, max)) lightmap2[f][i][q++] = glm::i8vec3(b);
+					}
+					assert(q == p * 3);
+				}
 			}
 		}
 	}
@@ -1086,20 +1105,21 @@ struct Quad
 {
 	glm::u8vec3 pos[4];
 	BlockTexture texture;
-	uint8_t light; // 2 bits of light intensity per vertex
+	uint16_t light;
 	uint16_t plane;
 };
 
 bool operator<(const Quad& a, const Quad& b)
 {
 	if (a.texture != b.texture) return a.texture < b.texture;
-	return a.plane < b.plane;
+	if (a.plane != b.plane) return a.plane < b.plane;
+	return a.light < b.light;
 }
 
 struct Vertex
 {
 	BlockTexture texture;
-	uint8_t light; // 2 bits
+	uint8_t light;
 	glm::u8vec2 uv;
 	glm::u8vec3 pos;
 };
@@ -1156,7 +1176,6 @@ private:
 };
 
 struct Chunk;
-static const glm::ivec3 face_dir[6] = { -ix, ix, -iy, iy, -iz, iz };
 
 struct CachedChunk
 {
@@ -1179,6 +1198,13 @@ uint8_t Light(const Quad& q, int i)
 	int s = (i % 4) * 2;
 	int a = (q.light >> s) & 3;
 	return (a + 1) * 64 - 1;
+}
+
+uint8_t Light2(const Quad& q, int i)
+{
+	int s = (i % 4) * 4;
+	int a = (q.light >> s) & 15;
+	return (a + 1) * 16 - 1;
 }
 
 struct BlockRenderer
@@ -1228,6 +1254,25 @@ struct BlockRenderer
 			int s = 0;
 			FOR(j, 4) if (get(glm::ivec3(map[j])) == Block::none) s += 1;
 			q |= (s - 1) << (i * 2);
+		}
+		return q;
+	}
+
+	uint16_t face_light2(int face)
+	{
+		const int* f = Cube::faces[face];
+		int q = 0;
+		FOR(i, 4)
+		{
+			glm::i8vec3* map = Cube::lightmap[face][f[i]];
+			glm::i8vec3* map2 = Cube::lightmap2[face][f[i]];
+			int s = 0;
+			FOR(j, 4) if (get(glm::ivec3(map[j])) == Block::none)
+			{
+				s += 1;
+				FOR(k, 3) if (get(glm::ivec3(map2[j*3+k])) == Block::none) s += 1;
+			}
+			q |= (s - 1) << (i * 4);
 		}
 		return q;
 	}
@@ -1370,7 +1415,7 @@ struct BlockRenderer
 		while (a != m_quads.end())
 		{
 			auto b = a + 1;
-			while (b != m_quads.end() && a->texture == b->texture && a->plane == b->plane) b += 1;
+			while (b != m_quads.end() && a->texture == b->texture && a->plane == b->plane && a->light == b->light) b += 1;
 
 			if (is_leaves(a->texture))
 			{
@@ -1417,10 +1462,10 @@ struct BlockRenderer
 
 			// How much to rotate each face?
 			int a = (face == 0 || face == 3 || face == 5) ? 0 : 1;
-			Vertex v0 = { q.texture, Light(q, 0+a), glm::u8vec2(u, v), q.pos[(0+a)%4] };
-			Vertex v1 = { q.texture, Light(q, 1+a), glm::u8vec2(u, 0), q.pos[(1+a)%4] };
-			Vertex v2 = { q.texture, Light(q, 2+a), glm::u8vec2(0, 0), q.pos[(2+a)%4] };
-			Vertex v3 = { q.texture, Light(q, 3+a), glm::u8vec2(0, v), q.pos[(3+a)%4] };
+			Vertex v0 = { q.texture, Light2(q, 0+a), glm::u8vec2(u, v), q.pos[(0+a)%4] };
+			Vertex v1 = { q.texture, Light2(q, 1+a), glm::u8vec2(u, 0), q.pos[(1+a)%4] };
+			Vertex v2 = { q.texture, Light2(q, 2+a), glm::u8vec2(0, 0), q.pos[(2+a)%4] };
+			Vertex v3 = { q.texture, Light2(q, 3+a), glm::u8vec2(0, v), q.pos[(3+a)%4] };
 
 			*e++ = v1;
 			*e++ = v2;
@@ -1599,7 +1644,7 @@ struct Chunk : public MapChunk
 		Timestamp ta;
 		if (!empty()) renderer.generate_quads(get_cpos(), this);
 		Timestamp tb;
-		//if (!m_active) renderer.merge_quads(); // don't waste time merging if chunk will change soon
+		if (!m_active) renderer.merge_quads(); // don't waste time merging if chunk will change soon
 		Timestamp tc;
 		renderer.export_vertices(m_vertices);
 		Timestamp td;
@@ -2719,21 +2764,6 @@ void model_frame(GLFWwindow* window, double delta_ms)
 // Render
 
 GLuint block_texture;
-glm::vec3 light_direction(0.5, 1, -1);
-
-GLubyte light_cache[8][8][8];
-
-Initialize
-{
-	FOR(a, 8) FOR(b, 8) FOR(c, 8)
-	{
-		glm::vec3 normal = glm::normalize(glm::cross(glm::vec3(Cube::corner[b] - Cube::corner[a]), glm::vec3(Cube::corner[c] - Cube::corner[a])));
-		float cos_angle = std::max<float>(0, -glm::dot(normal, light_direction));
-		float light = glm::clamp<float>(0.4f + cos_angle * 0.6f, 0, 1);
-		light_cache[a][b][c] = (uint) floorf(glm::clamp<float>(light * 256, 0, 255));
-	}
-}
-
 Text* text = nullptr;
 
 int line_program;
@@ -2864,8 +2894,6 @@ void render_init()
 		loader.load_textures();
 	}
 
-	light_direction = glm::normalize(light_direction);
-
 	perspective = glm::perspective<float>(M_PI / 180 * 90, width / (float)height, 0.03, 1000);
 	perspective_rotation = glm::rotate(perspective, g_player.pitch, glm::vec3(1, 0, 0));
 	perspective_rotation = glm::rotate(perspective_rotation, g_player.yaw, glm::vec3(0, 1, 0));
@@ -2909,7 +2937,7 @@ void BlockRenderer::draw_quad(int face, bool reverse, bool underwater_overlay)
 	q.texture = get_block_texture(m_block, face);
 	if (underwater_overlay) q.texture = BlockTexture((int)q.texture | (1 << 15));
 	const int* f = Cube::faces[face];
-	q.light = face_light(face); //light_cache[f[0]][f[1]][f[2]]; // TODO reverse?
+	q.light = face_light2(face); // TODO reverse?
 	glm::ivec3 w = m_pos & ChunkSizeMask;
 	if (reverse)
 	{
@@ -2941,7 +2969,7 @@ void BlockRenderer::draw_quad(int face, int zmin, int zmax, bool reverse, bool u
 	q.texture = get_block_texture(m_block, face);
 	if (underwater_overlay) q.texture = BlockTexture((int)q.texture | (1 << 15));
 	const int* f = Cube::faces[face];
-	q.light = face_light(face); // TODO zmin/zmax? // light_cache[f[0]][f[1]][f[2]]; // TODO reverse?
+	q.light = face_light2(face); // TODO zmin/zmax? // TODO reverse?
 	glm::ivec3 w = m_pos & ChunkSizeMask;
 	if (reverse)
 	{
