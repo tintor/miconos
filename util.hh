@@ -233,28 +233,6 @@ private:
 
 // =================
 
-// TODO: Use O(logN) algorithm
-template<int Bits>
-uint64_t z_order(glm::ivec3 a)
-{
-	// Z-order space filling curve!
-	static_assert(1 <= Bits && Bits <= 21, "");
-	assert((uint)a.x < (1 << Bits) && (uint)a.y < (1 << Bits) && (uint)a.z < (1 << Bits));
-
-	uint64_t e = 0;
-	int w = 0;
-	FOR(i, Bits)
-	{
-		glm::ivec3 b = a & 1;
-		a >>= 1;
-		e |= uint64_t((b.x * 2 + b.y) * 2 + b.z) << w;
-		w += 3;
-	}
-	return e;
-}
-
-// =================
-
 #define CHECK(A) do { if (!(A)) { fprintf(stderr, "CHECK(%s) failed at %s line %d", #A, __FILE__, __LINE__); return false; } } while(0);
 
 #define AutoLock(A) (A).lock(); Auto((A).unlock());
