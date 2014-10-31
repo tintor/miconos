@@ -84,6 +84,7 @@ Sphere render_sphere(RenderDistance);
 	F(water13) \
 	F(water14) \
 	F(water15) \
+	F(cloud) \
 	F(leaves_acacia) \
 	F(leaves_big_oak) \
 	F(leaves_birch) \
@@ -510,6 +511,7 @@ static_assert((uint)Block::none == 0, "common in conditions");
 	F(stonebrick_cracked) \
 	F(stonebrick_carved) \
 	F(dispenser_front_vertical) \
+	F(cloud) \
 	B
 
 const char* block_texture_name[] = BlockTextures({, FuncStr, });
@@ -522,7 +524,7 @@ bool is_leaves(Block a) { return a >= Block::leaves_acacia && a <= Block::leaves
 bool is_sand(Block a) { return a == Block::sand || a == Block::red_sand; }
 bool is_water(Block a) { return a <= Block::water15 && a >= Block::water1; }
 bool is_water_partial(Block a) { return a >= Block::water1 && a < Block::water15; }
-bool can_move_through(Block block) { return block <= Block::water15; }
+bool can_move_through(Block block) { return block <= Block::cloud; }
 
 bool can_see_through_non_water(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white; }
 bool can_see_through(Block block) { return block <= Block::glass_white; }
@@ -558,6 +560,7 @@ BlockTexture get_block_texture(Block block, int face)
 	switch (block)
 	{
 	case Block::none: FAIL;
+	SC(cloud);
 	SC(leaves_acacia);
 	SC(leaves_big_oak);
 	SC(leaves_birch);
@@ -876,7 +879,7 @@ Block generate_block(glm::ivec3 pos)
 	{
 		// clouds
 		double q = noise(glm::vec3(pos) * 0.01f, 4, 0.5f, 0.5f, false);
-		if (q < -0.35) return Block::ice_packed;
+		if (q < -0.35) return Block::cloud;
 	}
 	else if (pos.z <= heightmap->Height(pos.x, pos.y))
 	{
@@ -2922,13 +2925,20 @@ void BlockTextureLoader::load(BlockTexture tex)
 	assertf(m_width == iwidth, "m_wdith=%u iwidth=%u", m_width, iwidth);
 	assertf((iheight % m_height) == 0, "iheight=%u m_height=%u", iheight, m_height);
 
+	glm::u8vec4* pixel = (glm::u8vec4*)image;
 	if (is_leaves(tex) || tex == BlockTexture::grass_top)
 	{
-		glm::u8vec4* pixel = (glm::u8vec4*)image;
 		FOR(j, m_width * m_height)
 		{
 			pixel[j].r = 0;
 			pixel[j].b = 0;
+		}
+	}
+	if (tex == BlockTexture::cloud)
+	{
+		FOR(j, m_width * m_height)
+		{
+			pixel[j].a = pixel[j].r;
 		}
 	}
 
@@ -3274,12 +3284,14 @@ void OnError(int error, const char* message)
 double Timestamp::milisec_per_tick = 0;
 
 std::atomic<Timestamp> stall_ts;
+std::atomic<bool> stall_enable(true);
 
 void stall_alarm_thread()
 {
 	while (true)
 	{
 		usleep(1000);
+		if (!stall_enable.load(std::memory_order_relaxed)) break;
 		Timestamp a = stall_ts;
 		if (a.elapsed_ms() > 5000)
 		{
@@ -3393,6 +3405,7 @@ int main(int, char**)
 		glfwSwapBuffers(window);
 	}
 
+	stall_enable.store(false);
 	fprintf(stderr, "Waiting for threads\n");
 	g_chunks.join_threads();
 	g_scm.save();
