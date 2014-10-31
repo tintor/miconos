@@ -233,28 +233,6 @@ private:
 
 // =================
 
-#define CHECK(A) do { if (!(A)) { fprintf(stderr, "CHECK(%s) failed at %s line %d", #A, __FILE__, __LINE__); return false; } } while(0);
+#define CHECK(A) do { if (!(A)) { fprintf(stderr, "CHECK(%s) failed at %s line %d\n", #A, __FILE__, __LINE__); return false; } } while(0);
 
 #define AutoLock(A) (A).lock(); Auto((A).unlock());
-
-// =================
-
-void array_file_init(void*& map, int& fd);
-bool array_file_open(const char* prefix, glm::ivec3 pos, const char* suffix, void*& map, int& fd, size_t size);
-void array_file_close(void*& map, int& fd, size_t size);
-void array_file_save(int fd);
-
-template<size_t Size>
-struct ArrayFile
-{
-	ArrayFile() { array_file_init(m_map, m_fd); }
-	~ArrayFile() { close(); }
-	bool open(const char* prefix, glm::ivec3 pos, const char* suffix) { return array_file_open(prefix, pos, suffix, m_map, m_fd, Size); }
-	void close() { return array_file_close(m_map, m_fd, Size); }
-	void* data() { return m_map; }
-	void save() { array_file_save(m_fd); }
-
-private:
-	void* m_map;
-	int m_fd;
-};
