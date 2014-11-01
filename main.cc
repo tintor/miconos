@@ -2781,7 +2781,7 @@ void model_simulate_blocks()
 			}
 			else if (b == Block::soul_sand)
 			{
-				// Morth water around it
+				// Morph water around it
 				bool active = false;
 				for (auto v : { -ix, ix, -iy, iy, -iz, iz })
 				{
@@ -2798,6 +2798,10 @@ void model_simulate_blocks()
 				}
 			}
 		}
+	}
+
+	for (glm::ivec3 cpos : sim_active_chunks)
+	{
 		Chunk& chunk = g_chunks.get(cpos);
 		if (!chunk.m_active) chunk.update_empty();
 	}
