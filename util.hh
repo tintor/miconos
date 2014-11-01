@@ -42,6 +42,8 @@ public:
 	Type pop_back() { assert(m_size > 0); return m_array[--m_size]; }
 	Type* begin() { return m_array.begin(); }
 	Type* end() { return m_array.begin() + m_size; }
+	const Type* begin() const { return m_array.begin(); }
+	const Type* end() const { return m_array.begin() + m_size; }
 	void clear() { m_size = 0; }
 private:
 	std::array<Type, Capacity> m_array;

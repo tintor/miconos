@@ -529,6 +529,8 @@ bool can_move_through(Block block) { return block <= Block::cloud; }
 bool can_see_through_non_water(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white; }
 bool can_see_through(Block block) { return block <= Block::glass_white; }
 
+bool is_blended(BlockTexture a) { return a == BlockTexture::ice || a == BlockTexture::glass_white || a == BlockTexture::water_still; }
+
 static_assert(Block::water1 == (Block)1, "");
 bool accepts_water(Block b) { return b < Block::water15; }
 
@@ -1181,36 +1183,41 @@ SuperChunkManager g_scm;
 
 // ============================
 
+// TODO: use textures to get per fragment shadows (instead of per vertex), will also work correctly with merger
 struct Quad
 {
-	glm::u8vec3 pos[4];
-	BlockTexture texture;
-	uint16_t light;
-	uint16_t plane;
+	glm::u8vec3 pos[4]; // TODO: replace with x y w h
+	BlockTexture texture; // highest bit: isUnderwater
+	uint16_t light; // 4 bits per vertex
+	uint16_t plane; // hi byte: plane normal (face), lo byte: plane offset
 };
+
+struct WQuad
+{
+	glm::u16vec3 pos[4]; // TODO: replace with x y w h
+	BlockTexture texture; // highest bit: isUnderwater
+	uint16_t light; // 4 bits per vertex
+	uint16_t plane; // hi byte: plane normal (face), lo byte: plane offset
+};
+
+float distance(const Quad& q, glm::vec3 e)
+{
+	glm::vec3 a(q.pos[0]), c(q.pos[2]);
+	return glm::distance2((a + c) * 0.5f, e);
+}
 
 bool operator<(const Quad& a, const Quad& b)
 {
-	if (a.texture != b.texture) return a.texture < b.texture;
+	if (a.texture != b.texture)
+	{
+		int ga = is_blended(a.texture) ? 1 : 0;
+		int gb = is_blended(b.texture) ? 1 : 0;
+		if (ga != gb) return ga < gb;
+		return a.texture < b.texture;
+	}
 	if (a.plane != b.plane) return a.plane < b.plane;
 	return a.light < b.light;
 }
-
-struct Vertex
-{
-	BlockTexture texture;
-	uint8_t light;
-	glm::u8vec2 uv;
-	glm::u8vec3 pos;
-};
-
-struct WVertex
-{
-	BlockTexture texture;
-	uint8_t light;
-	glm::u16vec2 uv;
-	glm::u16vec3 pos;
-};
 
 const float BlockRadius = sqrtf(3) / 2;
 
@@ -1241,9 +1248,11 @@ struct VisibleChunks
 		array.resize(w);
 	}
 
-	void sort(glm::ivec3 center)
+	void sort(glm::vec3 camera)
 	{
-		auto cmp = [center](glm::ivec3 a, glm::ivec3 b) { return glm::distance2(a, center) > glm::distance2(b, center); };
+		camera -= ii * ChunkSize / 2;
+		camera /= ChunkSize;
+		auto cmp = [camera](glm::ivec3 a, glm::ivec3 b) { return glm::distance2(glm::vec3(a), camera) > glm::distance2(glm::vec3(b), camera); };
 		std::sort(array.begin(), array.end(), cmp);
 	}
 
@@ -1289,7 +1298,8 @@ uint8_t Light2(const Quad& q, int i)
 
 struct BlockRenderer
 {
-	std::vector<Quad> m_quads;
+	std::vector<Quad>* m_quads;
+	std::vector<Quad> m_quadsp;
 	glm::ivec3 m_pos;
 	Block m_block;
 
@@ -1433,8 +1443,12 @@ struct BlockRenderer
 		}
 	}
 
-	void generate_quads(glm::ivec3 cpos, MapChunk& mc)
+	void generate_quads(glm::ivec3 cpos, MapChunk& mc, bool merge, std::vector<Quad>& out, int& blended_quads)
 	{
+		out.clear();
+		m_quadsp.clear();
+		m_quads = merge ? &m_quadsp : &out;
+
 		CachedChunk cc[27];
 		m_cc = cc;
 		m_mc = &mc;
@@ -1467,6 +1481,10 @@ struct BlockRenderer
 				draw_non_water_face<false>(z != CMax, 5);
 			}
 		}
+		if (merge) merge_quads(out);
+		if (!merge) std::partition(out.begin(), out.end(), [](const Quad& q) { return !is_blended(q.texture); });
+		blended_quads = 0;
+		while (blended_quads < out.size() && is_blended(out[out.size() - 1 - blended_quads].texture)) blended_quads += 1;
 	}
 
 	static bool combine(Quad& a, Quad b, int X, int Y)
@@ -1492,18 +1510,18 @@ struct BlockRenderer
 		quads.resize(w);
 	}
 
-	void merge_quads()
+	void merge_quads(std::vector<Quad>& out)
 	{
-		std::sort(m_quads.begin(), m_quads.end());
-		auto a = m_quads.begin(), w = a;
-		while (a != m_quads.end())
+		std::sort(m_quadsp.begin(), m_quadsp.end());
+		auto a = m_quadsp.begin();
+		while (a != m_quadsp.end())
 		{
 			auto b = a + 1;
-			while (b != m_quads.end() && a->texture == b->texture && a->plane == b->plane && a->light == b->light) b += 1;
+			while (b != m_quadsp.end() && a->texture == b->texture && a->plane == b->plane && a->light == b->light) b += 1;
 
 			if (is_leaves(a->texture))
 			{
-				while (a < b) *w++ = *a++;
+				while (a < b) out.push_back(*a++);
 				continue;
 			}
 
@@ -1527,45 +1545,10 @@ struct BlockRenderer
 			merge_axis(m_yx, x, y);
 
 			if (m_xy.size() > m_yx.size()) std::swap(m_xy, m_yx);
-			w = std::copy(m_xy.begin(), m_xy.end(), w);
-		}
-		m_quads.resize(w - m_quads.begin());
-	}
-
-	void export_vertices(std::vector<Vertex>& vertices)
-	{
-		vertices.resize(6 * m_quads.size());
-		Vertex* e = vertices.data();
-		for (Quad q : m_quads)
-		{
-			glm::u8vec3 d = q.pos[2] - q.pos[0];
-			uint u, v;
-			uint face = q.plane >> 8;
-			if (face < 2) { u = d.y; v = d.z; }
-			else if (face < 4) { u = d.x; v = d.z; }
-			else { u = d.y; v = d.x; }
-
-			// How much to rotate each face?
-			int a = (face == 0 || face == 3 || face == 5) ? 0 : 1;
-			Vertex v0 = { q.texture, Light2(q, 0+a), glm::u8vec2(u, v), q.pos[(0+a)%4] };
-			Vertex v1 = { q.texture, Light2(q, 1+a), glm::u8vec2(u, 0), q.pos[(1+a)%4] };
-			Vertex v2 = { q.texture, Light2(q, 2+a), glm::u8vec2(0, 0), q.pos[(2+a)%4] };
-			Vertex v3 = { q.texture, Light2(q, 3+a), glm::u8vec2(0, v), q.pos[(3+a)%4] };
-
-			*e++ = v1;
-			*e++ = v2;
-			if (v1.light != v3.light)
+			for (Quad& q : m_xy)
 			{
-				*e++ = v0;
-				*e++ = v2;
+				out.push_back(q);
 			}
-			else
-			{
-				*e++ = v3;
-				*e++ = v1;
-			}
-			*e++ = v3;
-			*e++ = v0;
 		}
 	}
 };
@@ -1705,10 +1688,6 @@ Player::Player()
 
 // ===============
 
-double rebuild1_time_ms;
-double rebuild2_time_ms;
-double rebuild3_time_ms;
-
 struct Chunk
 {
 	Chunk() : m_cpos(NullChunk) { }
@@ -1718,32 +1697,28 @@ struct Chunk
 	bool empty() { return m_mc.empty(); }
 	void update_empty() { m_mc.update_empty(); }
 
-	void buffer(BlockRenderer& renderer, bool perf=false)
+	void sort(glm::vec3 camera)
+	{
+		if (m_blended_quads > 0)
+		{
+			camera -= get_cpos() << ChunkSizeBits;
+			auto cmp = [camera](const Quad& a, const Quad& b) { return distance(a, camera) > distance(b, camera); };
+			std::sort(m_quads.end() - m_blended_quads, m_quads.end(), cmp);
+		}
+	}
+
+	void buffer(BlockRenderer& renderer)
 	{
 		AutoLock(m_buffer_mutex);
-		renderer.m_quads.clear();
-		Timestamp ta;
-		if (!m_mc.empty()) renderer.generate_quads(get_cpos(), m_mc);
-		Timestamp tb;
-		if (!m_active) renderer.merge_quads(); // don't waste time merging if chunk will change soon
-		Timestamp tc;
-		renderer.export_vertices(m_vertices);
-		Timestamp td;
-		if (perf)
-		{
-			rebuild1_time_ms += ta.elapsed_ms(tb);
-			rebuild2_time_ms += tb.elapsed_ms(tc);
-			rebuild3_time_ms += tc.elapsed_ms(td);
-		}
-		m_render_size = m_vertices.size();
+		renderer.generate_quads(get_cpos(), m_mc, !m_active, m_quads, m_blended_quads);
 		m_dirty = false;
 	}
 
 	int render()
 	{
-		glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * m_vertices.size(), &m_vertices[0], GL_STREAM_DRAW);
-		glDrawArrays(GL_TRIANGLES, 0, m_render_size);
-		return m_render_size;
+		glBufferData(GL_ARRAY_BUFFER, sizeof(Quad) * m_quads.size(), &m_quads[0], GL_STREAM_DRAW);
+		glDrawArrays(GL_POINTS, 0, m_quads.size());
+		return m_quads.size();
 	}
 
 	void init(glm::ivec3 cpos, BlockRenderer& renderer)
@@ -1774,8 +1749,8 @@ private:
 	std::atomic<bool> m_renderable;
 
 	std::mutex m_buffer_mutex; // Protects m_vertices and m_render_size
-	std::vector<Vertex> m_vertices;
-	int m_render_size;
+	std::vector<Quad> m_quads;
+	int m_blended_quads;
 };
 
 Console console;
@@ -1995,12 +1970,12 @@ void update_render_list(glm::ivec3 cpos, Frustum& frustum)
 		if (frustum.contains_point(g_player.position + glm::vec3(dir))) raytrace(chunk, origin, dir);
 		if ((q++ % 2048) == 0 && ta.elapsed() > budget) break;
 	}
-	visible_chunks.sort(cpos);
+	visible_chunks.sort(g_player.position);
 }
 
 namespace stats
 {
-	int vertex_count = 0;
+	int quad_count = 0;
 	int chunk_count = 0;
 
 	float frame_time_ms = 0;
@@ -2011,10 +1986,6 @@ namespace stats
 	float collide_time_ms = 0;
 	float select_time_ms = 0;
 	float simulate_time_ms = 0;
-	float rebuild_time_ms = 0;
-	float rebuild1_time_ms = 0;
-	float rebuild2_time_ms = 0;
-	float rebuild3_time_ms = 0;
 }
 
 // Model
@@ -2866,10 +2837,14 @@ GLuint block_pos_loc;
 GLuint block_tick_loc;
 GLuint block_foglimit2_loc;
 GLuint block_eye_loc;
-GLuint block_position_loc;
-GLuint block_block_texture_loc;
+
+GLuint block_pos0_loc;
+GLuint block_pos1_loc;
+GLuint block_pos2_loc;
+GLuint block_pos3_loc;
+GLuint block_texture_loc;
 GLuint block_light_loc;
-GLuint block_uv_loc;
+GLuint block_plane_loc;
 
 GLuint block_buffer;
 GLuint line_buffer;
@@ -3000,17 +2975,22 @@ void render_init()
 	line_matrix_loc = glGetUniformLocation(line_program, "matrix");
 	line_position_loc = glGetAttribLocation(line_program, "position");
 
-	block_program = load_program("block");
+	block_program = load_program("block", true);
 	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
 	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
-	block_pos_loc = glGetUniformLocation(block_program, "pos");
+	block_pos_loc = glGetUniformLocation(block_program, "cpos");
 	block_tick_loc = glGetUniformLocation(block_program, "tick");
 	block_foglimit2_loc = glGetUniformLocation(block_program, "foglimit2");
 	block_eye_loc = glGetUniformLocation(block_program, "eye");
-	block_position_loc = glGetAttribLocation(block_program, "position");
-	block_block_texture_loc = glGetAttribLocation(block_program, "block_texture_with_flag");
+
+	// TODO: assert these aren't -1
+	block_pos0_loc = glGetAttribLocation(block_program, "vertex0");
+	block_pos1_loc = glGetAttribLocation(block_program, "vertex1");
+	block_pos2_loc = glGetAttribLocation(block_program, "vertex2");
+	block_pos3_loc = glGetAttribLocation(block_program, "vertex3");
+	block_texture_loc = glGetAttribLocation(block_program, "block_texture_with_flag");
 	block_light_loc = glGetAttribLocation(block_program, "light");
-	block_uv_loc = glGetAttribLocation(block_program, "uv");
+	block_plane_loc = glGetAttribLocation(block_program, "plane");
 
 	glGenBuffers(1, &block_buffer);
 	glGenBuffers(1, &line_buffer);
@@ -3047,7 +3027,7 @@ void BlockRenderer::draw_quad(int face, bool reverse, bool underwater_overlay)
 		q.pos[3] = glm::u8vec3((w + Cube::corner[f[3]]) * 15);
 		q.plane = (face << 8) | q.pos[0][face / 2];
 	}
-	m_quads.push_back(q);
+	m_quads->push_back(q);
 }
 
 static glm::ivec3 adjust(glm::ivec3 v, int zmin, int zmax)
@@ -3079,7 +3059,7 @@ void BlockRenderer::draw_quad(int face, int zmin, int zmax, bool reverse, bool u
 		q.pos[3] = glm::u8vec3(w * 15 + adjust(Cube::corner[f[3]], zmin, zmax));
 		q.plane = (face << 8) | q.pos[0][face / 2];
 	}
-	m_quads.push_back(q);
+	m_quads->push_back(q);
 }
 
 const float foglimit2 = sqr(0.8 * RenderDistance * ChunkSize);
@@ -3098,22 +3078,24 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	glUniform1f(block_foglimit2_loc, foglimit2);
 
 	glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
-	glEnableVertexAttribArray(block_position_loc);
-	glEnableVertexAttribArray(block_block_texture_loc);
+	glEnableVertexAttribArray(block_pos0_loc);
+	glEnableVertexAttribArray(block_pos1_loc);
+	glEnableVertexAttribArray(block_pos2_loc);
+	glEnableVertexAttribArray(block_pos3_loc);
+	glEnableVertexAttribArray(block_texture_loc);
 	glEnableVertexAttribArray(block_light_loc);
-	glEnableVertexAttribArray(block_uv_loc);
+	glEnableVertexAttribArray(block_plane_loc);
 
-	glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->pos);
-	glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(Vertex), &((Vertex*)0)->texture);
-	glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->light);
-	glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_BYTE, sizeof(Vertex), &((Vertex*)0)->uv);
+	glVertexAttribIPointer(block_pos0_loc,    3, GL_UNSIGNED_BYTE,  sizeof(Quad), &((Quad*)0)->pos[0]);
+	glVertexAttribIPointer(block_pos1_loc,    3, GL_UNSIGNED_BYTE,  sizeof(Quad), &((Quad*)0)->pos[1]);
+	glVertexAttribIPointer(block_pos2_loc,    3, GL_UNSIGNED_BYTE,  sizeof(Quad), &((Quad*)0)->pos[2]);
+	glVertexAttribIPointer(block_pos3_loc,    3, GL_UNSIGNED_BYTE,  sizeof(Quad), &((Quad*)0)->pos[3]);
+	glVertexAttribIPointer(block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(Quad), &((Quad*)0)->texture);
+	glVertexAttribIPointer(block_light_loc,   1, GL_UNSIGNED_SHORT, sizeof(Quad), &((Quad*)0)->light);
+	glVertexAttribIPointer(block_plane_loc,   1, GL_UNSIGNED_SHORT, sizeof(Quad), &((Quad*)0)->plane);
 
 	stats::chunk_count = 0;
-	stats::vertex_count = 0;
-
-	rebuild1_time_ms = 0;
-	rebuild2_time_ms = 0;
-	rebuild3_time_ms = 0;
+	stats::quad_count = 0;
 
 	static BlockRenderer renderer;
 	for (glm::ivec3 cpos : visible_chunks)
@@ -3123,18 +3105,15 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 			Chunk& chunk = g_chunks.get(cpos);
 			if (chunk.get_cpos() != cpos || !chunk.renderable()) continue;
 
-			if (chunk.m_dirty) chunk.buffer(renderer, true);
+			if (chunk.m_dirty) chunk.buffer(renderer);
 			glm::ivec3 pos = cpos * ChunkSize;
 			glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
-			stats::vertex_count += chunk.render();
+			// TODO: avoid expensive sorting for far chunks
+			chunk.sort(g_player.position);
+			stats::quad_count += chunk.render();
 			stats::chunk_count += 1;
 		}
 	}
-
-	stats::rebuild_time_ms = glm::mix<float>(stats::rebuild_time_ms, rebuild1_time_ms+rebuild2_time_ms+rebuild3_time_ms, 0.15f);
-	stats::rebuild1_time_ms = glm::mix<float>(stats::rebuild1_time_ms, rebuild1_time_ms, 0.15f);
-	stats::rebuild2_time_ms = glm::mix<float>(stats::rebuild2_time_ms, rebuild2_time_ms, 0.15f);
-	stats::rebuild3_time_ms = glm::mix<float>(stats::rebuild3_time_ms, rebuild3_time_ms, 0.15f);
 }
 
 void render_gui()
@@ -3145,14 +3124,13 @@ void render_gui()
 	if (show_counters)
 	{
 		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
-		text->Printf("[%.1f %.1f %.1f] C:%4d T:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c",
-			g_player.position.x, g_player.position.y, g_player.position.z, stats::chunk_count, stats::vertex_count / 3000,
+		text->Printf("[%.1f %.1f %.1f] C:%4d Q:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c",
+			g_player.position.x, g_player.position.y, g_player.position.z, stats::chunk_count, stats::quad_count / 1000,
 			stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms,
 			enable_f4 ? '4' : '-', enable_f5 ? '5' : '-', enable_f6 ? '6' : '-');
 
 		text->Printf("collide:%1.0f select:%1.0f simulate:%1.0f rebuild:%1.0f [%1.0f %1.0f %1.0f]",
-			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms,
-			stats::rebuild_time_ms, stats::rebuild1_time_ms, stats::rebuild2_time_ms, stats::rebuild3_time_ms);
+			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms);
 
 		if (selection)
 		{
@@ -3193,18 +3171,24 @@ void render_gui()
 		glUniform1f(block_foglimit2_loc, 1e30);
 
 		glBindBuffer(GL_ARRAY_BUFFER, block_buffer);
-		glEnableVertexAttribArray(block_position_loc);
-		glEnableVertexAttribArray(block_block_texture_loc);
+		glEnableVertexAttribArray(block_pos0_loc);
+		glEnableVertexAttribArray(block_pos1_loc);
+		glEnableVertexAttribArray(block_pos2_loc);
+		glEnableVertexAttribArray(block_pos3_loc);
+		glEnableVertexAttribArray(block_texture_loc);
 		glEnableVertexAttribArray(block_light_loc);
-		glEnableVertexAttribArray(block_uv_loc);
+		glEnableVertexAttribArray(block_plane_loc);
 
-		glVertexAttribIPointer(block_position_loc, 3, GL_UNSIGNED_SHORT, sizeof(WVertex), &((WVertex*)0)->pos);
-		glVertexAttribIPointer(block_block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(WVertex), &((WVertex*)0)->texture);
-		glVertexAttribIPointer(block_light_loc, 1, GL_UNSIGNED_BYTE, sizeof(WVertex), &((WVertex*)0)->light);
-		glVertexAttribIPointer(block_uv_loc, 2, GL_UNSIGNED_SHORT, sizeof(WVertex), &((WVertex*)0)->uv);
+		glVertexAttribIPointer(block_pos0_loc,    3, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->pos[0]);
+		glVertexAttribIPointer(block_pos1_loc,    3, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->pos[1]);
+		glVertexAttribIPointer(block_pos2_loc,    3, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->pos[2]);
+		glVertexAttribIPointer(block_pos3_loc,    3, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->pos[3]);
+		glVertexAttribIPointer(block_texture_loc, 1, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->texture);
+		glVertexAttribIPointer(block_light_loc,   1, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->light);
+		glVertexAttribIPointer(block_plane_loc,   1, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->plane);
 
-		WVertex vertices[18 * (block_count - 1)];
-		WVertex* e = vertices;
+		WQuad quads[3 * (block_count - 1)];
+		WQuad* e = quads;
 		FOR(i, block_count-1) FOR(face, 6)
 		{
 			if (face != 0 && face != 2 && face != 5) continue;
@@ -3215,26 +3199,12 @@ void render_gui()
 			if (face == 5) light = 127 + 64;
 			if (face == 0) light = 255;
 
-			// TODO: reuse logic from BlockRenderer::generate_quads
 			glm::ivec3 w(128+i, 128-i, 128);
-			glm::u16vec3 pos[4];
-			FOR(j, 4) pos[j] = glm::u16vec3((w + Cube::corner[f[j]]) * 15);
-
-			glm::u16vec3 d = pos[2] - pos[0];
-			uint u, v;
-			if (face < 2) { u = d.y; v = d.z; }
-			else if (face < 4) { u = d.x; v = d.z; }
-			else { u = d.y; v = d.x; }
-
-			// How much to rotate each face?
-			int a = (face == 0 || face == 3 || face == 5) ? 0 : 1;
-			BlockTexture texture = get_block_texture(Block(i+1), face);
-			*e++ = { texture, light, glm::u16vec2(u, 0), pos[(1+a)%4] };
-			*e++ = { texture, light, glm::u16vec2(0, 0), pos[(2+a)%4] };
-			*e++ = { texture, light, glm::u16vec2(0, v), pos[(3+a)%4] };
-			*e++ = { texture, light, glm::u16vec2(u, 0), pos[(1+a)%4] };
-			*e++ = { texture, light, glm::u16vec2(0, v), pos[(3+a)%4] };
-			*e++ = { texture, light, glm::u16vec2(u, v), pos[(0+a)%4] };
+			FOR(j, 4) e->pos[j] = glm::u16vec3((w + Cube::corner[f[j]]) * 15);
+			e->plane = face << 8;
+			e->light = 65535;
+			e->texture = get_block_texture(Block(i+1), face);
+			e += 1;
 		}
 
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -3242,8 +3212,8 @@ void render_gui()
 
 		glm::ivec3 pos(0, 0, 0);
 		glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
-		glBufferData(GL_ARRAY_BUFFER, sizeof(WVertex) * 18 * (block_count - 1), vertices, GL_STREAM_DRAW);
-		glDrawArrays(GL_TRIANGLES, 0, 18 * (block_count - 1));
+		glBufferData(GL_ARRAY_BUFFER, sizeof(WQuad) * 3 * (block_count - 1), quads, GL_STREAM_DRAW);
+		glDrawArrays(GL_POINTS, 0, 3 * (block_count - 1));
 		glUseProgram(0);
 
 		glDisable(GL_BLEND);

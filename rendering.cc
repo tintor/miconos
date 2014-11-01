@@ -1,4 +1,6 @@
 #include "rendering.hh"
+#include "util.hh"
+#include "auto.hh"
 
 #include <cmath>
 #include <cstdarg>
@@ -89,16 +91,18 @@ GLuint make_shader(GLenum type, std::string source)
 	return shader;
 }
 
-GLuint load_shader(GLenum type, const char* filename)
+GLuint load_shader(GLenum type, const char* name, const char* ext)
 {
+	char* filename;
+	asprintf(&filename, "shaders/%s.%s", name, ext);
+	Auto(free(filename));
 	return make_shader(type, read_file(filename));
 }
 
-GLuint make_program(GLuint shader1, GLuint shader2)
+GLuint make_program(const ivector<GLuint, 3>& shaders)
 {
 	GLuint program = glCreateProgram();
-	glAttachShader(program, shader1);
-	glAttachShader(program, shader2);
+	for (GLuint shader : shaders) glAttachShader(program, shader);
 	glLinkProgram(program);
 	GLint status;
 	glGetProgramiv(program, GL_LINK_STATUS, &status);
@@ -112,24 +116,18 @@ GLuint make_program(GLuint shader1, GLuint shader2)
 		fprintf(stderr, "glLinkProgram failed: %s\n", info);
 		exit(1);
 	}
-	glDetachShader(program, shader1);
-	glDetachShader(program, shader2);
-	glDeleteShader(shader1);
-	glDeleteShader(shader2);
+	for (GLuint shader : shaders) glDetachShader(program, shader);
+	for (GLuint shader : shaders) glDeleteShader(shader);
 	return program;
 }
 
-GLuint load_program(const char* name)
+GLuint load_program(const char* name, bool geometry)
 {
-	char* path1;
-	char* path2;
-	asprintf(&path1, "shaders/%s.vert", name);
-	asprintf(&path2, "shaders/%s.frag", name);
-	GLuint shader1 = load_shader(GL_VERTEX_SHADER, path1);
-	GLuint shader2 = load_shader(GL_FRAGMENT_SHADER, path2);
-	free(path1);
-	free(path2);
-	return make_program(shader1, shader2);
+	ivector<GLuint, 3> shaders;
+	shaders.push_back(load_shader(GL_VERTEX_SHADER, name, "vert"));
+	if (geometry) shaders.push_back(load_shader(GL_GEOMETRY_SHADER, name, "geom"));
+	shaders.push_back(load_shader(GL_FRAGMENT_SHADER, name, "frag"));
+	return make_program(shaders);
 }
 
 // Render::Text
