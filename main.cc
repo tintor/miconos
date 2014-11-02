@@ -929,8 +929,8 @@ struct MapChunk
 		update_empty();
 	}
 
-	bool valid() { return m_block; }
-	bool empty() { return m_empty; }
+	bool valid() const { return m_block; }
+	bool empty() const { return m_empty; }
 
 	void update_empty()
 	{
@@ -938,7 +938,7 @@ struct MapChunk
 		FOR(i, ChunkSize3) if (m_block[i] != Block::none) { m_empty = false; break; }
 	}
 
-	Block get(glm::ivec3 a) { return m_block[index(a)]; }
+	Block get(glm::ivec3 a) const { return m_block[index(a)]; }
 	void set(glm::ivec3 a, Block b) { m_empty = false; *m_modified = true; m_block[index(a)] = b; }
 	static int index(glm::ivec3 a) { return (((a.z << ChunkSizeBits) | a.y) << ChunkSizeBits) | a.x; }
 
@@ -1703,9 +1703,9 @@ struct Chunk
 {
 	Chunk() : m_cpos(NullChunk) { }
 
-	Block get(glm::ivec3 a) { return m_mc.get(a); }
+	Block get(glm::ivec3 a) const { return m_mc.get(a); }
 	void set(glm::ivec3 a, Block b) { m_mc.set(a, b); }
-	bool empty() { return m_mc.empty(); }
+	bool empty() const { return m_mc.empty(); }
 	void update_empty() { m_mc.update_empty(); }
 
 	void sort(glm::vec3 camera)
@@ -2815,28 +2815,29 @@ void model_simulate_gravity()
 		FOR(z, ChunkSize) FOR(y, ChunkSize) FOR(x, ChunkSize)
 		{
 			glm::ivec3 v(x, y, z);
-			Block b = chunk.get(v);
+			const Block b = chunk.get(v);
 			if (b == Block::none || b == Block::cloud || b == Block::sand || b == Block::red_sand || is_water(b)) continue;
 			v += cpos << ChunkSizeBits;
 			if (!sim_visited_set.xset(v)) continue;
 			sim_visited_local.clear();
 			sim_visited_local.xset(v);
 
-			uint e = sim_visited_list.size();
+			const uint e = sim_visited_list.size();
 			sim_visited_list.push_back(v);
 			for (uint i = e; i < sim_visited_list.size(); i++)
 			{
 				v = sim_visited_list[i];
-				for (glm::ivec3 d : face_dir)
+				for (const glm::ivec3 d : face_dir)
 				{
 					if (!sim_visited_local.xset(v + d)) continue;
-					BlockRef q(v + d);
-					if (!q.chunk)
+
+					const Chunk* c = g_chunks.get_opt((v + d) >> ChunkSizeBits);
+					if (!c)
 					{
 						sim_visited_list.resize(e);
 						break;
 					}
-					b = q.block;
+					const Block b = c->get((v + d) & ChunkSizeMask);
 					if (b == Block::none || b == Block::cloud) continue;
 					if (d.z == 0 && (b == Block::sand || b == Block::red_sand || is_water(b))) continue;
 					if (!sim_visited_set.xset(v + d))
