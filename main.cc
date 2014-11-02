@@ -1718,11 +1718,11 @@ struct Chunk
 		}
 	}
 
-	void buffer(BlockRenderer& renderer)
+	void remesh(BlockRenderer& renderer)
 	{
 		AutoLock(m_buffer_mutex);
 		renderer.generate_quads(get_cpos(), m_mc, !m_active, m_quads, m_blended_quads);
-		m_dirty = false;
+		m_remesh = false;
 	}
 
 	int render()
@@ -1740,7 +1740,7 @@ struct Chunk
 		// TODO if (m_buffer) g_scm.release_chunk();
 		g_scm.acquire_chunk(cpos, true, m_mc);
 		m_cpos = compress_ivec3(cpos);
-		buffer(renderer);
+		remesh(renderer);
 		m_renderable = true;
 		m_active = true;
 	}
@@ -1752,7 +1752,7 @@ struct Chunk
 	glm::ivec3 get_cpos() { return decompress_ivec3(m_cpos); }
 
 	bool m_active;
-	bool m_dirty;
+	bool m_remesh;
 	friend class Chunks;
 private:
 	MapChunk m_mc;
@@ -1820,7 +1820,7 @@ public:
 		Chunk& c = get(cpos);
 		if (c.get_cpos() != cpos) return;
 		c.m_renderable = false;
-		c.buffer(renderer);
+		c.remesh(renderer);
 		c.m_renderable = true;
 	}
 
@@ -2043,7 +2043,7 @@ void edit_block(glm::ivec3 pos, Block block)
 
 	c.set(p, block);
 	if (block == Block::none) c.update_empty();
-	c.buffer(renderer);
+	c.remesh(renderer);
 	activate_block(pos);
 
 	if (p.x == 0) g_chunks.reset(cpos - ix, renderer);
@@ -2548,25 +2548,30 @@ static const int SimulationDistance = 6; // in chunks
 static const int MaxActiveChunks = 50;
 std::vector<glm::ivec3> sim_active_chunks;
 
-void mark_dirty_chunk(glm::ivec3 pos)
+void mark_remesh_chunk(glm::ivec3 pos)
 {
 	Chunk* chunk = g_chunks.get_opt(pos >> ChunkSizeBits);
-	if (chunk && chunk->get(pos & ChunkSizeMask) != Block::none) chunk->m_dirty = true;
+	if (chunk && chunk->get(pos & ChunkSizeMask) != Block::none) chunk->m_remesh = true;
+}
+
+void mark_remesh_chunk(Chunk& chunk, glm::ivec3 p, glm::ivec3 q)
+{
+	chunk.m_remesh = true;
+	if (q.x == CMin) mark_remesh_chunk(p - ix);
+	if (q.x == CMax) mark_remesh_chunk(p + ix);
+	if (q.y == CMin) mark_remesh_chunk(p - iy);
+	if (q.y == CMax) mark_remesh_chunk(p + iy);
+	if (q.z == CMin) mark_remesh_chunk(p - iz);
+	if (q.z == CMax) mark_remesh_chunk(p + iz);
 }
 
 void update_block(BlockRef& ref, Block b)
 {
-	ref.chunk->set(glm::ivec3(ref.ipos), b);
 	ref.block = b;
 	glm::ivec3 q(ref.ipos);
 	glm::ivec3 p = ref.chunk->get_cpos();
-	ref.chunk->m_dirty = true;
-	if (q.x == CMin) mark_dirty_chunk(p - ix);
-	if (q.x == CMax) mark_dirty_chunk(p + ix);
-	if (q.y == CMin) mark_dirty_chunk(p - iy);
-	if (q.y == CMax) mark_dirty_chunk(p + iy);
-	if (q.z == CMin) mark_dirty_chunk(p - iz);
-	if (q.z == CMax) mark_dirty_chunk(p + iz);
+	ref.chunk->set(glm::ivec3(ref.ipos), b);
+	mark_remesh_chunk(*ref.chunk, p, q);
 	activate_block(q + (p << ChunkSizeBits));
 }
 
@@ -2577,13 +2582,6 @@ void update_block(glm::ivec3 pos, Block b)
 	Chunk& chunk = g_chunks.get(p);
 	assert(chunk.get_cpos() == p);
 	chunk.set(q, b);
-	chunk.m_dirty = true;
-	if (q.x == CMin) mark_dirty_chunk(p - ix);
-	if (q.x == CMax) mark_dirty_chunk(p + ix);
-	if (q.y == CMin) mark_dirty_chunk(p - iy);
-	if (q.y == CMax) mark_dirty_chunk(p + iy);
-	if (q.z == CMin) mark_dirty_chunk(p - iz);
-	if (q.z == CMax) mark_dirty_chunk(p + iz);
 	activate_block(pos);
 }
 
@@ -3226,7 +3224,7 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 			Chunk& chunk = g_chunks.get(cpos);
 			if (chunk.get_cpos() != cpos || !chunk.renderable()) continue;
 
-			if (chunk.m_dirty) chunk.buffer(renderer);
+			if (chunk.m_remesh) chunk.remesh(renderer);
 			glm::ivec3 pos = cpos * ChunkSize;
 			glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
 			// TODO: avoid expensive sorting for far chunks
