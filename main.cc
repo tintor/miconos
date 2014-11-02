@@ -45,8 +45,6 @@ void __assert_rtn_format(const char* func, const char* file, int line, const cha
 
 #define assertf(C, fmt, ...) do { if (!(C)) __assert_rtn_format(__func__, __FILE__, __LINE__, #C, fmt, __VA_ARGS__); } while(0)
 
-Initialize { signal(SIGSEGV, sigsegv_handler); }
-
 // GUI
 
 int width;
@@ -89,7 +87,7 @@ Sphere render_sphere(RenderDistance);
 	F(water12) \
 	F(water13) \
 	F(water14) \
-	F(water15) \
+	F(water) \
 	F(cloud) \
 	F(leaves_acacia) \
 	F(leaves_big_oak) \
@@ -529,8 +527,8 @@ bool is_leaves(BlockTexture a) { return a >= BlockTexture::leaves_acacia && a <=
 bool is_leaves(Block a) { return a >= Block::leaves_acacia && a <= Block::leaves_spruce; }
 bool is_log(Block a) { return a >= Block::log_acacia && a <= Block::log_spruce; }
 bool is_sand(Block a) { return a == Block::sand || a == Block::red_sand; }
-bool is_water(Block a) { return a <= Block::water15 && a >= Block::water1; }
-bool is_water_partial(Block a) { return a >= Block::water1 && a < Block::water15; }
+bool is_water(Block a) { return a <= Block::water && a >= Block::water1; }
+bool is_water_partial(Block a) { return a >= Block::water1 && a < Block::water; }
 bool can_move_through(Block block) { return block <= Block::cloud; }
 
 bool can_see_through_non_water(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white; }
@@ -539,10 +537,8 @@ bool can_see_through(Block block) { return block <= Block::glass_white; }
 bool is_blended(BlockTexture a) { return a == BlockTexture::ice || a == BlockTexture::glass_white || a == BlockTexture::water_still; }
 
 static_assert(Block::water1 == (Block)1, "");
-bool accepts_water(Block b) { return b < Block::water15; }
-
-int water_level_strict(Block b) { return int(b) - int(Block::water1) + 1; }
-int water_level(Block b) { return (b == Block::none) ? 0 : water_level_strict(b); }
+bool accepts_water(Block b) { return b < Block::water; }
+int water_level(Block b) { return int(b); }
 
 static_assert((uint)BlockTexture::leaves_acacia == 0, "used in shader");
 static_assert((uint)BlockTexture::leaves_spruce == 5, "used in shader");
@@ -683,7 +679,7 @@ BlockTexture get_block_texture(Block block, int face)
 	SC(stonebrick_mossy);
 	SC(stonebrick_cracked);
 	SC(stonebrick_carved);
-	S1(water15, water_still);
+	S1(water, water_still);
 	S1(water14, water_still);
 	S1(water13, water_still);
 	S1(water12, water_still);
@@ -1363,11 +1359,20 @@ struct BlockRenderer
 			glm::i8vec3* map = Cube::lightmap[face][f[i]];
 			glm::i8vec3* map2 = Cube::lightmap2[face][f[i]];
 			int s = 0;
-			FOR(j, 4) if (can_see_through(get(glm::ivec3(map[j]))))
+			FOR(j, 4)
 			{
-				s += 1;
-				FOR(k, 3) if (can_see_through(get(glm::ivec3(map2[j*3+k])))) s += 1;
+				Block b = get(glm::ivec3(map[j]));
+				if (can_see_through(b))
+				{
+					s += (b == Block::none) ? 2 : 1;
+					FOR(k, 3)
+					{
+						Block b2 = get(glm::ivec3(map2[j*3+k]));
+						if (can_see_through(b2)) s += (b2 == Block::none) ? 2 : 1;
+					}
+				}
 			}
+			s = s / 2;
 			q |= (s - 1) << (i * 4);
 		}
 		return q;
@@ -1376,28 +1381,26 @@ struct BlockRenderer
 	void draw_quad(int face, bool reverse, bool underwater_overlay);
 	void draw_quad(int face, int zmin, int zmax, bool reverse, bool underwater_overlay);
 
-	//Block get(bool cond, int face, glm::ivec3 rel) { return cond ? (*m_mc)[m_pos + rel] : m_cc[face][m_fpos + rel]; }
-	Block get(bool cond, int face) { return get(face_dir[face]); }
+	Block get(int face) { return get(face_dir[face]); }
 
 	template<bool side>
-	void draw_non_water_face(bool cond, int face)
+	void draw_non_water_face(int face)
 	{
-		Block q = get(cond, face);
+		Block q = get(face);
 		if (side && is_water(q))
 		{
-			if (q == Block::water15)
+			if (q == Block::water)
 			{
 				draw_quad(face, false, true);
 			}
 			else if (q != m_block)
 			{
-				int w = water_level_strict(q);
-				draw_quad(face, 0, w, false, true);
-				draw_quad(face, w, 15, false, false);
+				draw_quad(face, 0, water_level(q), false, true);
+				draw_quad(face, water_level(q), 15, false, false);
 			}
 			return;
 		}
-		if (!side && q == Block::water15)
+		if (!side && q == Block::water)
 		{
 			draw_quad(face, false, true);
 			return;
@@ -1408,16 +1411,15 @@ struct BlockRenderer
 		}
 	}
 
-	void draw_water_side(bool cond, int face, int w)
+	void draw_water_side(int face, int w)
 	{
-		Block q = get(cond, face);
+		Block q = get(face);
 		if (is_water_partial(q))
 		{
-			int w2 = water_level_strict(q);
-			if (w > w2)
+			if (w > water_level(q))
 			{
-				draw_quad(face, w2, w, false, false);
-				draw_quad(face, w2, w, true, false);
+				draw_quad(face, water_level(q), w, false, false);
+				draw_quad(face, water_level(q), w, true, false);
 			}
 		}
 		else if (can_see_through_non_water(q))
@@ -1430,13 +1432,13 @@ struct BlockRenderer
 	void draw_water_bottom()
 	{
 		Block q = get(/*m_pos.z != CMin, 4,*/ -iz);
-		if (q != Block::water15 && can_see_through(q)) draw_quad(4, false, false);
+		if (q != Block::water && can_see_through(q)) draw_quad(4, false, false);
 		if (q == Block::none) draw_quad(4, true, false);
 	}
 
 	void draw_water_top(int w)
 	{
-		if (m_block == Block::water15)
+		if (m_block == Block::water)
 		{
 			Block q = get(/*m_pos.z != CMax, 5,*/ iz);
 			if (can_see_through_non_water(q)) draw_quad(5, false, false);
@@ -1467,24 +1469,24 @@ struct BlockRenderer
 			m_pos = p;
 			m_block = block;
 
-			if (block >= Block::water1 && block <= Block::water15)
+			if (is_water(block))
 			{
 				int w = uint(block) - uint(Block::water1) + 1;
-				draw_water_side(x != CMin, 0, w);
-				draw_water_side(x != CMax, 1, w);
-				draw_water_side(y != CMin, 2, w);
-				draw_water_side(y != CMax, 3, w);
+				draw_water_side(0, w);
+				draw_water_side(1, w);
+				draw_water_side(2, w);
+				draw_water_side(3, w);
 				draw_water_bottom();
 				draw_water_top(w);
 			}
 			else
 			{
-				draw_non_water_face<true>(x != CMin, 0);
-				draw_non_water_face<true>(x != CMax, 1);
-				draw_non_water_face<true>(y != CMin, 2);
-				draw_non_water_face<true>(y != CMax, 3);
-				draw_non_water_face<false>(z != CMin, 4);
-				draw_non_water_face<false>(z != CMax, 5);
+				draw_non_water_face<true>(0);
+				draw_non_water_face<true>(1);
+				draw_non_water_face<true>(2);
+				draw_non_water_face<true>(3);
+				draw_non_water_face<false>(4);
+				draw_non_water_face<false>(5);
 			}
 		}
 		if (merge) merge_quads(out);
@@ -1673,7 +1675,7 @@ Player::Player()
 		pitch = 0;
 		velocity = glm::vec3(0, 0, 0);
 		creative_mode = true;
-		palette_block = (Block)1;
+		palette_block = Block::water;
 	}
 	else
 	{
@@ -1693,7 +1695,7 @@ Player::Player()
 		fscanf(file, "}\n");
 		fclose(file);
 	}
-	scroll_y = (uint)palette_block - 1;
+	scroll_y = (uint)palette_block - (uint)Block::water;
 	orientation = glm::rotate(glm::rotate(glm::mat4(), -yaw, glm::vec3(0, 0, 1)), -pitch, glm::vec3(1, 0, 0));
 	cpos = glm::ivec3(glm::floor(position)) >> ChunkSizeBits;
 	atomic_cpos = compress_ivec3(cpos);
@@ -2141,8 +2143,8 @@ void on_scroll(GLFWwindow* window, double x, double y)
 	scroll_dy = y / 5;
 	scroll_y += scroll_dy;
 	if (scroll_y < 0) scroll_y = 0;
-	if (scroll_y > (block_count - 2)) scroll_y = (block_count - 2);
-	g_player.palette_block = Block(uint(std::round(scroll_y)) + 1);
+	if (scroll_y > (block_count - 1 - (uint)Block::water)) scroll_y = (block_count - 2);
+	g_player.palette_block = Block(uint(std::round(scroll_y)) + (uint)Block::water);
 }
 
 bool last_cursor_init = false;
@@ -2288,6 +2290,42 @@ int sphere_vs_cube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbo
 	return 1;
 }
 
+#ifdef UNDONE
+// Move cylinder so that it is not coliding with cube.
+// Cylinder is always facing up.
+//
+// Neighbors is 3x3x3 matrix of 27 bits representing nearby cubes.
+// Used to turn off vertices and edges that are not exposed.
+int cylinder_vs_cube(glm::vec3& center, float radius, float height_above, float height_below, glm::ivec3 cube, int neighbors)
+{
+	float e = 0.5;
+	float x = center.x - cube.x - e;
+	float y = center.y - cube.y - e;
+	float z = center.z - cube.z - e;
+	float k = e + radius;
+
+	if (x >= k || x <= -k || y >= k || y <= -k || z >= e + height_above || z <= -(e + height_below)) return 0;
+
+	float s2 = sqr(radius + sqrtf(2) / 2);
+	if (x*x + y*y >= s2) return 0;
+
+	// if center outside cube
+
+	// center inside cube
+	float ax = fabs(x), ay = fabs(y);
+	if (ax > ay)
+	{
+		if (ax > fabs(z)) { center.x += (x > 0 ? k : -k) - x; return 1; }
+	}
+	else
+	{
+		if (ay > fabs(z)) { center.y += (y > 0 ? k : -k) - y; return 1; }
+	}
+	center.z += (z > 0 ? k : -k) - z;
+	return 1;
+}
+#endif
+
 int cube_neighbors(glm::ivec3 cube)
 {
 	int neighbors = 0;
@@ -2301,7 +2339,7 @@ int cube_neighbors(glm::ivec3 cube)
 
 glm::vec3 gravity(glm::vec3 pos)
 {
-	return glm::vec3(0, 0, -15);
+	return glm::vec3(0, 0, -30);
 
 	glm::vec3 dir = glm::vec3(MoonCenter) - pos;
 	double dist2 = glm::dot(dir, dir);
@@ -2317,34 +2355,109 @@ glm::vec3 gravity(glm::vec3 pos)
 	}
 }
 
-// TODO Use cylinder model for collision instead of sphere! (approximates player better, and has sharp edge at the bottom!)
+// TODO Use cylinder model for collision instead of sphere! (approximates player better,and has sharp edge at the bottom!), put camera higher in the cylinder!
 //
-void simulate(float dt, glm::vec3 dir)
-{
-	if (!g_player.creative_mode)
-	{
-		g_player.velocity += gravity(g_player.position) * dt;
-	}
-	g_player.position += dir * ((g_player.creative_mode ? 20 : 10) * dt) + g_player.velocity * dt;
+// TODO: climbing with hands when next to a block / step
+// TODO: ladder climbing
+// TODO: rope swinging
+//
+// TODO: swimming and diving (jump not working, up/down directions not working)
+// BUGS: weird sticking on collisions?
+const float player_acc = 35;
+const float player_jump_dv = 15;
+const float player_max_vel = 10;
 
-	glm::ivec3 p = glm::ivec3(glm::floor(g_player.position));
+bool on_the_ground = false;
+
+void simulate(float dt, glm::vec3 dir, bool jump)
+{
+	if (g_player.creative_mode)
+	{
+		g_player.position += dir * (dt * 20);
+	}
+	else
+	{
+		glm::ivec3 p = glm::ivec3(glm::floor(g_player.position));
+		bool underwater = g_chunks.get_block(p) == Block::water;
+
+		if ((on_the_ground || underwater) && !jump)
+		{
+			if (dir.x != 0 || dir.y != 0 || dir.z != 0)
+			{
+				float d = glm::dot(dir, g_player.velocity);
+				glm::vec3 a = dir * d;
+				glm::vec3 b = g_player.velocity - a;
+				float p = dt * player_acc;
+
+				// Brake on side-velocity
+				float b_len = glm::length(b);
+				if (b_len <= p)
+				{
+					g_player.velocity -= b;
+					p -= b_len;
+
+					if (glm::length(a) > player_max_vel)
+					{
+						// Brake on velocity along running direction
+						g_player.velocity -= glm::normalize(a) * p;
+					}
+					else
+					{
+						glm::vec3 v = g_player.velocity + dir * p;
+						float v2 = glm::length2(v);
+						if (v2 < glm::length2(g_player.velocity) || v2 < player_max_vel * player_max_vel) g_player.velocity = v;
+					}
+				}
+				else
+				{
+					g_player.velocity -= glm::normalize(b) * p;
+					p = 0;
+				}
+			}
+			else
+			{
+				float v = glm::length(g_player.velocity);
+				if (v <= dt * player_acc)
+				{
+					g_player.velocity = glm::vec3(0, 0, 0);
+				}
+				else
+				{
+					g_player.velocity -= glm::normalize(g_player.velocity) * (dt * player_acc);
+				}
+			}
+		}
+		if (!underwater) g_player.velocity += gravity(g_player.position) * dt;
+		g_player.position += g_player.velocity * dt;
+	}
+
+	on_the_ground = false;
 	FOR(i, 2)
 	{
 		// Resolve all collisions simultaneously
+		glm::ivec3 p = glm::ivec3(glm::floor(g_player.position));
 		glm::vec3 sum(0, 0, 0);
 		int c = 0;
 		FOR2(x, p.x - 1, p.x + 1) FOR2(y, p.y - 1, p.y + 1) FOR2(z, p.z - 1, p.z + 1)
 		{
 			glm::ivec3 cube(x, y, z);
-			if (!g_chunks.can_move_through(cube) && 1 == sphere_vs_cube(g_player.position, 0.9, cube, cube_neighbors(cube)))
+			glm::vec3 q = g_player.position;
+			if (!g_chunks.can_move_through(cube) && 1 == sphere_vs_cube(q, 0.95, cube, cube_neighbors(cube)))
 			{
-				sum += g_player.position;
+				sum += q - g_player.position;
 				c += 1;
 			}
 		}
-		if (c == 0) break;
-		g_player.velocity = glm::vec3(0, 0, 0);
-		g_player.position = sum / (float)c;
+		if (c == 0)	break;
+		float sum2 = glm::length2(sum);
+		if (sum2 > 0)
+		{
+			glm::vec3 normal = sum * glm::inversesqrt(sum2);
+			float d = glm::dot(normal, g_player.velocity);
+			if (d < 0) g_player.velocity -= d * normal;
+			if (glm::dot(normal, glm::normalize(gravity(g_player.position))) < -0.9) on_the_ground = true;
+		}
+		g_player.position += sum;
 	}
 }
 
@@ -2371,9 +2484,11 @@ void model_move_player(GLFWwindow* window, float dt)
 	if (glfwGetKey(window, 'Q')) dir[2] += 1;
 	if (glfwGetKey(window, 'E')) dir[2] -= 1;
 
-	if (!g_player.creative_mode && glfwGetKey(window, GLFW_KEY_SPACE))
+	bool jump = false;
+	if (!g_player.creative_mode && on_the_ground && glfwGetKey(window, GLFW_KEY_SPACE))
 	{
-		g_player.velocity = gravity(g_player.position) * -0.5f;
+		g_player.velocity += glm::normalize(-gravity(g_player.position)) * player_jump_dv;
+		jump = true;
 	}
 
 	glm::vec3 p = g_player.position;
@@ -2386,10 +2501,10 @@ void model_move_player(GLFWwindow* window, float dt)
 	{
 		if (dt <= 0.008)
 		{
-			simulate(dt, dir);
+			simulate(dt, dir, jump);
 			break;
 		}
-		simulate(0.008, dir);
+		simulate(0.008, dir, jump);
 		dt -= 0.008;
 	}
 	if (p != g_player.position)
@@ -2594,7 +2709,7 @@ const char* block_name_safe(Block block)
 // returns true when src becomes empty
 bool water_flow(BlockRef& src, BlockRef& dest, int w)
 {
-	assert(water_level(dest) + w <= 15);
+	assert(water_level(dest) + w <= (uint)Block::water);
 	int base = (dest == Block::none) ? int(Block::water1) - 1 : int(dest.block);
 	update_block(dest, Block(base + w));
 
@@ -2615,7 +2730,7 @@ Initialize
 bool water_under(BlockRef b)
 {
 	BlockRef m((b.chunk->get_cpos() << ChunkSizeBits) + glm::ivec3(b.ipos) - iz);
-	return m.chunk && m.block == Block::water15;
+	return m.chunk && m.block == Block::water;
 }
 
 void model_simulate_water(BlockRef b, glm::ivec3 bpos)
@@ -2626,7 +2741,7 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 	BlockRef m(bpos - iz);
 	if (m.chunk && accepts_water(m.block))
 	{
-		int flow = std::min(w, 15 - water_level(m));
+		int flow = std::min(w, (int)Block::water - water_level(m));
 		if (water_flow(b, m, flow)) return;
 		w -= flow;
 	}
@@ -2644,10 +2759,9 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 		{
 			int e = rand() % side.size();
 			BlockRef m = side[e];
-			int wb = water_level(m);
-			if ((wb < w) && (w > 1 || water_under(m)))
+			if ((water_level(m) < w) && (w > 1 || water_under(m)))
 			{
-				int flow = (w - wb + 1) / 2;
+				int flow = (w - water_level(m) + 1) / 2;
 				water_flow(b, m, flow);
 				w -= flow;
 			}
@@ -2670,10 +2784,9 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 		{
 			int e = rand() % side.size();
 			BlockRef m = side[e];
-			int wb = water_level(m);
-			if ((wb < w) && (w > 1 || water_under(m)))
+			if ((water_level(m) < w) && (w > 1 || water_under(m)))
 			{
-				int flow = (w - wb + 1) / 2;
+				int flow = (w - water_level(m) + 1) / 2;
 				water_flow(b, m, flow);
 				w -= flow;
 			}
@@ -2731,7 +2844,7 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 	{
 		if (rand() % 100 == 0)
 		{
-			update_block(b, Block::water15);
+			update_block(b, Block::water);
 		}
 		else
 		{
@@ -3122,9 +3235,7 @@ void render_init()
 
 	glClearColor(0.2, 0.4, 1, 1.0);
 	glViewport(0, 0, width, height);
-
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glEnable(GL_BLEND);
 }
 
 void BlockRenderer::draw_quad(int face, bool reverse, bool underwater_overlay)
@@ -3224,6 +3335,7 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	stats::chunk_count = 0;
 	stats::quad_count = 0;
 
+	glEnable(GL_BLEND);
 	static BlockRenderer renderer;
 	for (glm::ivec3 cpos : visible_chunks)
 	{
@@ -3241,6 +3353,7 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 			stats::chunk_count += 1;
 		}
 	}
+	glDisable(GL_BLEND);
 }
 
 void render_gui()
@@ -3256,8 +3369,9 @@ void render_gui()
 			stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms,
 			enable_f4 ? '4' : '-', enable_f5 ? '5' : '-', enable_f6 ? '6' : '-');
 
-		text->Printf("collide:%1.0f select:%1.0f simulate:%1.0f rebuild:%1.0f [%1.0f %1.0f %1.0f]",
-			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms);
+		text->Printf("collide:%1.0f select:%1.0f simulate:%1.0f [%.1f %.1f %.1f] %.1f%s",
+			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms,
+			g_player.velocity.x, g_player.velocity.y, g_player.velocity.z, glm::length(g_player.velocity), on_the_ground ? " ground" : "");
 
 		if (selection)
 		{
@@ -3314,9 +3428,10 @@ void render_gui()
 		glVertexAttribIPointer(block_light_loc,   1, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->light);
 		glVertexAttribIPointer(block_plane_loc,   1, GL_UNSIGNED_SHORT, sizeof(WQuad), &((WQuad*)0)->plane);
 
-		WQuad quads[3 * (block_count - 1)];
+		const uint palette_blocks = block_count - (uint)Block::water;
+		WQuad quads[3 * palette_blocks];
 		WQuad* e = quads;
-		FOR(i, block_count-1) FOR(face, 6)
+		FOR(i, palette_blocks) FOR(face, 6)
 		{
 			if (face != 0 && face != 2 && face != 5) continue;
 
@@ -3330,19 +3445,16 @@ void render_gui()
 			FOR(j, 4) e->pos[j] = glm::u16vec3((w + Cube::corner[f[j]]) * 15);
 			e->plane = face << 8;
 			e->light = 65535;
-			e->texture = get_block_texture(Block(i+1), face);
+			e->texture = get_block_texture(Block(i + block_count - palette_blocks), face);
 			e += 1;
 		}
 
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		glEnable(GL_BLEND);
-
 		glm::ivec3 pos(0, 0, 0);
 		glUniform3iv(block_pos_loc, 1, glm::value_ptr(pos));
-		glBufferData(GL_ARRAY_BUFFER, sizeof(WQuad) * 3 * (block_count - 1), quads, GL_STREAM_DRAW);
-		glDrawArrays(GL_POINTS, 0, 3 * (block_count - 1));
+		glBufferData(GL_ARRAY_BUFFER, sizeof(WQuad) * 3 * palette_blocks, quads, GL_STREAM_DRAW);
+		glDrawArrays(GL_POINTS, 0, 3 * palette_blocks);
 		glUseProgram(0);
-
 		glDisable(GL_BLEND);
 
 		text->Reset(width, height, matrix);
@@ -3412,6 +3524,7 @@ void wait_for_nearby_chunks(glm::ivec3 cpos)
 
 int main(int, char**)
 {
+	signal(SIGSEGV, sigsegv_handler);
 	if (!glfwInit()) return 0;
 
 	glm::dvec3 a;
@@ -3496,13 +3609,15 @@ int main(int, char**)
 		glfwSwapBuffers(window);
 	}
 
+	fprintf(stderr, "Waiting for threads ...\n");
 	stall_enable.store(false);
-	fprintf(stderr, "Waiting for threads\n");
+	stall_alarm.join();
 	g_chunks.join_threads();
+	fprintf(stderr, "Saving ...\n");
 	g_scm.save();
 	g_player.save();
-	fprintf(stderr, "Exiting\n");
+	fprintf(stderr, "Exiting ...\n");
 	glfwTerminate();
-	exit(0);
+	_exit(0); // exit(0) is not enough
 	return 0;
 }
