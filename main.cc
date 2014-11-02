@@ -1,9 +1,3 @@
-// TODO: space in creative mode does only one frame of simulation
-// TODO: allow all blocks to fall through water!
-// TODO: in-memory block mode (.sc files not written back)
-// TODO: use textures to get per fragment shadows (instead of per vertex), will also work correctly with merger
-// TODO: main thread should be marking chunks for unload and Chunks should release references back to SuperChunkManager!
-
 #include "util.hh"
 #include "callstack.hh"
 #include "rendering.hh"
@@ -1533,7 +1527,6 @@ struct BlockRenderer
 				continue;
 			}
 
-			// TODO: Is it sufficient to only do one fixed order like XY, and not both?
 			m_xy.clear();
 			m_yx.clear();
 			while (a < b)
@@ -1669,7 +1662,7 @@ bool Player::save()
 	json_object_set(doc, "pitch", json_real(pitch));
 	json_object_set(doc, "velocity", json_vec3(velocity));
 	json_object_set(doc, "creative_mode", json_boolean(creative_mode));
-	json_object_set(doc, "palette_block", json_integer((int)palette_block));
+	json_object_set(doc, "palette_block", json_integer((int)palette_block - (int)Block::water));
 	CHECK(0 == json_dump_file(doc, "player.json", JSON_INDENT(2) | JSON_PRESERVE_ORDER));
 	return true;
 }
@@ -2523,14 +2516,6 @@ glm::vec3 gravity(glm::vec3 pos)
 	}
 }
 
-// TODO Use cylinder model for collision instead of sphere! (approximates player better,and has sharp edge at the bottom!), put camera higher in the cylinder!
-//
-// TODO: climbing with hands when next to a block / step
-// TODO: ladder climbing
-// TODO: rope swinging
-//
-// TODO: swimming and diving (jump not working, up/down directions not working)
-// BUGS: weird sticking on collisions?
 const float player_acc = 35;
 const float player_jump_dv = 15;
 const float player_max_vel = 10;
@@ -3696,7 +3681,6 @@ void stall_alarm_thread()
 		if (a.elapsed_ms() > 10000)
 		{
 			fprintf(stderr, "main thread stalled :(\n");
-			// TODO print callstack of main thread!
 			exit(1);
 		}
 	}
