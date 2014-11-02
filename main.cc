@@ -1,3 +1,5 @@
+// TODO: space in creative mode does only one frame of simulation
+
 #include "util.hh"
 #include "callstack.hh"
 #include "rendering.hh"
@@ -521,6 +523,7 @@ enum class BlockTexture : uint16_t BlockTextures({, FuncList, });
 
 bool is_leaves(BlockTexture a) { return a >= BlockTexture::leaves_acacia && a <= BlockTexture::leaves_spruce; }
 bool is_leaves(Block a) { return a >= Block::leaves_acacia && a <= Block::leaves_spruce; }
+bool is_log(Block a) { return a >= Block::log_acacia && a <= Block::log_spruce; }
 bool is_sand(Block a) { return a == Block::sand || a == Block::red_sand; }
 bool is_water(Block a) { return a <= Block::water15 && a >= Block::water1; }
 bool is_water_partial(Block a) { return a >= Block::water1 && a < Block::water15; }
@@ -702,7 +705,7 @@ BlockTexture get_block_texture(Block block, int face)
 
 // ============================
 
-static const glm::ivec3 face_dir[6] = { -ix, ix, -iy, iy, -iz, iz };
+static const std::array<glm::ivec3, 6> face_dir = { -ix, ix, -iy, iy, -iz, iz };
 
 bool between(glm::ivec3 a, glm::ivec3 b, glm::ivec3 c)
 {
@@ -1600,6 +1603,7 @@ struct Player
 	float yaw, pitch;
 	glm::vec3 velocity;
 	bool creative_mode;
+	Block palette_block;
 	// TODO: active tool
 	// TODO: inventory items
 	// TODO: health
@@ -1621,6 +1625,7 @@ struct Player
 };
 
 Player g_player;
+double scroll_y = 0, scroll_dy = 0;
 
 void Player::turn(float dx, float dy)
 {
@@ -1648,6 +1653,7 @@ bool Player::save()
 	fprintf(file, "\tpitch: %f,\n", pitch);
 	fprintf(file, "\tvelocity: [%f, %f, %f],\n", velocity.x, velocity.y, velocity.z);
 	fprintf(file, "\tcreative_mode: %s,\n", creative_mode ? "true" : "false");
+	fprintf(file, "\tpalette_block: %u,\n", (uint)palette_block);
 	fprintf(file, "}\n");
 	fclose(file);
 	return true;
@@ -1664,6 +1670,7 @@ Player::Player()
 		pitch = 0;
 		velocity = glm::vec3(0, 0, 0);
 		creative_mode = true;
+		palette_block = (Block)1;
 	}
 	else
 	{
@@ -1675,11 +1682,15 @@ Player::Player()
 		load(3, "\tvelocity: [%f, %f, %f],\n", &velocity.x, &velocity.y, &velocity.z);
 		char creative[100];
 		load(1, "\tcreative_mode: %s,\n", creative);
+		uint pb;
+		load(1, "\tpalette_block: %u,\n", &pb);
+		palette_block = (Block)pb;
 		#undef load
 		creative_mode = strcmp(creative, "true") == 0 || strcmp(creative, "true,") == 0;
 		fscanf(file, "}\n");
 		fclose(file);
 	}
+	scroll_y = (uint)palette_block - 1;
 	orientation = glm::rotate(glm::rotate(glm::mat4(), -yaw, glm::vec3(0, 0, 1)), -pitch, glm::vec3(1, 0, 0));
 	cpos = glm::ivec3(glm::floor(position)) >> ChunkSizeBits;
 	atomic_cpos = compress_ivec3(cpos);
@@ -1785,6 +1796,13 @@ public:
 		return chunk.get(pos & ChunkSizeMask);
 	}
 
+	Block get_block(glm::ivec3 pos, Block def)
+	{
+		Chunk& chunk = get(pos >> ChunkSizeBits);
+		if (chunk.get_cpos() != (pos >> ChunkSizeBits)) return def;
+		return chunk.get(pos & ChunkSizeMask);
+	}
+
 	bool selectable_block(glm::ivec3 pos)
 	{
 		Chunk& chunk = get(pos >> ChunkSizeBits);
@@ -1828,12 +1846,12 @@ private:
 			glm::ivec3 cpos = decompress_ivec3(g_player.atomic_cpos);
 			if (cpos == last_cpos)
 			{
-				usleep(200);
+				usleep(100000);
 				continue;
 			}
 
 			int q = 0;
-			for (int i = 0; i < render_sphere.size(); i++)
+			for (int i = 0; i < render_sphere.size() && chunks->m_running.load(std::memory_order_relaxed); i++)
 			{
 				glm::ivec3 c = cpos + glm::ivec3(render_sphere[i]);
 				Chunk& chunk = chunks->get(c);
@@ -1999,10 +2017,8 @@ bool selection = false;
 bool wireframe = false;
 bool show_counters = true;
 
-Block carousel_block = Block(1);
-double scroll_y = 0, scroll_dy = 0;
-Timestamp ts_carousel;
-bool show_carousel = false;
+Timestamp ts_palette;
+bool show_palette = false;
 
 void activate_block(glm::ivec3 pos)
 {
@@ -2040,7 +2056,7 @@ void edit_block(glm::ivec3 pos, Block block)
 
 void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-	show_carousel = false;
+	show_palette = false;
 	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
@@ -2098,7 +2114,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 
 void on_mouse_button(GLFWwindow* window, int button, int action, int mods)
 {
-	show_carousel = false;
+	show_palette = false;
 
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT && selection && g_player.creative_mode)
 	{
@@ -2113,19 +2129,19 @@ void on_mouse_button(GLFWwindow* window, int button, int action, int mods)
 	if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT && selection)
 	{
 		glm::ivec3 dir[] = { -ix, ix, -iy, iy, -iz, iz };
-		edit_block(sel_cube + dir[sel_face], carousel_block);
+		edit_block(sel_cube + dir[sel_face], g_player.palette_block);
 	}
 }
 
 void on_scroll(GLFWwindow* window, double x, double y)
 {
-	ts_carousel = Timestamp();
-	show_carousel = true;
+	ts_palette = Timestamp();
+	show_palette = true;
 	scroll_dy = y / 5;
 	scroll_y += scroll_dy;
 	if (scroll_y < 0) scroll_y = 0;
 	if (scroll_y > (block_count - 2)) scroll_y = (block_count - 2);
-	carousel_block = Block(uint(std::round(scroll_y)) + 1);
+	g_player.palette_block = Block(uint(std::round(scroll_y)) + 1);
 }
 
 bool last_cursor_init = false;
@@ -2362,7 +2378,7 @@ void model_move_player(GLFWwindow* window, float dt)
 	glm::vec3 p = g_player.position;
 	if (dir.x != 0 || dir.y != 0 || dir.z != 0)
 	{
-		show_carousel = false;
+		show_palette = false;
 		dir = glm::normalize(dir);
 	}
 	while (dt > 0)
@@ -2477,7 +2493,7 @@ void model_orientation(GLFWwindow* window)
 	}
 	if (cursor_x != last_cursor_x || cursor_y != last_cursor_y)
 	{
-		show_carousel = false;
+		show_palette = false;
 		g_player.turn((cursor_x - last_cursor_x) / 150, (cursor_y - last_cursor_y) / 150);
 		last_cursor_x = cursor_x;
 		last_cursor_y = cursor_y;
@@ -2535,14 +2551,7 @@ std::vector<glm::ivec3> sim_active_chunks;
 void mark_dirty_chunk(glm::ivec3 pos)
 {
 	Chunk* chunk = g_chunks.get_opt(pos >> ChunkSizeBits);
-	if (enable_f5)
-	{
-		if (chunk && chunk->get(pos & ChunkSizeMask) != Block::none) chunk->m_dirty = true;
-	}
-	else
-	{
-		if (chunk) chunk->m_dirty = true;
-	}
+	if (chunk && chunk->get(pos & ChunkSizeMask) != Block::none) chunk->m_dirty = true;
 }
 
 void update_block(BlockRef& ref, Block b)
@@ -2552,7 +2561,6 @@ void update_block(BlockRef& ref, Block b)
 	glm::ivec3 q(ref.ipos);
 	glm::ivec3 p = ref.chunk->get_cpos();
 	ref.chunk->m_dirty = true;
-	// TODO: only if there is a block in neighbor chunk => mark neighbor as dirty
 	if (q.x == CMin) mark_dirty_chunk(p - ix);
 	if (q.x == CMax) mark_dirty_chunk(p + ix);
 	if (q.y == CMin) mark_dirty_chunk(p - iy);
@@ -2560,6 +2568,23 @@ void update_block(BlockRef& ref, Block b)
 	if (q.z == CMin) mark_dirty_chunk(p - iz);
 	if (q.z == CMax) mark_dirty_chunk(p + iz);
 	activate_block(q + (p << ChunkSizeBits));
+}
+
+void update_block(glm::ivec3 pos, Block b)
+{
+	glm::ivec3 p = pos >> ChunkSizeBits;
+	glm::ivec3 q = pos & ChunkSizeMask;
+	Chunk& chunk = g_chunks.get(p);
+	assert(chunk.get_cpos() == p);
+	chunk.set(q, b);
+	chunk.m_dirty = true;
+	if (q.x == CMin) mark_dirty_chunk(p - ix);
+	if (q.x == CMax) mark_dirty_chunk(p + ix);
+	if (q.y == CMin) mark_dirty_chunk(p - iy);
+	if (q.y == CMax) mark_dirty_chunk(p + iy);
+	if (q.z == CMin) mark_dirty_chunk(p - iz);
+	if (q.z == CMax) mark_dirty_chunk(p + iz);
+	activate_block(pos);
 }
 
 const char* block_name_safe(Block block)
@@ -2716,6 +2741,147 @@ void model_simulate_water(BlockRef b, glm::ivec3 bpos)
 	}
 }
 
+void model_simulate_block(glm::ivec3 pos)
+{
+	BlockRef b(pos);
+	if (is_water(b)) model_simulate_water(b, pos);
+	else if (is_sand(b))
+	{
+		// Flow down swapping with water
+		BlockRef m(pos - iz);
+		if (m.chunk && (m == Block::none || is_water(m)))
+		{
+			Block e = m.block;
+			update_block(m, b.block);
+			update_block(b, e);
+		}
+	}
+	else if (b == Block::water_source)
+	{
+		BlockRef m(pos - iz);
+		if (!m.chunk || !enable_f6) return;
+		if (m == Block::none || is_water_partial(m))
+		{
+			int w = water_level(m);
+			update_block(m, Block(int(Block::water1) + w));
+		}
+	}
+	else if (b == Block::water_drain)
+	{
+		BlockRef m(pos + iz);
+		if (m.chunk && is_water(m))
+		{
+			int w = water_level(m);
+			update_block(m, (w == 1) ? Block::none : Block(int(Block::water1) + w - 2));
+		}
+	}
+	else if (b == Block::soul_sand)
+	{
+		// Morph water around it
+		bool active = false;
+		for (auto v : { -ix, ix, -iy, iy, -iz, iz })
+		{
+			BlockRef q(pos + v);
+			if (q.chunk && is_water(q)) { update_block(q, Block::soul_sand); active = true; }
+		}
+		if (!active && rand() % 10 == 0)
+		{
+			update_block(b, Block::none);
+		}
+		else
+		{
+			g_chunks.get(pos >> ChunkSizeBits).m_active = true;
+		}
+	}
+}
+
+BitSet<ChunkSizeBits> sim_visited_set;
+BitSet<ChunkSizeBits> sim_visited_local;
+std::vector<glm::ivec3> sim_visited_list;
+
+bool less(glm::ivec3 a, glm::ivec3 b)
+{
+	if (a.x != b.x) return a.x < b.x;
+	if (a.y != b.y) return a.y < b.y;
+	return a.z < b.z;
+}
+
+void model_simulate_gravity()
+{
+	// All unsupported blocks will be moved down by one (except clouds, sand, water)
+	sim_visited_set.clear();
+	sim_visited_list.clear();
+	for (glm::ivec3 cpos : sim_active_chunks)
+	{
+		Chunk& chunk = g_chunks.get(cpos);
+		FOR(z, ChunkSize) FOR(y, ChunkSize) FOR(x, ChunkSize)
+		{
+			glm::ivec3 v(x, y, z);
+			Block b = chunk.get(v);
+			if (b == Block::none || b == Block::cloud || b == Block::sand || b == Block::red_sand || is_water(b)) continue;
+			v += cpos << ChunkSizeBits;
+			if (!sim_visited_set.xset(v)) continue;
+			sim_visited_local.clear();
+			sim_visited_local.xset(v);
+
+			uint e = sim_visited_list.size();
+			sim_visited_list.push_back(v);
+			for (uint i = e; i < sim_visited_list.size(); i++)
+			{
+				v = sim_visited_list[i];
+				for (glm::ivec3 d : face_dir)
+				{
+					if (!sim_visited_local.xset(v + d)) continue;
+					BlockRef q(v + d);
+					if (!q.chunk)
+					{
+						sim_visited_list.resize(e);
+						break;
+					}
+					b = q.block;
+					if (b == Block::none || b == Block::cloud) continue;
+					if (d.z == 0 && (b == Block::sand || b == Block::red_sand || is_water(b))) continue;
+					if (!sim_visited_set.xset(v + d))
+					{
+						sim_visited_list.resize(e);
+						break;
+					}
+					sim_visited_list.push_back(v + d);
+				}
+				if (sim_visited_list.size() - e > 200)
+				{
+					sim_visited_list.resize(e);
+					break;
+				}
+			}
+		}
+	}
+	std::sort(sim_visited_list.begin(), sim_visited_list.end(), less);
+
+	auto a = sim_visited_list.begin();
+	while (a != sim_visited_list.end())
+	{
+		auto b = a + 1;
+		while (b != sim_visited_list.end() && *b == *a + iz) b += 1;
+
+		glm::ivec3 q = *(b - 1);
+		while (true)
+		{
+			Block e = g_chunks.get_block(q + iz, Block::none);
+			if (e != Block::sand && e != Block::red_sand && !is_water(e)) break;
+			q.z += 1;
+		}
+
+		FOR2(i, a->z, q.z)
+		{
+			update_block(glm::ivec3(q.x, q.y, i-1), g_chunks.get_block(glm::ivec3(q.x, q.y, i)));
+		}
+		update_block(q, Block::none);
+
+		a = b;
+	}
+}
+
 void model_simulate_blocks()
 {
 	if (g_player.creative_mode) return;
@@ -2728,12 +2894,11 @@ void model_simulate_blocks()
 	{
 		glm::ivec3 cpos = cplayer + d;
 		Chunk& chunk = g_chunks.get(cpos);
-		if (chunk.get_cpos() == cpos && chunk.m_active)
-		{
-			sim_active_chunks.push_back(cpos);
-			chunk.m_active = false;
-			if (sim_active_chunks.size() == MaxActiveChunks) break;
-		}
+		if (chunk.get_cpos() != cpos || !chunk.m_active) continue;
+		chunk.m_active = false;
+		if (chunk.empty()) continue;
+		sim_active_chunks.push_back(cpos);
+		if (sim_active_chunks.size() == MaxActiveChunks) break;
 	}
 
 	// shuffle sim_order
@@ -2746,59 +2911,11 @@ void model_simulate_blocks()
 	{
 		FOR(z, ChunkSize) for (glm::i8vec2 xy : sim_order)
 		{
-			glm::ivec3 bpos = glm::ivec3(xy.x, xy.y, z) + (cpos << ChunkSizeBits);
-			BlockRef b(bpos);
-			if (is_water(b)) model_simulate_water(b, bpos);
-			else if (is_sand(b))
-			{
-				// Flow down swapping with water
-				BlockRef m(bpos - iz);
-				if (m.chunk && (m == Block::none || is_water(m)))
-				{
-					Block e = m.block;
-					update_block(m, b.block);
-					update_block(b, e);
-				}
-			}
-			else if (b == Block::water_source)
-			{
-				BlockRef m(bpos - iz);
-				if (!m.chunk || !enable_f6) continue;
-				if (m == Block::none || is_water_partial(m))
-				{
-					int w = water_level(m);
-					update_block(m, Block(int(Block::water1) + w));
-				}
-			}
-			else if (b == Block::water_drain)
-			{
-				BlockRef m(bpos + iz);
-				if (m.chunk && is_water(m))
-				{
-					int w = water_level(m);
-					update_block(m, (w == 1) ? Block::none : Block(int(Block::water1) + w - 2));
-				}
-			}
-			else if (b == Block::soul_sand)
-			{
-				// Morph water around it
-				bool active = false;
-				for (auto v : { -ix, ix, -iy, iy, -iz, iz })
-				{
-					BlockRef q(bpos + v);
-					if (q.chunk && is_water(q)) { update_block(q, Block::soul_sand); active = true; }
-				}
-				if (!active && rand() % 10 == 0)
-				{
-					update_block(b, Block::none);
-				}
-				else
-				{
-					g_chunks.get(bpos >> ChunkSizeBits).m_active = true;
-				}
-			}
+			model_simulate_block(glm::ivec3(xy.x, xy.y, z) + (cpos << ChunkSizeBits));
 		}
 	}
+
+	model_simulate_gravity();
 
 	for (glm::ivec3 cpos : sim_active_chunks)
 	{
@@ -3155,7 +3272,7 @@ void render_gui()
 	console.Render(text, glfwGetTime());
 	glUseProgram(0);
 
-	if (show_carousel)
+	if (show_palette)
 	{
 		if (scroll_dy <= 0.1 / 5) scroll_y += (std::round(scroll_y) - scroll_y) * 0.05;
 
@@ -3223,12 +3340,12 @@ void render_gui()
 		glDisable(GL_BLEND);
 
 		text->Reset(width, height, matrix);
-		text->PrintAt(width / 2 - height / 40, height / 2 - height / 40, 0, block_name[(uint)carousel_block], strlen(block_name[(uint)carousel_block]));
+		text->PrintAt(width / 2 - height / 40, height / 2 - height / 40, 0, block_name[(uint)g_player.palette_block], strlen(block_name[(uint)g_player.palette_block]));
 
-		if (ts_carousel.elapsed_ms() >= 1000) show_carousel = false;
+		if (ts_palette.elapsed_ms() >= 1000) show_palette = false;
 	}
 
-	if (selection || show_carousel)
+	if (selection || show_palette)
 	{
 		glUseProgram(line_program);
 		glUniformMatrix4fv(line_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));

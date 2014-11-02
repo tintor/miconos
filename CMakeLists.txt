@@ -6,7 +6,7 @@ add_executable(arena main.cc lz4.c lz4.h util.hh util.cc auto.hh callstack.hh re
 
 add_definitions(-g -O3 -Wno-c++11-extensions -flto)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++0x")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++0x -DNDEBUG")
 
 add_subdirectory(glfw)
 include_directories(glfw/include)
