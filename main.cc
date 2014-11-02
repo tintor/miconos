@@ -1,4 +1,8 @@
 // TODO: space in creative mode does only one frame of simulation
+// TODO: allow all blocks to fall through water!
+// TODO: in-memory block mode (.sc files not written back)
+// TODO: use textures to get per fragment shadows (instead of per vertex), will also work correctly with merger
+// TODO: main thread should be marking chunks for unload and Chunks should release references back to SuperChunkManager!
 
 #include "util.hh"
 #include "callstack.hh"
@@ -1186,7 +1190,6 @@ SuperChunkManager g_scm;
 
 // ============================
 
-// TODO: use textures to get per fragment shadows (instead of per vertex), will also work correctly with merger
 struct Quad
 {
 	glm::u8vec3 pos[4]; // TODO: replace with x y w h
@@ -1873,8 +1876,6 @@ private:
 	std::thread m_worker[Threads];
 	std::atomic<bool> m_running;
 };
-
-// TODO: main thread should be marking chunks for unload and Chunks should release references back to SuperChunkManager!
 
 Chunks g_chunks;
 
@@ -3121,6 +3122,9 @@ void render_init()
 
 	glClearColor(0.2, 0.4, 1, 1.0);
 	glViewport(0, 0, width, height);
+
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glEnable(GL_BLEND);
 }
 
 void BlockRenderer::draw_quad(int face, bool reverse, bool underwater_overlay)
@@ -3186,6 +3190,9 @@ const float foglimit2 = sqr(0.8 * RenderDistance * ChunkSize);
 
 void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 {
+	glEnable(GL_DEPTH_TEST);
+	Auto(glDisable(GL_DEPTH_TEST));
+
 	glBindTexture(GL_TEXTURE_2D_ARRAY, block_texture);
 	if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	Auto(if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
@@ -3392,6 +3399,17 @@ void stall_alarm_thread()
 	}
 }
 
+void wait_for_nearby_chunks(glm::ivec3 cpos)
+{
+	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1) while (true)
+	{
+		glm::ivec3 p(x, y, z);
+		Chunk& chunk = g_chunks.get(p + cpos);
+		if (chunk.get_cpos() == p + cpos) break;
+		usleep(10000);
+	}
+}
+
 int main(int, char**)
 {
 	if (!glfwInit()) return 0;
@@ -3438,25 +3456,12 @@ int main(int, char**)
 	d.z = rdtsc();
 	Timestamp::init(a, b, c, d);
 
-	// Wait for 3x3 chunks around player's starting position to load
-	glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
-	Timestamp tq;
-	FOR2(x, -1, 1) FOR2(y, -1, 1) FOR2(z, -1, 1)
-	{
-		while (true)
-		{
-			glm::ivec3 p(x, y, z);
-			Chunk& chunk = g_chunks.get(p + cplayer);
-			if (chunk.get_cpos() == p + cplayer) break;
-			usleep(10000);
-			glfwPollEvents();
-			assert(tq.elapsed_ms() < 5000);
-		}
-	}
-
 	Timestamp t0;
 	stall_ts = t0;
 	std::thread stall_alarm(stall_alarm_thread);
+
+	glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
+	wait_for_nearby_chunks(cplayer);
 
 	while (!glfwWindowShouldClose(window))
 	{
@@ -3476,11 +3481,7 @@ int main(int, char**)
 
 		Timestamp tc;
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		glEnable(GL_DEPTH_TEST);
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-		glEnable(GL_BLEND);
 		render_world_blocks(matrix, frustum);
-		glDisable(GL_DEPTH_TEST);
 		render_gui();
 
 		if (show_counters)
