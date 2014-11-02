@@ -2179,12 +2179,12 @@ bool IsEdgeFree(uint neighbors, int dx, int dy, int dz)
 	return (neighbors & mask) == 0;
 }
 
-int Resolve(glm::vec3& center, float k, float x, float y, float z)
+int Resolve(glm::vec3& delta, float k, float x, float y, float z)
 {
 	glm::vec3 d(x, y, z);
 	float ds = sqr(d);
 	if (ds < 1e-6) return -1;
-	center += d * (k / sqrtf(ds) - 1);
+	delta = d * (k / sqrtf(ds) - 1);
 	return 1;
 }
 
@@ -2290,41 +2290,138 @@ int sphere_vs_cube(glm::vec3& center, float radius, glm::ivec3 cube, int neighbo
 	return 1;
 }
 
-#ifdef UNDONE
-// Move cylinder so that it is not coliding with cube.
-// Cylinder is always facing up.
-//
-// Neighbors is 3x3x3 matrix of 27 bits representing nearby cubes.
-// Used to turn off vertices and edges that are not exposed.
-int cylinder_vs_cube(glm::vec3& center, float radius, float height_above, float height_below, glm::ivec3 cube, int neighbors)
+int cuboid_vs_cube(glm::vec3 center, glm::vec3 radius, glm::ivec3 cube, glm::vec3& delta)
 {
 	float e = 0.5;
 	float x = center.x - cube.x - e;
 	float y = center.y - cube.y - e;
 	float z = center.z - cube.z - e;
-	float k = e + radius;
 
-	if (x >= k || x <= -k || y >= k || y <= -k || z >= e + height_above || z <= -(e + height_below)) return 0;
+	glm::vec3 k = radius + e;
+
+	if (x >= k.x || x <= -k.x || y >= k.y || y <= -k.y || z >= k.z || z <= -k.z) return 0;
+
+	float dx = (x > 0 ? k.x : -k.x) - x;
+	float dy = (y > 0 ? k.y : -k.y) - y;
+	float dz = (z > 0 ? k.z : -k.z) - z;
+
+	if (std::abs(dx) < std::abs(dy))
+	{
+		if (std::abs(dx) < std::abs(dz))
+		{
+			delta = glm::vec3(dx, 0, 0);
+		}
+		else
+		{
+			delta = glm::vec3(0, 0, dz);
+		}
+	}
+	else
+	{
+		if (std::abs(dy) < std::abs(dz))
+		{
+			delta = glm::vec3(0, dy, 0);
+		}
+		else
+		{
+			delta = glm::vec3(0, 0, dz);
+		}
+	}
+	return 1;
+}
+
+// Move cylinder so that it is not coliding with cube.
+// Cylinder is always facing up.
+//
+// Neighbors is 3x3x3 (only 4 corners are used) matrix of bits representing nearby cubes.
+// Used to turn off edges that are not exposed.
+int cylinder_vs_cube(glm::vec3 center, float radius, float /*half*/height, glm::ivec3 cube, glm::vec3& delta, int neighbors)
+{
+	float e = 0.5;
+	float x = center.x - cube.x - e;
+	float y = center.y - cube.y - e;
+	float z = center.z - cube.z - e;
+	float kr = e + radius;
+	float kh = e + height;
+
+	if (x >= kr || x <= -kr || y >= kr || y <= -kr || z >= kh || z <= -kh) return 0;
 
 	float s2 = sqr(radius + sqrtf(2) / 2);
 	if (x*x + y*y >= s2) return 0;
 
-	// if center outside cube
-
-	// center inside cube
-	float ax = fabs(x), ay = fabs(y);
-	if (ax > ay)
+	// Compute delta XY
+	float dxy = 0;
+	if (x > +e)
 	{
-		if (ax > fabs(z)) { center.x += (x > 0 ? k : -k) - x; return 1; }
+		if (y > +e)
+		{
+			if (!IsEdgeFree(neighbors, 1, 1, 0) || !Resolve(delta, radius, x - e, y - e, 0)) return -1;
+			dxy = sqrt(delta.x * delta.x + delta.y * delta.y);
+		}
+		else if (y < -e)
+		{
+			if (!IsEdgeFree(neighbors, 1, -1, 0) || !Resolve(delta, radius, x - e, y + e, 0)) return -1;
+			dxy = sqrt(delta.x * delta.x + delta.y * delta.y);
+		}
+		else
+		{
+			delta = glm::vec3(kr - x, 0, 0);
+			dxy = delta.x;
+		}
+	}
+	else if (x < -e)
+	{
+		if (y > +e)
+		{
+			if (!IsEdgeFree(neighbors, -1, 1, 0) || !Resolve(delta, radius, x + e, y - e, 0)) return -1;
+			dxy = sqrt(delta.x * delta.x + delta.y * delta.y);
+		}
+		else if (y < -e)
+		{
+			if (!IsEdgeFree(neighbors, -1, -1, 0) || !Resolve(delta, radius, x + e, y + e, 0)) return -1;
+			dxy = sqrt(delta.x * delta.x + delta.y * delta.y);
+		}
+		else
+		{
+			delta = glm::vec3(-kr - x, 0, 0);
+			dxy = -delta.x;
+		}
 	}
 	else
 	{
-		if (ay > fabs(z)) { center.y += (y > 0 ? k : -k) - y; return 1; }
+		if (y > +e)
+		{
+			delta = glm::vec3(0, kr - y, 0);
+			dxy = delta.y;
+		}
+		else if (y < -e)
+		{
+			delta = glm::vec3(0, -kr - y, 0);
+			dxy = -delta.y;
+		}
+		else
+		{
+			// move either by X or Y, depending which one is less
+			float dx = (x > 0 ? kr : -kr) - x;
+			float dy = (y > 0 ? kr : -kr) - y;
+			if (std::abs(dx) < std::abs(dy))
+			{
+				delta = glm::vec3(dx, 0, 0);
+				dxy = std::abs(dx);
+			}
+			else
+			{
+				delta = glm::vec3(0, dy, 0);
+				dxy = std::abs(dy);
+			}
+		}
 	}
-	center.z += (z > 0 ? k : -k) - z;
+
+	// Compute delta Z
+	float dz = (z > 0 ? kh : -kh) - z;
+	if (std::abs(dz) < dxy) delta = glm::vec3(0, 0, dz);
 	return 1;
 }
-#endif
 
 int cube_neighbors(glm::ivec3 cube)
 {
@@ -2333,6 +2430,18 @@ int cube_neighbors(glm::ivec3 cube)
 	{
 		glm::ivec3 pos(cube.x + dx, cube.y + dy, cube.z + dz);
 		if (!g_chunks.can_move_through(pos)) neighbors |= NeighborBit(dx, dy, dz);
+	}
+	return neighbors;
+}
+
+// TODO: simplify
+int cube_neighbors2(glm::ivec3 cube)
+{
+	int neighbors = 0;
+	FOR2(dx, -1, 1) FOR2(dy, -1, 1) if (dx != 0 && dy != 0)
+	{
+		glm::ivec3 pos(cube.x + dx, cube.y + dy, cube.z);
+		if (!g_chunks.can_move_through(pos)) neighbors |= NeighborBit(dx, dy, 0);
 	}
 	return neighbors;
 }
@@ -2411,7 +2520,6 @@ void simulate(float dt, glm::vec3 dir, bool jump)
 				else
 				{
 					g_player.velocity -= glm::normalize(b) * p;
-					p = 0;
 				}
 			}
 			else
@@ -2441,11 +2549,35 @@ void simulate(float dt, glm::vec3 dir, bool jump)
 		FOR2(x, p.x - 1, p.x + 1) FOR2(y, p.y - 1, p.y + 1) FOR2(z, p.z - 1, p.z + 1)
 		{
 			glm::ivec3 cube(x, y, z);
+			if (g_chunks.can_move_through(cube)) continue;
+			glm::vec3 delta;
+			const float radius = 0.48;
 			glm::vec3 q = g_player.position;
-			if (!g_chunks.can_move_through(cube) && 1 == sphere_vs_cube(q, 0.95, cube, cube_neighbors(cube)))
+			if (true)
 			{
-				sum += q - g_player.position;
-				c += 1;
+				// q.z -= radius; BUG: unstable?
+				if (1 == cylinder_vs_cube(q, radius, radius * 2, cube, /*out*/delta, cube_neighbors(cube)))
+				{
+					sum += delta;
+					c += 1;
+				}
+			}
+			else if (false)
+			{
+				if (1 == sphere_vs_cube(q, radius, cube, cube_neighbors(cube)))
+				{
+					sum += q - g_player.position;
+					c += 1;
+				}
+			}
+			else
+			{
+				// q.z -= radius; BUG: unstable?
+				if (1 == cuboid_vs_cube(q, glm::vec3(radius, radius, radius * 2), cube, /*out*/delta))
+				{
+					sum += delta;
+					c += 1;
+				}
 			}
 		}
 		if (c == 0)	break;
@@ -2457,7 +2589,7 @@ void simulate(float dt, glm::vec3 dir, bool jump)
 			if (d < 0) g_player.velocity -= d * normal;
 			if (glm::dot(normal, glm::normalize(gravity(g_player.position))) < -0.9) on_the_ground = true;
 		}
-		g_player.position += sum;
+		g_player.position += sum / (float)c;
 	}
 }
 
@@ -3502,7 +3634,7 @@ void stall_alarm_thread()
 		usleep(1000);
 		if (!stall_enable.load(std::memory_order_relaxed)) break;
 		Timestamp a = stall_ts;
-		if (a.elapsed_ms() > 5000)
+		if (a.elapsed_ms() > 10000)
 		{
 			fprintf(stderr, "main thread stalled :(\n");
 			// TODO print callstack of main thread!
@@ -3555,6 +3687,7 @@ int main(int, char**)
 
 	model_init(window);
 	render_init();
+	fprintf(stderr, "Loading chunks in background ...\n");
 	g_chunks.fork_threads();
 
 	glm::dvec3 c;
@@ -3576,6 +3709,7 @@ int main(int, char**)
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
 	wait_for_nearby_chunks(cplayer);
 
+	fprintf(stderr, "Ready!\n");
 	while (!glfwWindowShouldClose(window))
 	{
 		Timestamp ta;
