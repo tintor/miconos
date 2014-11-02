@@ -1623,8 +1623,9 @@ struct Player
 	Timestamp digging_start;
 	glm::ivec3 digging_block;
 
-	Player();
+	bool load();
 	bool save();
+
 	void start_digging(glm::ivec3 cube);
 	void turn(float dx, float dy);
 };
@@ -1648,58 +1649,111 @@ void Player::start_digging(glm::ivec3 cube)
 	digging_start = Timestamp();
 }
 
+#include "jansson/jansson.h"
+
+json_t* json_vec3(glm::vec3 a)
+{
+	json_t* v = json_array();
+	json_array_append(v, json_real(a.x));
+	json_array_append(v, json_real(a.y));
+	json_array_append(v, json_real(a.z));
+	return v;
+}
+
 bool Player::save()
 {
-	FILE* file = fopen("player.json", "w");
-	CHECK(file);
-	fprintf(file, "{\n");
-	fprintf(file, "\tposition: [%f, %f, %f],\n", position.x, position.y, position.z);
-	fprintf(file, "\tyaw: %f,\n", yaw);
-	fprintf(file, "\tpitch: %f,\n", pitch);
-	fprintf(file, "\tvelocity: [%f, %f, %f],\n", velocity.x, velocity.y, velocity.z);
-	fprintf(file, "\tcreative_mode: %s,\n", creative_mode ? "true" : "false");
-	fprintf(file, "\tpalette_block: %u,\n", (uint)palette_block);
-	fprintf(file, "}\n");
-	fclose(file);
+	json_t* doc = json_object();
+	Auto(json_decref(doc));
+	json_object_set(doc, "position", json_vec3(position));
+	json_object_set(doc, "yaw", json_real(yaw));
+	json_object_set(doc, "pitch", json_real(pitch));
+	json_object_set(doc, "velocity", json_vec3(velocity));
+	json_object_set(doc, "creative_mode", json_boolean(creative_mode));
+	json_object_set(doc, "palette_block", json_integer((int)palette_block));
+	CHECK(0 == json_dump_file(doc, "player.json", JSON_INDENT(2) | JSON_PRESERVE_ORDER));
 	return true;
 }
 
-Player::Player()
+bool json_read(json_t* a, float& out)
 {
+	CHECK(json_is_real(a));
+	out = json_real_value(a);
+	return true;
+}
+
+bool json_read(json_t* a, glm::vec3& out)
+{
+	CHECK(json_is_array(a));
+	CHECK(json_array_size(a) == 3);
+	CHECK(json_read(json_array_get(a, 0), out.x));
+	CHECK(json_read(json_array_get(a, 1), out.y));
+	CHECK(json_read(json_array_get(a, 2), out.z));
+	return true;
+}
+
+bool json_read(json_t* a, int64_t& out)
+{
+	CHECK(json_is_integer(a));
+	out = json_integer_value(a);
+	return true;
+}
+
+bool json_read(json_t* a, bool& out)
+{
+	CHECK(json_is_boolean(a));
+	out = json_boolean_value(a);
+	return true;
+}
+
+bool Player::load()
+{
+	// load defaults
+	position = glm::vec3(0, 0, 20);
+	yaw = 0;
+	pitch = 0;
+	velocity = glm::vec3(0, 0, 0);
+	creative_mode = true;
+	palette_block = Block::water;
+
 	FILE* file = fopen("player.json", "r");
-	if (!file && errno == ENOENT)
+	CHECK(file || errno == ENOENT);
+	if (file)
 	{
-		// load defaults
-		position = glm::vec3(0, 0, 20);
-		yaw = 0;
-		pitch = 0;
-		velocity = glm::vec3(0, 0, 0);
-		creative_mode = true;
-		palette_block = Block::water;
+		Auto(fclose(file));
+
+		json_error_t error;
+		json_t* doc = json_loadf(file, 0, &error);
+		if (!doc)
+		{
+			fprintf(stderr, "JSON error: line=%d column=%d position=%d source='%s' text='%s'\n", error.line, error.column, error.position, error.source, error.text);
+			return false;
+		}
+		assert(doc->refcount == 1);
+		Auto(json_decref(doc));
+
+		CHECK(json_is_object(doc));
+		#define read(K, V) { json_t* value = json_object_get(doc, K); CHECK(value); CHECK(json_read(value, V)); }
+
+		read("position", position);
+		read("yaw", yaw);
+		read("pitch", pitch);
+		read("velocity", velocity);
+		read("creative_mode", creative_mode);
+
+		int64_t pb;
+		read("palette_block", pb);
+		CHECK(pb >= 0 && pb < block_count - (int)Block::water);
+		palette_block = (Block)(pb + (int)Block::water);
+
+		#undef read
 	}
-	else
-	{
-		fscanf(file, "{\n");
-		#define load(A, F, ...) if (A != fscanf(file, F, __VA_ARGS__)) { fprintf(stderr, "Failed to parse: %s\n", F); exit(1); }
-		load(3, "\tposition: [%f, %f, %f],\n", &position.x, &position.y, &position.z);
-		load(1, "\tyaw: %f,\n", &yaw);
-		load(1, "\tpitch: %f,\n", &pitch);
-		load(3, "\tvelocity: [%f, %f, %f],\n", &velocity.x, &velocity.y, &velocity.z);
-		char creative[100];
-		load(1, "\tcreative_mode: %s,\n", creative);
-		uint pb;
-		load(1, "\tpalette_block: %u,\n", &pb);
-		palette_block = (Block)pb;
-		#undef load
-		creative_mode = strcmp(creative, "true") == 0 || strcmp(creative, "true,") == 0;
-		fscanf(file, "}\n");
-		fclose(file);
-	}
+
 	scroll_y = (uint)palette_block - (uint)Block::water;
 	orientation = glm::rotate(glm::rotate(glm::mat4(), -yaw, glm::vec3(0, 0, 1)), -pitch, glm::vec3(1, 0, 0));
 	cpos = glm::ivec3(glm::floor(position)) >> ChunkSizeBits;
 	atomic_cpos = compress_ivec3(cpos);
 	digging_on = false;
+	return true;
 }
 
 // ===============
@@ -2152,6 +2206,11 @@ double last_cursor_x, last_cursor_y;
 
 void model_init(GLFWwindow* window)
 {
+	if (!g_player.load())
+	{
+		fprintf(stderr, "Failed to load player.json\n");
+		exit(1);
+	}
 	glfwSetKeyCallback(window, on_key);
 	glfwSetMouseButtonCallback(window, on_mouse_button);
 	glfwSetScrollCallback(window, on_scroll);
