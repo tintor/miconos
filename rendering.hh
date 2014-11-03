@@ -1,6 +1,10 @@
 #pragma once
 
 #include <string>
+#include <vector>
+#include <mutex>
+
+#include "jansson/jansson.h"
 
 #define GLFW_INCLUDE_GLCOREARB
 #ifndef __APPLE_CC__
@@ -23,8 +27,8 @@ class Text
 public:
 	Text();
 	void Reset(int width, int height, glm::mat4& matrix);
-	void Print(const char* text, int length);
-	void Printf(const char* format, ...);
+	void Print(const char* fmt, ...) __printflike(2, 3);
+	void PrintBuffer(const char* buffer, int length);
 	void PrintAt(float x, float y, float n, const char* text, int length);
 
 private:
@@ -34,18 +38,20 @@ private:
 
 	GLuint m_positionBuffer;
 	GLuint m_uvBuffer;
+	std::vector<GLfloat> m_position_data;
+	std::vector<GLfloat> m_uv_data;
 };
 
 // TODO make it work for vertical monitor setup
-const int ConsoleWidth = 130;
-const int ConsoleHeight = 37;
+const int ConsoleWidth = 131;
+const int ConsoleHeight = 40; // TODO: magic numbers?
 
 class Console
 {
 public:
 	Console();
-	virtual void Execute(const char* command) { char buffer[1000]; buffer[0] = 0; snprintf(buffer, sizeof(buffer), "[%s]", command); PrintLine(buffer); }
-	void PrintLine(const char* line);
+	virtual void Execute(const char* command, int length) { Print("[%.*s]\n", length, command); }
+	void Print(const char* fmt, ...) __printflike(2, 3);
 	static bool KeyToChar(int key, int mods, char& ch);
 	bool OnKey(int key, int mods);
 	void Render(Text* text, float time);
@@ -54,12 +60,23 @@ public:
 	void Show() { m_visible = true; }
 	void Hide() { m_visible = false; }
 
+	json_t* save();
+	bool load(json_t* doc);
+
 private:
 	bool m_visible = false;
+	std::mutex m_mutex;
 
 	char m_output[ConsoleHeight][ConsoleWidth];
 	int m_last_line = 0;
+	int m_last_column = 0;
 
-	char m_input[ConsoleWidth];
-	int m_cursor_pos = 0;
+	struct Input
+	{
+		char buffer[ConsoleWidth];
+		int cursor;
+	};
+
+	int m_current_input = 0;
+	std::vector<Input*> m_inputs;
 };

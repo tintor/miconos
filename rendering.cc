@@ -167,26 +167,23 @@ void make_character(float* vertex, float* texture, float x, float y, float n, fl
 	*t++ = du + 0; *t++ = dv + b - p;
 }
 
-void text_gen_buffers(GLuint position_buffer, GLuint uv_buffer, float x, float y, float n, const char* text)
+void text_gen_buffers(GLuint position_buffer, GLuint uv_buffer, float x, float y, float n, const char* text, std::vector<GLfloat>& position_data, std::vector<GLfloat>& uv_data)
 {
 	int length = strlen(text);
-	GLfloat* position_data = new GLfloat[length * 6 * 2];
-	GLfloat* uv_data = new GLfloat[length * 6 * 2];
+	position_data.resize(length * 6 * 2);
+	uv_data.resize(length * 6 * 2);
 
 	for (int i = 0; i < length; i++)
 	{
-		make_character(position_data + i * 12, uv_data + i * 12, x, y, n / 2, n, text[i]);
+		make_character(&position_data[0] + i * 12, &uv_data[0] + i * 12, x, y, n / 2, n, text[i]);
 		x += n;
 	}
 
 	glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, position_data, GL_STATIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, &position_data[0], GL_STATIC_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, uv_buffer);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, uv_data, GL_STATIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * length * 6 * 2, &uv_data[0], GL_STATIC_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-	delete[] position_data;
-	delete[] uv_data;
 }
 
 void text_draw_buffers(GLuint position_buffer, GLuint uv_buffer, GLuint position_loc, GLuint uv_loc, int length)
@@ -238,35 +235,39 @@ void Text::Reset(int width, int height, glm::mat4& matrix)
 	m_ty = height - m_ts;
 }
 
-void Text::Print(const char* text, int length)
-{
-	PrintAt(m_tx, m_ty, m_ts, text, length);
-	m_ty -= m_ts * 2;
-}
-
-void Text::Printf(const char* format, ...)
+void Text::Print(const char* format, ...)
 {
 	char buffer[1024];
 	va_list va;
 	va_start(va, format);
-	vsnprintf(buffer, sizeof(buffer), format, va);
+	int length = vsnprintf(buffer, sizeof(buffer), format, va);
 	va_end(va);
 
-	PrintAt(m_tx, m_ty, m_ts, buffer, strlen(buffer));
+	PrintBuffer(buffer, length);
+}
+
+void Text::PrintBuffer(const char* buffer, int length)
+{
+	PrintAt(m_tx, m_ty, m_ts, buffer, length);
 	m_ty -= m_ts * 2;
 }
 
 void Text::PrintAt(float x, float y, float n, const char* text, int length)
 {
-	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, (n == 0) ? m_ts : n, text);
+	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, (n == 0) ? m_ts : n, text, m_position_data, m_uv_data);
 	text_draw_buffers(m_positionBuffer, m_uvBuffer, text_position_loc, text_uv_loc, length);
 }
 
 Console::Console()
 {
 	memset(m_output, ' ', ConsoleWidth * ConsoleHeight);
-	memset(m_input, ' ', ConsoleWidth);
-	m_input[m_cursor_pos++] = '>';
+
+	Input* p = new Input;
+	p->cursor = 1;
+	p->buffer[0] = '>';
+	memset(p->buffer + 1, ' ', ConsoleWidth - 1);
+	m_inputs.push_back(p);
+	m_current_input = 0;
 }
 
 bool Console::KeyToChar(int key, int mods, char& ch)
@@ -301,39 +302,85 @@ bool Console::KeyToChar(int key, int mods, char& ch)
 	return true;
 }
 
-void Console::PrintLine(const char* str)
+void Console::Print(const char* fmt, ...)
 {
-	m_last_line = (m_last_line + 1) % ConsoleHeight;
-	int length = std::min<int>(ConsoleWidth, strlen(str));
-	memcpy(m_output[m_last_line], str, length);
-	memset(m_output[m_last_line] + length, ' ', ConsoleWidth - length);
+	AutoLock(m_mutex);
+	char buffer[10240];
+	va_list va;
+	va_start(va, fmt);
+	int length = vsnprintf(buffer, sizeof(buffer), fmt, va);
+	va_end(va);
+
+	char* w = m_output[m_last_line];
+	FOR(i, length)
+	{
+		if (buffer[i] == '\n')
+		{
+			m_last_column = ConsoleWidth;
+			continue;
+		}
+		if (m_last_column == ConsoleWidth)
+		{
+			m_last_line += 1;
+			if (m_last_line == ConsoleHeight) m_last_line = 0;
+			m_last_column = 0;
+			w = m_output[m_last_line];
+			memset(w, ' ', ConsoleWidth);
+		}
+		w[m_last_column++] = buffer[i];
+	}
 }
 
+bool contains_non_space(const char* a, int length)
+{
+	FOR(i, length) if (a[i] != ' ') return true;
+	return false;
+}
+
+// TODO left / right move cursor to make edits
 bool Console::OnKey(int key, int mods)
 {
 	char ch;
+	Input& input = *m_inputs[m_current_input];
 	if (key == GLFW_KEY_BACKSPACE)
 	{
-		if (m_cursor_pos > 1)
-		{
-			m_input[m_cursor_pos--] = ' ';
-		}
+		if (input.cursor > 1) input.buffer[input.cursor--]  = ' ';
 		return true;
 	}
-	if (key == GLFW_KEY_ENTER)
+	if (key == GLFW_KEY_ENTER && contains_non_space(input.buffer + 1, input.cursor - 1))
 	{
-		m_input[m_cursor_pos] = 0;
-		Execute(m_input + 1);
-		memset(m_input + 1, ' ', ConsoleWidth);
-		m_cursor_pos = 1;
+		Execute(input.buffer + 1, input.cursor - 1);
+		if (m_current_input != m_inputs.size() - 1)
+		{
+			delete m_inputs.back();
+			m_inputs.pop_back();
+			while (m_current_input != m_inputs.size() - 1)
+			{
+				std::swap(m_inputs[m_current_input], m_inputs[m_current_input + 1]);
+				m_current_input += 1;
+			}
+		}
+		Input* p = new Input;
+		p->cursor = 1;
+		p->buffer[0] = '>';
+		memset(p->buffer + 1, ' ', ConsoleWidth - 1);
+		m_inputs.push_back(p);
+		m_current_input = m_inputs.size() - 1;
+		return true;
+	}
+	if (key == GLFW_KEY_UP)
+	{
+		if (m_current_input > 0) m_current_input -= 1;
+		return true;
+	}
+	if (key == GLFW_KEY_DOWN)
+	{
+		if (m_current_input + 1 < m_inputs.size()) m_current_input += 1;
 		return true;
 	}
 	if (KeyToChar(key, mods, /*out*/ch))
 	{
-		if (m_cursor_pos + 1 < ConsoleWidth)
-		{
-			m_input[m_cursor_pos++] = ch;
-		}
+		if (input.cursor < ConsoleWidth) input.buffer[input.cursor++] = ch;
 		return true;
 	}
 	return false;
@@ -344,15 +391,106 @@ void Console::Render(Text* text, float time)
 	if (!m_visible)
 		return;
 
-	for (int i = m_last_line + 1; i < ConsoleHeight; i++)
 	{
-		text->Print(m_output[i], ConsoleWidth);
-	}
-	for (int i = 0; i <= m_last_line; i++)
-	{
-		text->Print(m_output[i], ConsoleWidth);
+		AutoLock(m_mutex);
+		for (int i = m_last_line + 1; i < ConsoleHeight; i++)
+		{
+			text->PrintBuffer(m_output[i], ConsoleWidth);
+		}
+		for (int i = 0; i <= m_last_line; i++)
+		{
+			text->PrintBuffer(m_output[i], ConsoleWidth);
+		}
 	}
 
-	m_input[m_cursor_pos] = (fmod(time, 1.6f) <= 0.8) ? '_' : ' ';
-	text->Print(m_input, ConsoleWidth);
+	Input& input = *m_inputs[m_current_input];
+	if (input.cursor < ConsoleWidth)
+	{
+		input.buffer[input.cursor] = (fmod(time, 1.6f) <= 0.8) ? '_' : ' ';
+	}
+	text->PrintBuffer(input.buffer, ConsoleWidth);
+}
+
+json_t* Console::save()
+{
+	json_t* doc = json_object();
+	json_t* output = json_array();
+	{
+		AutoLock(m_mutex);
+		FOR2(i, m_last_line + 1, ConsoleHeight - 1)
+		{
+			int len = ConsoleWidth;
+			while (len > 0 && m_output[i][len-1] == ' ') len -= 1;
+			json_array_append(output, json_stringn(m_output[i], len));
+		}
+		FOR2(i, 0, m_last_line)
+		{
+			int len = ConsoleWidth;
+			while (len > 0 && m_output[i][len-1] == ' ') len -= 1;
+			json_array_append(output, json_stringn(m_output[i], len));
+		}
+	}
+	json_object_set(doc, "output", output);
+	json_object_set(doc, "last_column", json_integer(m_last_column));
+	json_t* commands = json_array();
+	FOR(i, m_inputs.size()) json_array_append(commands, json_stringn(m_inputs[i]->buffer, m_inputs[i]->cursor));
+	json_object_set(doc, "commands", commands);
+	return doc;
+}
+
+bool Console::load(json_t* doc)
+{
+	if (!doc) return true;
+	CHECK(json_is_object(doc));
+
+	json_t* output = json_object_get(doc, "output");
+	if (output)
+	{
+		CHECK(json_is_array(output));
+		memset(m_output, ' ', ConsoleWidth * ConsoleHeight);
+		m_last_line = 0;
+		m_last_column = 0;
+		FOR(i, json_array_size(output))
+		{
+			json_t* line = json_array_get(output, i);
+			CHECK(json_is_string(line));
+			Print("%.*s\n", (int) json_string_length(line), json_string_value(line));
+		}
+	}
+
+	json_t* last_column = json_object_get(doc, "last_column");
+	if (last_column)
+	{
+		CHECK(json_is_integer(last_column));
+		m_last_column = json_integer_value(last_column);
+	}
+
+	json_t* commands = json_object_get(doc, "commands");
+	if (commands)
+	{
+		CHECK(json_is_array(commands));
+		while (m_inputs.size() > 0)
+		{
+			delete m_inputs.back();
+			m_inputs.pop_back();
+		}
+		FOR(i, json_array_size(commands))
+		{
+			json_t* line = json_array_get(commands, i);
+			CHECK(json_is_string(line));
+			Input* p = new Input;
+			p->cursor = std::min<int>(ConsoleWidth, json_string_length(line));
+			memset(p->buffer, ' ', ConsoleWidth);
+			memcpy(p->buffer, json_string_value(line), p->cursor);
+			m_inputs.push_back(p);
+		}
+
+		Input* p = new Input;
+		p->cursor = 1;
+		p->buffer[0] = '>';
+		memset(p->buffer + 1, ' ', ConsoleWidth - 1);
+		m_inputs.push_back(p);
+		m_current_input = m_inputs.size() - 1;
+	}
+	return true;
 }

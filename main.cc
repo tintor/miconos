@@ -1594,6 +1594,14 @@ glm::ivec3 decompress_ivec3(CompressedIVec3 c)
 
 // ===============
 
+class MyConsole : public Console
+{
+public:
+	virtual void Execute(const char* command, int length) override;
+};
+
+MyConsole console;
+
 struct Player
 {
 	// Persisted
@@ -1623,6 +1631,8 @@ struct Player
 	void turn(float dx, float dy);
 };
 
+bool g_collision = true;
+
 Player g_player;
 double scroll_y = 0, scroll_dy = 0;
 
@@ -1641,8 +1651,6 @@ void Player::start_digging(glm::ivec3 cube)
 	digging_block = cube;
 	digging_start = Timestamp();
 }
-
-#include "jansson/jansson.h"
 
 json_t* json_vec3(glm::vec3 a)
 {
@@ -1663,7 +1671,8 @@ bool Player::save()
 	json_object_set(doc, "velocity", json_vec3(velocity));
 	json_object_set(doc, "creative_mode", json_boolean(creative_mode));
 	json_object_set(doc, "palette_block", json_integer((int)palette_block - (int)Block::water));
-	CHECK(0 == json_dump_file(doc, "player.json", JSON_INDENT(2) | JSON_PRESERVE_ORDER));
+	json_object_set(doc, "console", console.save());
+	CHECK(0 == json_dump_file(doc, "player.json", JSON_INDENT(4) | JSON_PRESERVE_ORDER));
 	return true;
 }
 
@@ -1732,6 +1741,7 @@ bool Player::load()
 		read("pitch", pitch);
 		read("velocity", velocity);
 		read("creative_mode", creative_mode);
+		CHECK(console.load(json_object_get(doc, "console")));
 
 		int64_t pb;
 		read("palette_block", pb);
@@ -1747,6 +1757,94 @@ bool Player::load()
 	atomic_cpos = compress_ivec3(cpos);
 	digging_on = false;
 	return true;
+}
+
+// ===============
+
+#include "ply_io.h"
+
+struct Mesh
+{
+	bool load(const char* filename);
+	void bounding_box(glm::vec3& min, glm::vec3& max) const;
+
+	struct Face
+	{
+		uint verts[3];
+	};
+
+	std::vector<glm::vec3> vertices;
+	std::vector<Face> faces;
+};
+
+bool Mesh::load(const char* filename)
+{
+	FILE* f = fopen(filename, "r");
+	PlyFile* pf = read_ply(f);
+
+	PlyProperty vert_prop_x = { const_cast<char*>("x"), Float32, Float32, offsetof(glm::vec3,x), 0, 0, 0, 0 };
+	PlyProperty vert_prop_y = { const_cast<char*>("y"), Float32, Float32, offsetof(glm::vec3,y), 0, 0, 0, 0 };
+	PlyProperty vert_prop_z = { const_cast<char*>("z"), Float32, Float32, offsetof(glm::vec3,z), 0, 0, 0, 0 };
+	PlyProperty face_prop = { const_cast<char*>("vertex_indices"), Int32, Int32, offsetof(Face, verts), 3/*LIST_FIXED*/, Uint8, Uint8, 3/*num verts*/ };
+
+	CHECK(pf->num_elem_types == 2);
+
+	// Read vertex list
+	int count;
+	char* elem_name = setup_element_read_ply(pf, 0, &count);
+	CHECK(strcmp(elem_name, "vertex") == 0);
+	CHECK(count >= 0);
+	CHECK(pf->elems[0]->nprops == 3);
+	CHECK(strcmp(pf->elems[0]->props[0]->name, "x") == 0);
+	CHECK(strcmp(pf->elems[0]->props[1]->name, "y") == 0);
+	CHECK(strcmp(pf->elems[0]->props[2]->name, "z") == 0);
+	CHECK(pf->elems[0]->props[0]->is_list == 0);
+	CHECK(pf->elems[0]->props[1]->is_list == 0);
+	CHECK(pf->elems[0]->props[2]->is_list == 0);
+	setup_property_ply(pf, &vert_prop_x);
+	setup_property_ply(pf, &vert_prop_y);
+	setup_property_ply(pf, &vert_prop_z);
+	vertices.resize(count);
+	for (int i = 0; i < count; i++)
+	{
+		get_element_ply(pf, &vertices[i]);
+		std::swap(vertices[i].y, vertices[i].z);
+	}
+
+	// Read face list
+	elem_name = setup_element_read_ply(pf, 1, &count);
+	CHECK(strcmp(elem_name, "face") == 0);
+	CHECK(count >= 0);
+	CHECK(pf->elems[1]->nprops == 1);
+	CHECK(strcmp(pf->elems[1]->props[0]->name, "vertex_indices") == 0);
+	CHECK(pf->elems[1]->props[0]->is_list == 1);
+	setup_property_ply(pf, &face_prop);
+	faces.resize(count);
+	for (int i = 0; i < count; i++)
+	{
+		Face& face = faces[i];
+		get_element_ply(pf, &face);
+		CHECK(pf->error == 0);
+	}
+
+	free_ply(pf);
+	fclose(f);
+	return true;
+}
+
+void Mesh::bounding_box(glm::vec3& min, glm::vec3& max) const
+{
+	min = max = vertices[0];
+	for (uint i = 1; i < vertices.size(); i++)
+	{
+		glm::vec3 v = vertices[i];
+		if (v.x < min.x) min.x = v.x;
+		if (v.y < min.y) min.y = v.y;
+		if (v.z < min.z) min.z = v.z;
+		if (v.x > max.x) max.x = v.x;
+		if (v.y > max.y) max.y = v.y;
+		if (v.z > max.z) max.z = v.z;
+	}
 }
 
 // ===============
@@ -1815,8 +1913,6 @@ private:
 	std::vector<Quad> m_quads;
 	int m_blended_quads;
 };
-
-Console console;
 
 class Chunks
 {
@@ -1939,6 +2035,53 @@ Block CachedChunk::operator[](glm::ivec3 pos)
 	if (!initialized) init(pos >> ChunkSizeBits);
 	if (mc.valid()) return mc.get(pos & ChunkSizeMask);
 	return generate_block(pos);
+}
+
+// ======================
+
+// <scale> is size (in blocks) of the largest extent of mesh.
+void rasterize_mesh(const Mesh& mesh, glm::ivec3 base, float scale, Block block)
+{
+	glm::vec3 min, max;
+	mesh.bounding_box(/*out*/min, /*out*/max);
+	glm::vec3 mesh_size = max - min;
+	float extent = glm::max(mesh_size.x, mesh_size.y, mesh_size.z);
+	float mesh_block = extent / scale; // size of block in model space
+
+	glm::ivec3 bmax = base + glm::ivec3(glm::floor(mesh_size / mesh_block));
+
+	FOR(i, mesh.faces.size())
+	{
+		const Mesh::Face& face = mesh.faces[i];
+		glm::vec3 va = mesh.vertices[face.verts[0]];
+		glm::vec3 vb = mesh.vertices[face.verts[1]];
+		glm::vec3 vc = mesh.vertices[face.verts[2]];
+
+		FOR(p, 3)
+		{
+			glm::vec3 v2 = glm::mix(va, vb, p * 0.5f);
+			FOR(q, 3)
+			{
+				glm::vec3 v3 = glm::mix(v2, vc, q * 0.5f);
+
+				glm::ivec3 pos = base + glm::ivec3(glm::floor((v3 - min) / mesh_block));
+				glm::ivec3 cpos = pos >> ChunkSizeBits;
+				Chunk& chunk = g_chunks.get(cpos);
+				chunk.set(pos & ChunkSizeMask, block);
+			}
+		}
+	}
+
+	glm::ivec3 cmin = (base - ii) >> ChunkSizeBits;
+	glm::ivec3 cmax = (bmax + ii) >> ChunkSizeBits;
+	FOR2(z, cmin.z, cmax.z) FOR2(y, cmin.y, cmax.y) FOR2(x, cmin.x, cmax.x)
+	{
+		glm::ivec3 cpos(x, y, z);
+		Chunk& chunk = g_chunks.get(cpos);
+		assert(chunk.get_cpos() == cpos);
+		chunk.m_remesh = true;
+		// TODO activate chunk for simulation
+	}
 }
 
 // ======================
@@ -2584,6 +2727,8 @@ void simulate(float dt, glm::vec3 dir, bool jump)
 	}
 
 	on_the_ground = false;
+	if (!g_collision && g_player.creative_mode) return;
+
 	FOR(i, 2)
 	{
 		// Resolve all collisions simultaneously
@@ -2874,6 +3019,7 @@ void update_block(glm::ivec3 pos, Block b)
 	Chunk& chunk = g_chunks.get(p);
 	assert(chunk.get_cpos() == p);
 	chunk.set(q, b);
+	mark_remesh_chunk(chunk, p, q);
 	activate_block(pos);
 }
 
@@ -3537,31 +3683,27 @@ void render_gui()
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
 
 	text->Reset(width, height, matrix);
-	if (show_counters)
+	if (show_counters && !console.IsVisible())
 	{
 		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
-		text->Printf("[%.1f %.1f %.1f] C:%4d Q:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c",
+		text->Print("[%.1f %.1f %.1f] C:%4d Q:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c",
 			g_player.position.x, g_player.position.y, g_player.position.z, stats::chunk_count, stats::quad_count / 1000,
 			stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms,
 			enable_f4 ? '4' : '-', enable_f5 ? '5' : '-', enable_f6 ? '6' : '-');
 
-		text->Printf("collide:%1.0f select:%1.0f simulate:%1.0f [%.1f %.1f %.1f] %.1f%s",
+		text->Print("collide:%1.0f select:%1.0f simulate:%1.0f [%.1f %.1f %.1f] %.1f%s",
 			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms,
 			g_player.velocity.x, g_player.velocity.y, g_player.velocity.z, glm::length(g_player.velocity), on_the_ground ? " ground" : "");
 
 		if (selection)
 		{
 			Block block = g_chunks.get_block(sel_cube);
-			text->Printf("selected: %s at [%d %d %d]", block_name[(uint)block], sel_cube.x, sel_cube.y, sel_cube.z);
-		}
-		else
-		{
-			text->Print("", 0);
+			text->Print("selected: %s at [%d %d %d]", block_name[(uint)block], sel_cube.x, sel_cube.y, sel_cube.z);
 		}
 
 		if (g_player.digging_on)
 		{
-			text->Printf("digging for %.1f seconds", g_player.digging_start.elapsed_ms() / 1000);
+			text->Print("digging for %.1f seconds", g_player.digging_start.elapsed_ms() / 1000);
 		}
 	}
 
@@ -3695,6 +3837,159 @@ void wait_for_nearby_chunks(glm::ivec3 cpos)
 		if (chunk.get_cpos() == p + cpos) break;
 		usleep(10000);
 	}
+}
+
+bool equal(const char* a, std::pair<const char*, int> b)
+{
+	return strlen(a) == b.second && memcmp(a, b.first, b.second) == 0;
+}
+
+bool is_integer(std::pair<const char*, int> a)
+{
+	if (a.second > 1 && a.first[0] == '-')
+	{
+		a.first += 1;
+		a.second -= 1;
+	}
+	if (a.second > 9) return false;
+	FOR(i, a.second) if (!isdigit(a.first[i])) return false;
+	return true;
+}
+
+int parse_int(std::pair<const char*, int> a)
+{
+	bool negative = false;
+	if (a.second > 1 && a.first[0] == '-')
+	{
+		a.first += 1;
+		a.second -= 1;
+		negative = true;
+	}
+	int v = 0;
+	FOR(i, a.second) v = v * 10 + a.first[i] - '0';
+	return negative ? -v : v;
+}
+
+bool is_real(std::pair<const char*, int> a)
+{
+	if (a.second > 1 && a.first[0] == '-')
+	{
+		a.first += 1;
+		a.second -= 1;
+	}
+	FOR(i, a.second) if (!isdigit(a.first[i]) && a.first[i] != '.') return false;
+	int dots = 0;
+	FOR(i, a.second) if (a.first[i] == '.') dots += 1;
+	return dots <= 1;
+}
+
+double parse_real(std::pair<const char*, int> a)
+{
+	bool negative = false;
+	if (a.second > 1 && a.first[0] == '-')
+	{
+		a.first += 1;
+		a.second -= 1;
+		negative = true;
+	}
+	double v = 0;
+	double e = 0.1;
+	bool dot = false;
+	FOR(i, a.second)
+	{
+		if (a.first[i] == '.')
+		{
+			dot = true;
+		}
+		else if (!dot)
+		{
+			v = v * 10 + (a.first[i] - '0');
+		}
+		else
+		{
+			v += e * (a.first[i] - '0');
+			e /= 10;
+		}
+	}
+	return negative ? -v : v;
+}
+
+void command_import(char* filename, glm::ivec3 pos, float scale)
+{
+	std::thread([=]()
+	{
+		Auto(free(filename));
+		console.Print("importing %s at (%d %d %d) scale %f ...\n", filename, pos.x, pos.y, pos.z, scale);
+
+		Mesh mesh;
+		if (!mesh.load(filename))
+		{
+			console.Print("loading file %s failed\n", filename);
+			return;
+		}
+
+		rasterize_mesh(mesh, pos, scale, Block::grass);
+		console.Print("import completed\n");
+	}).detach();
+}
+
+typedef std::pair<const char*, int> Token;
+
+void command_set()
+{
+	console.Print("collision = %s\n", g_collision ? "true" : "false");
+}
+
+void command_set(Token key, Token value)
+{
+	if (equal("collision", key))
+	{
+		if (equal("true", value)) { g_collision = true; return; }
+		if (equal("false", value)) { g_collision = false; return; }
+		console.Print("error in syntax: set collision (true | false)\n");
+		return;
+	}
+	console.Print("unknown var %.*s. type 'set' for list of all vars.", key.second, key.first);
+}
+
+void MyConsole::Execute(const char* command, int length)
+{
+	if (command[0] == '/') // shout!
+	{
+		if (length > 1) Print("You: %.*s\n", length - 1, command + 1);
+		return;
+	}
+
+	std::vector<std::pair<const char*, int>> tokens;
+	FOR(i, length)
+	{
+		if (command[i] == ' ') continue;
+		if (i == 0 || command[i-1] == ' ') tokens.push_back({ command + i, 1 }); else tokens.back().second += 1;
+	}
+
+	if (equal("import", tokens[0]))
+	{
+		if (tokens.size() != 6 || !is_integer(tokens[2]) || !is_integer(tokens[3]) || !is_integer(tokens[4]) || !is_real(tokens[5]))
+		{
+			Print("error in syntax: import <filename> <x> <y> <z> <scale>\n");
+			return;
+		}
+		char* filename = (char*)memcpy(malloc(tokens[1].second + 1), tokens[1].first, tokens[1].second);
+		filename[tokens[1].second] = 0;
+		command_import(filename, glm::ivec3(parse_int(tokens[2]), parse_int(tokens[3]), parse_int(tokens[4])), parse_real(tokens[5]));
+		return;
+	}
+
+	if (equal("set", tokens[0]))
+	{
+		if (tokens.size() == 1) { command_set(); return; }
+		if (tokens.size() == 3) { command_set(tokens[1], tokens[2]); return; }
+		Print("error in syntax: set [<key> <value>]\n");
+		return;
+	}
+
+	assert(tokens.size() > 0);
+	Print("[%.*s] command not found\n", tokens[0].second, tokens[0].first);
 }
 
 int main(int, char**)

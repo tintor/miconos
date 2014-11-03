@@ -10,6 +10,8 @@
 #include <functional>
 #include <atomic>
 
+#include "jansson/jansson.h"
+
 typedef uint32_t uint;
 #define FOR(I, N) for(int (I)=0; (I)<(N); (I)++)
 #define FOR2(I, A, B) for(auto (I)=A; (I)<=(B); (I)++)

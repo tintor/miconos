@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 2.8)
 project(arena)
 
 add_executable(arena main.cc lz4.c lz4.h util.hh util.cc auto.hh callstack.hh rendering.cc rendering.hh lodepng/lodepng.cc tinycthread/tinycthread.c
-
+ply_io.h ply_io.c
 jansson/dump.c			jansson/hashtable.c		jansson/load.c			jansson/pack_unpack.c		jansson/strconv.c		jansson/value.c
 jansson/error.c			jansson/hashtable_seed.c	jansson/memory.c		jansson/strbuffer.c		jansson/utf.c
 jansson/hashtable.h		jansson/jansson.h		jansson/jansson_private.h	jansson/lookup3.h		jansson/strbuffer.h		jansson/utf.h
