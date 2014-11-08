@@ -2232,7 +2232,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		if (action == GLFW_PRESS || action == GLFW_REPEAT)
 		{
-			if (key == GLFW_KEY_F1)
+			if (key == GLFW_KEY_F1 && (mods == GLFW_MOD_SHIFT || mods == 0))
 			{
 				console.Hide();
 			}
@@ -2244,7 +2244,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	}
 	else if (action == GLFW_PRESS)
 	{
-		if (key == GLFW_KEY_F1)
+		if (key == GLFW_KEY_F1 && (mods == GLFW_MOD_SHIFT || mods == 0))
 		{
 			console.Show();
 		}
@@ -4016,7 +4016,7 @@ GLFWwindow* create_window()
 	GLFWwindow* window = glfwCreateWindow(mode->width*2, mode->height*2, "Arena", glfwGetPrimaryMonitor(), NULL);
 	if (!window) return nullptr;
 	glfwMakeContextCurrent(window);
-	glfwSwapInterval(0/*VSYNC*/);
+	glfwSwapInterval(1/*VSYNC*/);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwGetFramebufferSize(window, &width, &height);
 	return window;
