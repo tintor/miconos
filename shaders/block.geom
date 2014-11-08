@@ -43,7 +43,7 @@ vec3 leaf_transform(vec3 p)
 void emit(int _texture, int _light, ivec2 _uv, ivec3 _pos)
 {
 	vec3 p = cpos + _pos / 15.0f;
-	if (_texture <= 5) p = leaf_transform(p);
+	//if (_texture <= 5) p = leaf_transform(p);
 
 	gl_Position = matrix * vec4(p, 1);
 	fragment_uv = _uv / 15.0f;
