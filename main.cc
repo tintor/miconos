@@ -4035,24 +4035,8 @@ void MyConsole::Execute(const char* command, int length)
 	Print("[%.*s] command not found\n", tokens[0].second, tokens[0].first);
 }
 
-int main(int, char**)
+GLFWwindow* create_window()
 {
-	signal(SIGSEGV, sigsegv_handler);
-	if (!glfwInit()) return 0;
-
-	std::thread(server_main).detach();
-
-	glm::dvec3 a;
-	glm::i64vec3 b;
-	a.x = glfwGetTime();
-	b.x = rdtsc();
-	usleep(200000);
-	a.y = glfwGetTime();
-	b.y = rdtsc();
-	usleep(200000);
-	a.z = glfwGetTime();
-	b.z = rdtsc();
-
 	glfwSetErrorCallback(OnError);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
@@ -4061,13 +4045,34 @@ int main(int, char**)
 
 	const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
 	GLFWwindow* window = glfwCreateWindow(mode->width*2, mode->height*2, "Arena", glfwGetPrimaryMonitor(), NULL);
-	if (!window) { glfwTerminate(); return 0; }
+	if (!window) return nullptr;
 	glfwMakeContextCurrent(window);
-	glfwSwapInterval(1/*VSYNC*/);
+	glfwSwapInterval(0/*VSYNC*/);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwGetFramebufferSize(window, &width, &height);
-	glfwPollEvents();
+	return window;
+}
 
+int main(int, char**)
+{
+	signal(SIGSEGV, sigsegv_handler);
+	CHECK(glfwInit());
+
+	std::thread(server_main).detach();
+
+	glm::dvec3 a;
+	glm::i64vec3 b;
+	a.x = glfwGetTime();
+	b.x = rdtsc();
+	usleep(100000);
+	a.y = glfwGetTime();
+	b.y = rdtsc();
+	usleep(100000);
+	a.z = glfwGetTime();
+	b.z = rdtsc();
+
+	GLFWwindow* window = create_window();
+	CHECK(window);
 	model_init(window);
 	render_init();
 	fprintf(stderr, "Loading chunks in background ...\n");
@@ -4077,10 +4082,10 @@ int main(int, char**)
 	glm::i64vec3 d;
 	c.x = glfwGetTime();
 	d.x = rdtsc();
-	usleep(200000);
+	usleep(100000);
 	c.y = glfwGetTime();
 	d.y = rdtsc();
-	usleep(200000);
+	usleep(100000);
 	c.z = glfwGetTime();
 	d.z = rdtsc();
 	Timestamp::init(a, b, c, d);
