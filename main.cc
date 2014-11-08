@@ -3,44 +3,13 @@
 #include <unordered_map>
 
 #include "util.hh"
-#include "callstack.hh"
+#include "algorithm.hh"
 #include "rendering.hh"
 #include "auto.hh"
 #include "socket.hh"
 
 #define LODEPNG_COMPILE_CPP
 #include "lodepng/lodepng.h"
-
-void sigsegv_handler(int sig)
-{
-	fprintf(stderr, "Error: signal %d:\n", sig);
-	void* array[20];
-	backtrace_symbols_fd(array, backtrace(array, 20), STDERR_FILENO);
-	exit(1);
-}
-
-void __assert_rtn(const char* func, const char* file, int line, const char* cond)
-{
-	fprintf(stderr, "Assertion: (%s), function %s, file %s, line %d.\n", cond, func, file, line);
-	void* array[20];
-	backtrace_symbols_fd(array, backtrace(array, 20), STDERR_FILENO);
-	exit(1);
-}
-
-void __assert_rtn_format(const char* func, const char* file, int line, const char* cond, const char* fmt, ...)
-{
-	va_list va;
-	va_start(va, fmt);
-	fprintf(stderr, "Assertion: (%s), ", cond);
-	vfprintf(stderr, fmt, va);
-	fprintf(stderr, ", function %s, file %s, line %d.\n", func, file, line);
-	va_end(va);
-	void* array[20];
-	backtrace_symbols_fd(array, backtrace(array, 20), STDERR_FILENO);
-	exit(1);
-}
-
-#define assertf(C, fmt, ...) do { if (!(C)) __assert_rtn_format(__func__, __FILE__, __LINE__, #C, fmt, __VA_ARGS__); } while(0)
 
 // GUI
 
@@ -4055,6 +4024,7 @@ GLFWwindow* create_window()
 
 int main(int, char**)
 {
+	void sigsegv_handler(int sig);
 	signal(SIGSEGV, sigsegv_handler);
 	CHECK(glfwInit());
 

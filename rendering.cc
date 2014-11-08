@@ -1,14 +1,10 @@
 #include "rendering.hh"
 #include "util.hh"
+#include "algorithm.hh"
 #include "auto.hh"
 
-#include <cmath>
-#include <cstdarg>
-#include <string>
 #include <iostream>
 #include <fstream>
-
-#include "glm/gtc/type_ptr.hpp"
 
 void Error(const char* name)
 {
@@ -25,7 +21,6 @@ void Error(const char* name)
 int gen_buffer(GLenum target, GLsizei size, const void* data)
 {
 	GLuint buffer;
-	fprintf(stderr, "Marko\n");
 	glGenBuffers(1, &buffer);
 	glBindBuffer(target, buffer);
 	glBufferData(target, size, data, GL_STATIC_DRAW);
