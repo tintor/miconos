@@ -7,6 +7,8 @@ ply_io.h ply_io.c
 jansson/dump.c			jansson/hashtable.c		jansson/load.c			jansson/pack_unpack.c		jansson/strconv.c		jansson/value.c
 jansson/error.c			jansson/hashtable_seed.c	jansson/memory.c		jansson/strbuffer.c		jansson/utf.c
 jansson/hashtable.h		jansson/jansson.h		jansson/jansson_private.h	jansson/lookup3.h		jansson/strbuffer.h		jansson/utf.h
+
+server.cc socket.hh socket.cc
 )
 
 add_definitions(-g -O3 -Wno-c++11-extensions -flto)

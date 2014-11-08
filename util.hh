@@ -9,6 +9,7 @@
 #include <mutex>
 #include <functional>
 #include <atomic>
+#include <unistd.h>
 
 #include "jansson/jansson.h"
 
@@ -254,7 +255,8 @@ private:
 
 // =================
 
-#define CHECK(A) do { if (!(A)) { fprintf(stderr, "CHECK(%s) failed at %s line %d\n", #A, __FILE__, __LINE__); return false; } } while(0);
+#define CHECK2(A, B) do { if (!(A)) { fprintf(stderr, "%s failed at %s line %d. Errno %d (%s)\n", #A, __FILE__, __LINE__, errno, strerror(errno)); B; } } while(0);
+#define CHECK(A) CHECK2(A, return false)
 
 #define AutoLock(A) (A).lock(); Auto((A).unlock());
 

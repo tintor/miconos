@@ -1,9 +1,12 @@
+#include "lz4.h"
+#include "ply_io.h"
+#include <unordered_map>
+
 #include "util.hh"
 #include "callstack.hh"
 #include "rendering.hh"
 #include "auto.hh"
-#include "unistd.h"
-#include "lz4.h"
+#include "socket.hh"
 
 #define LODEPNG_COMPILE_CPP
 #include "lodepng/lodepng.h"
@@ -998,7 +1001,11 @@ bool SuperChunk::load()
 	}
 	CHECK(file);
 	Auto(fclose(file));
-	CHECK(fseek(file, 0, SEEK_END) != -1);
+	if (fseek(file, 0, SEEK_END) < 0)
+	{
+		fprintf(stderr, "fseek(%s, 0, 2) failed: %s (%d)", filename, strerror(errno), errno);
+		return false;
+	}
 	long size = ftell(file);
 	CHECK(size >= 0);
 	CHECK(fseek(file, 0, SEEK_SET) != -1);
@@ -1040,8 +1047,6 @@ bool SuperChunk::save()
 	modified = false;
 	return true;
 }
-
-#include <unordered_map>
 
 struct AutoVecLock;
 
@@ -1760,8 +1765,6 @@ bool Player::load()
 }
 
 // ===============
-
-#include "ply_io.h"
 
 struct Mesh
 {
@@ -3678,6 +3681,37 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	glDisable(GL_BLEND);
 }
 
+void server_main();
+Socket g_client;
+RingBuffer g_recv_buffer;
+RingBuffer g_send_buffer;
+
+void net_frame()
+{
+	CHECK2(g_recv_buffer.recv_any(g_client), exit(1));
+	CHECK2(g_send_buffer.send_any(g_client), exit(1));
+
+	if (g_recv_buffer.size == 0) return;
+	uint8_t size = g_recv_buffer.buffer[g_recv_buffer.begin];
+	if (g_recv_buffer.size >= size + 1)
+	{
+		if (g_recv_buffer.begin + 1 + size <= sizeof(RingBuffer::buffer))
+		{
+			char* msg = (char*)g_recv_buffer.buffer + g_recv_buffer.begin + 1;
+			console.Print("Server: [%.*s]\n", size, msg);
+		}
+		else
+		{
+			char* msg1 = (char*)g_recv_buffer.buffer + g_recv_buffer.begin + 1;
+			int size1 = sizeof(g_recv_buffer.buffer) - g_recv_buffer.begin - 1;
+			char* msg2 = (char*)g_recv_buffer.buffer;
+			int size2 = size - size1;
+			console.Print("Server: [%.*s%.*s]\n", size1, msg1, size2, msg2);
+		}
+		g_recv_buffer.pop_front(size + 1);
+	}
+}
+
 void render_gui()
 {
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
@@ -3686,10 +3720,10 @@ void render_gui()
 	if (show_counters && !console.IsVisible())
 	{
 		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
-		text->Print("[%.1f %.1f %.1f] C:%4d Q:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c",
+		text->Print("[%.1f %.1f %.1f] C:%4d Q:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c recv:%d send:%d",
 			g_player.position.x, g_player.position.y, g_player.position.z, stats::chunk_count, stats::quad_count / 1000,
 			stats::frame_time_ms, stats::model_time_ms, stats::raytrace_time_ms, raytrace, stats::render_time_ms,
-			enable_f4 ? '4' : '-', enable_f5 ? '5' : '-', enable_f6 ? '6' : '-');
+			enable_f4 ? '4' : '-', enable_f5 ? '5' : '-', enable_f6 ? '6' : '-', g_recv_buffer.size, g_send_buffer.size);
 
 		text->Print("collide:%1.0f select:%1.0f simulate:%1.0f [%.1f %.1f %.1f] %.1f%s",
 			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms,
@@ -3956,7 +3990,16 @@ void MyConsole::Execute(const char* command, int length)
 {
 	if (command[0] == '/') // shout!
 	{
-		if (length > 1) Print("You: %.*s\n", length - 1, command + 1);
+		if (length == 1) return;
+		command += 1;
+		length -= 1;
+		Print("You: %.*s\n", length, command);
+		if (g_send_buffer.space() >= length + 1)
+		{
+			uint8_t a = length;
+			g_send_buffer.write_back(&a, 1);
+			g_send_buffer.write_back((const uint8_t*)command, length);
+		}
 		return;
 	}
 
@@ -3996,6 +4039,8 @@ int main(int, char**)
 {
 	signal(SIGSEGV, sigsegv_handler);
 	if (!glfwInit()) return 0;
+
+	std::thread(server_main).detach();
 
 	glm::dvec3 a;
 	glm::i64vec3 b;
@@ -4047,6 +4092,13 @@ int main(int, char**)
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
 	wait_for_nearby_chunks(cplayer);
 
+	while (!g_client.connect("localhost", "7000"))
+	{
+		if (errno != ECONNREFUSED) CHECK2(false, exit(1));
+		usleep(100*1000);
+		g_client.close();
+	}
+
 	fprintf(stderr, "Ready!\n");
 	while (!glfwWindowShouldClose(window))
 	{
@@ -4055,6 +4107,9 @@ int main(int, char**)
 		double frame_ms = t0.elapsed_ms(ta);
 		t0 = ta;
 		glfwPollEvents();
+
+		net_frame();
+
 		model_frame(window, frame_ms);
 		glm::mat4 matrix = glm::translate(perspective_rotation, -g_player.position);
 		Frustum frustum(matrix);
