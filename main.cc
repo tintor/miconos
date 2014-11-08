@@ -2232,7 +2232,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		if (action == GLFW_PRESS || action == GLFW_REPEAT)
 		{
-			if (key == GLFW_KEY_F1 && (mods == GLFW_MOD_SHIFT || mods == 0))
+			if (key == GLFW_KEY_F1 || key == GLFW_KEY_CAPS_LOCK)
 			{
 				console.Hide();
 			}
@@ -2244,7 +2244,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	}
 	else if (action == GLFW_PRESS)
 	{
-		if (key == GLFW_KEY_F1 && (mods == GLFW_MOD_SHIFT || mods == 0))
+		if (key == GLFW_KEY_F1 || key == GLFW_KEY_CAPS_LOCK)
 		{
 			console.Show();
 		}
