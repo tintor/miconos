@@ -66,6 +66,28 @@ bool intersects_line_polygon(Plucker line, const Plucker edges[size])
 	return true;
 }
 
+// ==============
+
+inline glm::mat3 rotate_x(float radians)
+{
+	float c = cos(radians), s = sin(radians);
+	return glm::mat3(glm::vec3(1, 0, 0), glm::vec3(0, c, s), glm::vec3(0, -s, c));
+}
+
+inline glm::mat3 rotate_y(float radians)
+{
+	float c = cos(radians), s = sin(radians);
+	return glm::mat3(glm::vec3(c, 0, -s), glm::vec3(0, 1, 0), glm::vec3(s, 0, c));
+}
+
+inline glm::mat3 rotate_z(float radians)
+{
+	float c = cos(radians), s = sin(radians);
+	return glm::mat3(glm::vec3(c, s, 0), glm::vec3(-s, c, 0), glm::vec3(0, 0, 1));
+}
+
+// ==============
+
 static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1), ii(1, 1, 1);
 static const glm::ivec3 ia[3] = { ix, iy, iz };
 
@@ -188,5 +210,7 @@ void __assert_rtn_format(const char* func, const char* file, int line, const cha
 #else
 #define assertf(C, fmt, ...)
 #endif
+
+#define release_assertf(C, fmt, ...) do { if (!(C)) __assert_rtn_format(__func__, __FILE__, __LINE__, #C, fmt, __VA_ARGS__); } while(0)
 
 #define AutoLock(A) (A).lock(); Auto((A).unlock());

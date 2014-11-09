@@ -7,6 +7,8 @@
 #include "rendering.hh"
 #include "auto.hh"
 #include "socket.hh"
+#include "parse.hh"
+#include "message.hh"
 
 #define LODEPNG_COMPILE_CPP
 #include "lodepng/lodepng.h"
@@ -932,7 +934,7 @@ static const uint DataSize = BlockCubeFileSize + sizeof(BitCubeExplored);
 
 struct SuperChunk
 {
-	glm::ivec3 scpos;
+	const glm::ivec3 scpos;
 	int refs;
 	bool modified;
 	uint8_t* data;
@@ -940,6 +942,7 @@ struct SuperChunk
 	bool load();
 	bool save();
 
+	SuperChunk(glm::ivec3 _scpos) : scpos(_scpos), refs(0), data(nullptr) { }
 	BitCubeExplored& explored() { return *reinterpret_cast<BitCubeExplored*>(data + BlockCubeFileSize); }
 	Block* chunk(glm::ivec3 cpos);
 };
@@ -1086,9 +1089,7 @@ struct SuperChunkManager
 		SuperChunk* sc = m_map[scpos];
 		if (sc == nullptr)
 		{
-			sc = new SuperChunk;
-			sc->scpos = scpos;
-			sc->refs = 0;
+			sc = new SuperChunk(scpos);
 			if (!sc->load()) exit(1);
 			m_map[scpos] = sc;
 		}
@@ -1754,9 +1755,9 @@ bool Mesh::load(const char* filename)
 	FILE* f = fopen(filename, "r");
 	PlyFile* pf = read_ply(f);
 
-	PlyProperty vert_prop_x = { const_cast<char*>("x"), Float32, Float32, offsetof(glm::vec3,x), 0, 0, 0, 0 };
-	PlyProperty vert_prop_y = { const_cast<char*>("y"), Float32, Float32, offsetof(glm::vec3,y), 0, 0, 0, 0 };
-	PlyProperty vert_prop_z = { const_cast<char*>("z"), Float32, Float32, offsetof(glm::vec3,z), 0, 0, 0, 0 };
+	PlyProperty vert_prop_x = { const_cast<char*>("x"), Float32, Float32, offsetof(glm::vec3, x), 0, 0, 0, 0 };
+	PlyProperty vert_prop_y = { const_cast<char*>("y"), Float32, Float32, offsetof(glm::vec3, y), 0, 0, 0, 0 };
+	PlyProperty vert_prop_z = { const_cast<char*>("z"), Float32, Float32, offsetof(glm::vec3, z), 0, 0, 0, 0 };
 	PlyProperty face_prop = { const_cast<char*>("vertex_indices"), Int32, Int32, offsetof(Face, verts), 3/*LIST_FIXED*/, Uint8, Uint8, 3/*num verts*/ };
 
 	CHECK(pf->num_elem_types == 2);
@@ -2232,7 +2233,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
 		if (action == GLFW_PRESS || action == GLFW_REPEAT)
 		{
-			if (key == GLFW_KEY_F1 || key == GLFW_KEY_CAPS_LOCK)
+			if (key == GLFW_KEY_F1)
 			{
 				console.Hide();
 			}
@@ -2244,7 +2245,7 @@ void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 	}
 	else if (action == GLFW_PRESS)
 	{
-		if (key == GLFW_KEY_F1 || key == GLFW_KEY_CAPS_LOCK)
+		if (key == GLFW_KEY_F1)
 		{
 			console.Show();
 		}
@@ -3365,7 +3366,6 @@ GLuint block_pos_loc;
 GLuint block_tick_loc;
 GLuint block_foglimit2_loc;
 GLuint block_eye_loc;
-
 GLuint block_pos0_loc;
 GLuint block_pos1_loc;
 GLuint block_pos2_loc;
@@ -3374,8 +3374,21 @@ GLuint block_texture_loc;
 GLuint block_light_loc;
 GLuint block_plane_loc;
 
+int mesh_program;
+GLuint mesh_matrix_loc;
+GLuint mesh_sampler_loc;
+GLuint mesh_tick_loc;
+GLuint mesh_foglimit2_loc;
+GLuint mesh_eye_loc;
+GLuint mesh_mesh_pos_loc;
+GLuint mesh_mesh_rot_loc;
+GLuint mesh_vertex_pos_loc;
+GLuint mesh_vertex_uv_loc;
+GLuint mesh_texture_loc;
+
 GLuint block_buffer;
 GLuint line_buffer;
+GLuint mesh_buffer;
 
 int g_tick;
 
@@ -3481,6 +3494,29 @@ void BlockTextureLoader::load_textures()
 	glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, m_width, m_height, block_texture_count, 0, GL_RGBA, GL_UNSIGNED_BYTE, m_pixels.data());
 }
 
+int get_uniform_location(int program, const char* name)
+{
+	int location = glGetUniformLocation(program, name);
+	release_assertf(location != -1, "uniform '%s' not found", name);
+	return location;
+}
+
+int get_attrib_location(int program, const char* name)
+{
+	int location = glGetAttribLocation(program, name);
+	release_assertf(location != -1, "attrib '%s' not found", name);
+	return location;
+}
+
+struct MeshVertex
+{
+	glm::vec3 vertex_pos;
+	glm::vec2 vertex_uv;
+	BlockTexture texture;
+};
+
+std::vector<MeshVertex> g_avatar_mesh;
+
 void render_init()
 {
 	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
@@ -3500,28 +3536,41 @@ void render_init()
 	text = new Text;
 
 	line_program = load_program("line");
-	line_matrix_loc = glGetUniformLocation(line_program, "matrix");
-	line_position_loc = glGetAttribLocation(line_program, "position");
+	line_matrix_loc = get_uniform_location(line_program, "matrix");
+	line_position_loc = get_attrib_location(line_program, "position");
 
 	block_program = load_program("block", true);
-	block_matrix_loc = glGetUniformLocation(block_program, "matrix");
-	block_sampler_loc = glGetUniformLocation(block_program, "sampler");
-	block_pos_loc = glGetUniformLocation(block_program, "cpos");
-	block_tick_loc = glGetUniformLocation(block_program, "tick");
-	block_foglimit2_loc = glGetUniformLocation(block_program, "foglimit2");
-	block_eye_loc = glGetUniformLocation(block_program, "eye");
+	block_matrix_loc = get_uniform_location(block_program, "matrix");
+	block_sampler_loc = get_uniform_location(block_program, "sampler");
+	block_pos_loc = get_uniform_location(block_program, "cpos");
+	block_tick_loc = get_uniform_location(block_program, "tick");
+	block_foglimit2_loc = get_uniform_location(block_program, "foglimit2");
+	block_eye_loc = get_uniform_location(block_program, "eye");
 
-	// TODO: assert these aren't -1
-	block_pos0_loc = glGetAttribLocation(block_program, "vertex0");
-	block_pos1_loc = glGetAttribLocation(block_program, "vertex1");
-	block_pos2_loc = glGetAttribLocation(block_program, "vertex2");
-	block_pos3_loc = glGetAttribLocation(block_program, "vertex3");
-	block_texture_loc = glGetAttribLocation(block_program, "block_texture_with_flag");
-	block_light_loc = glGetAttribLocation(block_program, "light");
-	block_plane_loc = glGetAttribLocation(block_program, "plane");
+	block_pos0_loc = get_attrib_location(block_program, "vertex0");
+	block_pos1_loc = get_attrib_location(block_program, "vertex1");
+	block_pos2_loc = get_attrib_location(block_program, "vertex2");
+	block_pos3_loc = get_attrib_location(block_program, "vertex3");
+	block_texture_loc = get_attrib_location(block_program, "block_texture_with_flag");
+	block_light_loc = get_attrib_location(block_program, "light");
+	block_plane_loc = get_attrib_location(block_program, "plane");
 
-	glGenBuffers(1, &block_buffer);
+	mesh_program = load_program("mesh");
+	mesh_matrix_loc = get_uniform_location(mesh_program, "matrix");
+	mesh_sampler_loc = get_uniform_location(mesh_program, "sampler");
+	mesh_tick_loc = get_uniform_location(mesh_program, "tick");
+	mesh_foglimit2_loc = get_uniform_location(mesh_program, "foglimit2");
+	mesh_eye_loc = get_uniform_location(mesh_program, "eye");
+	mesh_mesh_pos_loc = get_uniform_location(mesh_program, "mesh_pos");
+	mesh_mesh_rot_loc = get_uniform_location(mesh_program, "mesh_rot");
+
+	mesh_vertex_pos_loc = get_attrib_location(mesh_program, "vertex_pos");
+	mesh_vertex_uv_loc = get_attrib_location(mesh_program, "vertex_uv");
+	mesh_texture_loc = get_attrib_location(mesh_program, "texture_with_flag");
+
 	glGenBuffers(1, &line_buffer);
+	glGenBuffers(1, &block_buffer);
+	glGenBuffers(1, &mesh_buffer);
 
 	GLuint vao;
 	glGenVertexArrays(1, &vao);
@@ -3530,6 +3579,42 @@ void render_init()
 	glClearColor(0.2, 0.4, 1, 1.0);
 	glViewport(0, 0, width, height);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+	// Generate avatar mesh
+	g_avatar_mesh.resize(36);
+	MeshVertex* e = &g_avatar_mesh[0];
+	FOR(face, 6)
+	{
+		BlockTexture texture = get_block_texture(Block::pumpkin, face);
+		const int* f = Cube::faces[face];
+		glm::vec3 v0 = glm::vec3(Cube::corner[f[0]]) - glm::vec3(0.5, 0.5, 0.5);
+		glm::vec3 v1 = glm::vec3(Cube::corner[f[1]]) - glm::vec3(0.5, 0.5, 0.5);
+		glm::vec3 v2 = glm::vec3(Cube::corner[f[2]]) - glm::vec3(0.5, 0.5, 0.5);
+		glm::vec3 v3 = glm::vec3(Cube::corner[f[3]]) - glm::vec3(0.5, 0.5, 0.5);
+
+		glm::ivec3 d = Cube::corner[f[2]];
+		int u, v;
+		if (face < 2) { u = d.y; v = d.z; }
+		else if (face < 4) { u = d.x; v = d.z; }
+		else { u = d.y; v = d.x; }
+
+		if (face == 1 || face == 2 || face == 4)
+		{
+			glm::vec3 w = v0;
+			v0 = v1;
+			v1 = v2;
+			v2 = v3;
+			v3 = w;
+		}
+
+		*e++ = { v0, glm::vec2(u, v), texture };
+		*e++ = { v1, glm::vec2(u, 0), texture };
+		*e++ = { v2, glm::vec2(0, 0), texture };
+
+		*e++ = { v0, glm::vec2(u, v), texture };
+		*e++ = { v2, glm::vec2(0, 0), texture };
+		*e++ = { v3, glm::vec2(0, v), texture };
+	}
 }
 
 void BlockRenderer::draw_quad(int face, bool reverse, bool underwater_overlay)
@@ -3595,13 +3680,6 @@ const float foglimit2 = sqr(0.8 * RenderDistance * ChunkSize);
 
 void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 {
-	glEnable(GL_DEPTH_TEST);
-	Auto(glDisable(GL_DEPTH_TEST));
-
-	glBindTexture(GL_TEXTURE_2D_ARRAY, block_texture);
-	if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-	Auto(if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
-
 	glUseProgram(block_program);
 	glUniformMatrix4fv(block_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform3fv(block_eye_loc, 1, glm::value_ptr(g_player.position));
@@ -3650,35 +3728,188 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 	glDisable(GL_BLEND);
 }
 
+struct Avatar
+{
+	bool visible;
+	glm::vec3 position;
+	float yaw, pitch;
+	glm::mat3 rotation;
+};
+
+struct Avatars
+{
+	Avatar& add(int index)
+	{
+		if (!avatars[index].visible)
+		{
+			avatars[index].visible = true;
+			list.push_back(index);
+		}
+		return avatars[index];
+	}
+
+	void remove(int index)
+	{
+		if (avatars[index].visible)
+		{
+			avatars[index].visible = false;
+			FOR(i, list.size()) if (list[i] == index)
+			{
+				list[i] = list.back();
+				list.pop_back();
+				break;
+			}
+		}
+	}
+
+	Avatars() { FOR(i, 255) avatars[i].visible = false; }
+
+	std::vector<uint8_t> list; // list of all visible avatars
+	Avatar avatars[255]; // hash table
+};
+
+Avatars g_avatars;
+
+void render_avatars(const glm::mat4& matrix, const Frustum& frustum)
+{
+	glUseProgram(mesh_program);
+	glUniformMatrix4fv(mesh_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
+	glUniform3fv(mesh_eye_loc, 1, glm::value_ptr(g_player.position));
+	if (!g_player.creative_mode) g_tick += 1;
+	glUniform1i(mesh_tick_loc, g_tick);
+	glUniform1f(mesh_foglimit2_loc, foglimit2);
+	glUniform1i(mesh_sampler_loc, 0);
+
+	glBindBuffer(GL_ARRAY_BUFFER, mesh_buffer);
+	glEnableVertexAttribArray(mesh_vertex_pos_loc);
+	glEnableVertexAttribArray(mesh_vertex_uv_loc);
+	glEnableVertexAttribArray(mesh_texture_loc);
+
+	MeshVertex* m = nullptr;
+	glVertexAttribPointer(mesh_vertex_pos_loc, 3, GL_FLOAT, GL_FALSE, sizeof(*m), &m->vertex_pos);
+	glVertexAttribPointer(mesh_vertex_uv_loc,  2, GL_FLOAT, GL_FALSE, sizeof(*m), &m->vertex_uv);
+	glVertexAttribIPointer(mesh_texture_loc,   1, GL_UNSIGNED_SHORT, sizeof(*m), &m->texture);
+
+	float radius = sqrt(5) * 0.48; // TODO constant - player cylinder radius
+	glEnable(GL_BLEND);
+	for (uint8_t index : g_avatars.list)
+	{
+		Avatar& avatar = g_avatars.avatars[index];
+		if (!frustum.is_sphere_outside(avatar.position, radius))
+		{
+			glUniform3fv(mesh_mesh_pos_loc, 1, glm::value_ptr(avatar.position));
+			glUniformMatrix3fv(mesh_mesh_rot_loc, 1, GL_FALSE, glm::value_ptr(avatar.rotation));
+			glBufferData(GL_ARRAY_BUFFER, sizeof(MeshVertex) * g_avatar_mesh.size(), &g_avatar_mesh[0], GL_STREAM_DRAW);
+			glDrawArrays(GL_TRIANGLES, 0, g_avatar_mesh.size());
+		}
+	}
+	glDisable(GL_BLEND);
+}
+
 void server_main();
 Socket g_client;
 RingBuffer g_recv_buffer;
 RingBuffer g_send_buffer;
 
-void net_frame()
+void client_receive_text_message(const char* message, uint length)
 {
-	CHECK2(g_recv_buffer.recv_any(g_client), exit(1));
-	CHECK2(g_send_buffer.send_any(g_client), exit(1));
+	console.Print("Server: [%.*s]\n", length, message);
 
-	if (g_recv_buffer.size == 0) return;
-	uint8_t size = g_recv_buffer.buffer[g_recv_buffer.begin];
-	if (g_recv_buffer.size >= size + 1)
+	std::vector<Token> tokens;
+	tokenize(message, length, /*out*/tokens);
+	if (tokens.size() == 0) return;
+
+	if (tokens[0] == "left")
 	{
-		if (g_recv_buffer.begin + 1 + size <= sizeof(RingBuffer::buffer))
+		assert(tokens.size() == 2 && is_integer(tokens[1]));
+		int id = parse_int(tokens[1]);
+		g_avatars.remove(id);
+		return;
+	}
+
+	if (tokens[0] == "chat")
+	{
+		assertf(tokens.size() >= 3 && is_integer(tokens[1]), "message [%.*s]", length, message);
+		int id = parse_int(tokens[1]);
+		// TODO add to chat list
+		return;
+	}
+}
+
+bool client_receive_message()
+{
+	RingBuffer& recv = g_recv_buffer;
+	switch ((MessageType)recv.buffer[recv.begin])
+	{
+	case MessageType::Text:
+	{
+		int size;
+		if (!has_text_message(recv, size)) return false;
+
+		if (recv.begin + size <= sizeof(RingBuffer::buffer))
 		{
-			char* msg = (char*)g_recv_buffer.buffer + g_recv_buffer.begin + 1;
-			console.Print("Server: [%.*s]\n", size, msg);
+			client_receive_text_message((char*)recv.buffer + recv.begin, size);
+			recv.read_ignore(size);
+		}
+		else if (size <= 1024)
+		{
+			char message[1024];
+			recv.read(message, size);
+			client_receive_text_message(message, size);
 		}
 		else
 		{
-			char* msg1 = (char*)g_recv_buffer.buffer + g_recv_buffer.begin + 1;
-			int size1 = sizeof(g_recv_buffer.buffer) - g_recv_buffer.begin - 1;
-			char* msg2 = (char*)g_recv_buffer.buffer;
-			int size2 = size - size1;
-			console.Print("Server: [%.*s%.*s]\n", size1, msg1, size2, msg2);
+			char* message = (char*)malloc(size);
+			recv.read(message, size);
+			client_receive_text_message(message, size);
+			free(message);
 		}
-		g_recv_buffer.pop_front(size + 1);
+		return true;
 	}
+	case MessageType::AvatarState:
+	{
+		MessageAvatarState msg;
+		if (recv.size < 1 + sizeof(msg)) return false;
+		recv.read_ignore(1);
+		recv.read(&msg, sizeof(msg));
+		Avatar& avatar = g_avatars.add(msg.id);
+		avatar.position = msg.position;
+		avatar.yaw = msg.yaw;
+		avatar.pitch = msg.pitch;
+		avatar.rotation = rotate_z(M_PI / 2) * rotate_x(msg.pitch) * rotate_z(msg.yaw);
+		return true;
+	}
+	/*case MessageType::ChunkState:
+	{
+		MessageChunkState msg;
+		if (recv.size < 1 + sizeof(msg)) return false;
+		recv.read_ignore(1);
+		recv.read(&msg, sizeof(msg));
+		// TODO update state of chunk
+		return true;
+	}*/
+	}
+	return false;
+}
+
+void client_frame()
+{
+	// receive
+	CHECK2(g_recv_buffer.recv_any(g_client), exit(1));
+	while (g_recv_buffer.size > 0 && client_receive_message()) { }
+
+	// send my position and orientation
+	MessageAvatarState as;
+	if (g_send_buffer.space() >= 1 + sizeof(as))
+	{
+		MessageType type = MessageType::AvatarState;
+		as.position = g_player.position;
+		as.pitch = g_player.pitch;
+		as.yaw = g_player.yaw;
+		g_send_buffer.write(&type, 1);
+		g_send_buffer.write(&as, sizeof(as));
+	}
+	CHECK2(g_send_buffer.send_any(g_client), exit(1));
 }
 
 void render_gui()
@@ -3842,81 +4073,6 @@ void wait_for_nearby_chunks(glm::ivec3 cpos)
 	}
 }
 
-bool equal(const char* a, std::pair<const char*, int> b)
-{
-	return strlen(a) == b.second && memcmp(a, b.first, b.second) == 0;
-}
-
-bool is_integer(std::pair<const char*, int> a)
-{
-	if (a.second > 1 && a.first[0] == '-')
-	{
-		a.first += 1;
-		a.second -= 1;
-	}
-	if (a.second > 9) return false;
-	FOR(i, a.second) if (!isdigit(a.first[i])) return false;
-	return true;
-}
-
-int parse_int(std::pair<const char*, int> a)
-{
-	bool negative = false;
-	if (a.second > 1 && a.first[0] == '-')
-	{
-		a.first += 1;
-		a.second -= 1;
-		negative = true;
-	}
-	int v = 0;
-	FOR(i, a.second) v = v * 10 + a.first[i] - '0';
-	return negative ? -v : v;
-}
-
-bool is_real(std::pair<const char*, int> a)
-{
-	if (a.second > 1 && a.first[0] == '-')
-	{
-		a.first += 1;
-		a.second -= 1;
-	}
-	FOR(i, a.second) if (!isdigit(a.first[i]) && a.first[i] != '.') return false;
-	int dots = 0;
-	FOR(i, a.second) if (a.first[i] == '.') dots += 1;
-	return dots <= 1;
-}
-
-double parse_real(std::pair<const char*, int> a)
-{
-	bool negative = false;
-	if (a.second > 1 && a.first[0] == '-')
-	{
-		a.first += 1;
-		a.second -= 1;
-		negative = true;
-	}
-	double v = 0;
-	double e = 0.1;
-	bool dot = false;
-	FOR(i, a.second)
-	{
-		if (a.first[i] == '.')
-		{
-			dot = true;
-		}
-		else if (!dot)
-		{
-			v = v * 10 + (a.first[i] - '0');
-		}
-		else
-		{
-			v += e * (a.first[i] - '0');
-			e /= 10;
-		}
-	}
-	return negative ? -v : v;
-}
-
 void command_import(char* filename, glm::ivec3 pos, float scale)
 {
 	std::thread([=]()
@@ -3936,8 +4092,6 @@ void command_import(char* filename, glm::ivec3 pos, float scale)
 	}).detach();
 }
 
-typedef std::pair<const char*, int> Token;
-
 void command_set()
 {
 	console.Print("collision = %s\n", g_collision ? "true" : "false");
@@ -3945,10 +4099,10 @@ void command_set()
 
 void command_set(Token key, Token value)
 {
-	if (equal("collision", key))
+	if (key == "collision")
 	{
-		if (equal("true", value)) { g_collision = true; return; }
-		if (equal("false", value)) { g_collision = false; return; }
+		if (value == "true") { g_collision = true; return; }
+		if (value == "false") { g_collision = false; return; }
 		console.Print("error in syntax: set collision (true | false)\n");
 		return;
 	}
@@ -3963,23 +4117,14 @@ void MyConsole::Execute(const char* command, int length)
 		command += 1;
 		length -= 1;
 		Print("You: %.*s\n", length, command);
-		if (g_send_buffer.space() >= length + 1)
-		{
-			uint8_t a = length;
-			g_send_buffer.write_back(&a, 1);
-			g_send_buffer.write_back((const uint8_t*)command, length);
-		}
+		write_text_message(g_send_buffer, "chat '%.*s'", length, command);
 		return;
 	}
 
-	std::vector<std::pair<const char*, int>> tokens;
-	FOR(i, length)
-	{
-		if (command[i] == ' ') continue;
-		if (i == 0 || command[i-1] == ' ') tokens.push_back({ command + i, 1 }); else tokens.back().second += 1;
-	}
+	std::vector<Token> tokens;
+	tokenize(command, length, tokens);
 
-	if (equal("import", tokens[0]))
+	if (tokens[0] == "import")
 	{
 		if (tokens.size() != 6 || !is_integer(tokens[2]) || !is_integer(tokens[3]) || !is_integer(tokens[4]) || !is_real(tokens[5]))
 		{
@@ -3992,7 +4137,7 @@ void MyConsole::Execute(const char* command, int length)
 		return;
 	}
 
-	if (equal("set", tokens[0]))
+	if (tokens[0] == "set")
 	{
 		if (tokens.size() == 1) { command_set(); return; }
 		if (tokens.size() == 3) { command_set(tokens[1], tokens[2]); return; }
@@ -4022,13 +4167,67 @@ GLFWwindow* create_window()
 	return window;
 }
 
-int main(int, char**)
+bool g_run_server = true;
+const char* g_connect_to = "localhost";
+
+bool parse_command_args(int argc, char** argv)
+{
+	bool arg_net = false;
+	for (int i = 1; i < argc; i++)
+	{
+		if (strcmp("--server", argv[i]) == 0)
+		{
+			if (arg_net) return false;
+			arg_net = true;
+			g_run_server = true;
+			g_connect_to = nullptr;
+		}
+		else if (strcmp("--join", argv[i]) == 0)
+		{
+			if (arg_net) return false;
+			arg_net = true;
+			if (i+1 >= argc) return false;
+			g_run_server = false;
+			g_connect_to = argv[i+1];
+			i += 1;
+		}
+		else
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+int main(int argc, char** argv)
 {
 	void sigsegv_handler(int sig);
 	signal(SIGSEGV, sigsegv_handler);
 	CHECK(glfwInit());
 
-	std::thread(server_main).detach();
+	if (!parse_command_args(argc, argv))
+	{
+		printf("usage: %s [--server | --join <hostname>]\n", argv[0]);
+		return 0;
+	}
+
+	if (!g_connect_to)
+	{
+		server_main();
+		return 0;
+	}
+	if (g_run_server) std::thread(server_main).detach();
+
+	fprintf(stderr, "Connecting to %s:7000 ...\n", g_connect_to);
+	int retries = 0;
+	while (!g_client.connect(g_connect_to, "7000"))
+	{
+		if (errno != ECONNREFUSED) return 0;
+		usleep(100*1000);
+		g_client.close();
+		if (++retries == 5) return 0;
+	}
+	fprintf(stderr, "Connected!\n");
 
 	glm::dvec3 a;
 	glm::i64vec3 b;
@@ -4067,13 +4266,6 @@ int main(int, char**)
 	glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
 	wait_for_nearby_chunks(cplayer);
 
-	while (!g_client.connect("localhost", "7000"))
-	{
-		if (errno != ECONNREFUSED) CHECK2(false, exit(1));
-		usleep(100*1000);
-		g_client.close();
-	}
-
 	fprintf(stderr, "Ready!\n");
 	while (!glfwWindowShouldClose(window))
 	{
@@ -4083,7 +4275,7 @@ int main(int, char**)
 		t0 = ta;
 		glfwPollEvents();
 
-		net_frame();
+		client_frame();
 
 		model_frame(window, frame_ms);
 		glm::mat4 matrix = glm::translate(perspective_rotation, -g_player.position);
@@ -4096,7 +4288,14 @@ int main(int, char**)
 
 		Timestamp tc;
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		glEnable(GL_DEPTH_TEST);
+		if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, block_texture);
 		render_world_blocks(matrix, frustum);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, block_texture);
+		render_avatars(matrix, frustum);
+		if (wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+		glDisable(GL_DEPTH_TEST);
 		render_gui();
 
 		if (show_counters)

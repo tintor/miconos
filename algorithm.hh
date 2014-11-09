@@ -4,8 +4,6 @@ template<typename T>
 void release(std::vector<T>& a) { std::vector<T> v; std::swap(a, v); }
 template<typename T>
 bool contains(const std::vector<T>& p, T a) { return std::find(p.begin(), p.end(), a) != p.end(); }
-template<typename T>
-void compress(std::vector<T>& a) { if (a.capacity() > a.size()) { std::vector<T> b(a); std::swap(a, b); } }
 
 // ==========
 

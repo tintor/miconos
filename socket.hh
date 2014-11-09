@@ -1,3 +1,4 @@
+#pragma once
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -29,8 +30,15 @@ struct RingBuffer
 
 	RingBuffer() : begin(0), end(0), size(0) { }
 	int space() { return sizeof(buffer) - size; }
-	void pop_front(int len);
-	void write_back(const uint8_t* str, int len);
+	void check();
+
+	void read_ignore(int len);
+	void read(void* str, int len);
+	void write(const void* str, int len);
+
 	bool recv_any(const Socket& sock);
 	bool send_any(const Socket& sock);
 };
+
+bool has_text_message(RingBuffer& recv, int& size);
+bool write_text_message(RingBuffer& send, const char* fmt, ...);
