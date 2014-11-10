@@ -961,7 +961,7 @@ bool SuperChunk::load()
 	CHECK(data);
 
 	char* filename = nullptr;
-	CHECK(0 < asprintf(&filename, "world.%+d%+d%+d.sc", scpos.x, scpos.y, scpos.z));
+	CHECK(0 < asprintf(&filename, "../world/world.%+d%+d%+d.sc", scpos.x, scpos.y, scpos.z));
 	Auto(free(filename));
 
 	FILE* file = fopen(filename, "r");
@@ -996,7 +996,7 @@ bool SuperChunk::save()
 	if (!modified) return true;
 
 	char* filename = nullptr;
-	CHECK(0 < asprintf(&filename, "world.%+d%+d%+d.sc", scpos.x, scpos.y, scpos.z));
+	CHECK(0 < asprintf(&filename, "../world/world.%+d%+d%+d.sc", scpos.x, scpos.y, scpos.z));
 	Auto(free(filename));
 
 	fprintf(stderr, "Saving super chunk [%d %d %d]\n", scpos.x, scpos.y, scpos.z);
@@ -4199,6 +4199,8 @@ bool parse_command_args(int argc, char** argv)
 	return true;
 }
 
+bool make_dir(const char* name);
+
 int main(int argc, char** argv)
 {
 	void sigsegv_handler(int sig);
@@ -4210,6 +4212,8 @@ int main(int argc, char** argv)
 		printf("usage: %s [--server | --join <hostname>]\n", argv[0]);
 		return 0;
 	}
+
+	CHECK(make_dir("../world"));
 
 	if (!g_connect_to)
 	{

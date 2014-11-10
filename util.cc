@@ -1,6 +1,11 @@
 #include "util.hh"
 #include <execinfo.h>
 
+// for make_dir()
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 float noise(glm::vec2 p, int octaves, float freqf, float ampf, bool turbulent)
 {
 	float freq = 1.0f, amp = 1.0f, max = amp;
@@ -58,4 +63,16 @@ void __assert_rtn_format(const char* func, const char* file, int line, const cha
 	void* array[20];
 	backtrace_symbols_fd(array, backtrace(array, 20), STDERR_FILENO);
 	exit(1);
+}
+
+// =============
+
+bool make_dir(const char* name)
+{
+	struct stat st = { 0 };
+	if (stat(name, &st) == -1)
+	{
+		CHECK(mkdir(name, 0700) == 0);
+	}
+	return true;
 }
