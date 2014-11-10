@@ -428,7 +428,7 @@ json_t* Console::save()
 	json_object_set(doc, "output", output);
 	json_object_set(doc, "last_column", json_integer(m_last_column));
 	json_t* commands = json_array();
-	FOR(i, m_inputs.size()) json_array_append(commands, json_stringn(m_inputs[i]->buffer, m_inputs[i]->cursor));
+	FOR(i, m_inputs.size() - 1) json_array_append(commands, json_stringn(m_inputs[i]->buffer, m_inputs[i]->cursor));
 	json_object_set(doc, "commands", commands);
 	return doc;
 }
