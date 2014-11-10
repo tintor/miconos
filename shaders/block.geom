@@ -36,14 +36,14 @@ vec3 leaf_transform(vec3 p)
 
 	p.x += sin((ftick * pi / (13.0 * speed)) + (p.x + d0)*0.9 + (p.z + d1)*0.9) * magnitude;
 	p.z += sin((ftick * pi / (16.0 * speed)) + (p.z + d2)*0.9 + (p.x + d3)*0.9) * magnitude;
-	p.y += sin((ftick * pi / (15.0 * speed)) + (p.z + d2) + (p.x + d3)) * magnitude;
+	// p.y += sin((ftick * pi / (15.0 * speed)) + (p.z + d2) + (p.x + d3)) * magnitude;
 	return p;
 }
 
 void emit(int _texture, int _light, ivec2 _uv, ivec3 _pos)
 {
 	vec3 p = cpos + _pos / 15.0f;
-	//if (_texture <= 5) p = leaf_transform(p);
+	if (_texture <= 5) p = leaf_transform(p);
 
 	gl_Position = matrix * vec4(p, 1);
 	fragment_uv = _uv / 15.0f;

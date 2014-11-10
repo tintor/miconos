@@ -2306,7 +2306,7 @@ void on_scroll(GLFWwindow* window, double x, double y)
 	scroll_dy = y / 5;
 	scroll_y += scroll_dy;
 	if (scroll_y < 0) scroll_y = 0;
-	if (scroll_y > (block_count - 1 - (uint)Block::water)) scroll_y = (block_count - 2);
+	if (scroll_y > (block_count - 1 - (uint)Block::water)) scroll_y = block_count - 1 - (uint)Block::water;
 	g_player.palette_block = Block(uint(std::round(scroll_y)) + (uint)Block::water);
 }
 
