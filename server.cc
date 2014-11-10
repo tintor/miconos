@@ -5,6 +5,7 @@
 
 struct ServerAvatar
 {
+	bool broadcasted;
 	uint8_t id;
 	glm::vec3 position;
 	float yaw, pitch;
@@ -100,6 +101,7 @@ bool server_receive_message(Connection& conn)
 		conn.avatar.pitch = msg.pitch;
 		conn.avatar.yaw = msg.yaw;
 		conn.avatar.position = msg.position;
+		conn.avatar.broadcasted = false;
 		return true;
 	}
 	/*case MessageType::ChunkState:
@@ -134,16 +136,19 @@ void server_main()
 		}
 	}).detach();
 
+	Timestamp ta;
 	while (true)
 	{
 		if (new_connection != nullptr)
 		{
 			Connection* conn = new_connection;
 			conn->avatar.id = create_id();
+			conn->avatar.broadcasted = true;
 			fprintf(stderr, "Player #%d connected from %s\n", (int)conn->avatar.id, conn->host);
+			// TODO: send new player positions of all other avatars (as they may be standing still)
 			for (Connection* conn2 : g_connections)
 			{
-				write_text_message(conn2->send_buffer, "chat 255 Player #%d joined from %s", conn->avatar.id, conn->host);
+				write_text_message(conn2->send_buffer, "joined %d", (int)conn->avatar.id);
 			}
 			g_connections.push_back(conn);
 			new_connection = nullptr;
@@ -167,28 +172,35 @@ void server_main()
 			}
 		}
 
+		// read all messages
 		for (Connection* conn : g_connections)
 		{
-			// receive
 			while (conn->recv_buffer.size > 0 && server_receive_message(*conn)) { }
-
-			// send position and orientation of all other avatars
-			MessageAvatarState as;
-			for (Connection* conn2 : g_connections)
-			{
-				if (conn2 != conn && conn->send_buffer.space() >= 1 + sizeof(as))
-				{
-					MessageType type = MessageType::AvatarState;
-					as.id = conn2->avatar.id;
-					as.position = conn2->avatar.position;
-					as.pitch = conn2->avatar.pitch;
-					as.yaw = conn2->avatar.yaw;
-					conn->send_buffer.write(&type, 1);
-					conn->send_buffer.write(&as, sizeof(as));
-				}
-			}
 		}
 
-		if (g_connections.size() == 0) usleep(200*1000);
+		// broadcast avatar states
+		for (Connection* conn : g_connections)
+		{
+			if (conn->avatar.broadcasted) continue;
+			MessageAvatarState as;
+			MessageType type = MessageType::AvatarState;
+			as.id = conn->avatar.id;
+			as.position = conn->avatar.position;
+			as.pitch = conn->avatar.pitch;
+			as.yaw = conn->avatar.yaw;
+			for (Connection* conn2 : g_connections)
+			{
+				if (conn2 != conn && conn2->send_buffer.space() >= 1 + sizeof(as))
+				{
+					conn2->send_buffer.write(&type, 1);
+					conn2->send_buffer.write(&as, sizeof(as));
+				}
+			}
+			conn->avatar.broadcasted = true;
+		}
+
+		Timestamp tb;
+		double ft = ta.elapsed_ms(tb);
+		if (ft < 10) usleep(int((10 - ft) * 1000));
 	}
 }

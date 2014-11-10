@@ -1594,6 +1594,7 @@ struct Player
 	glm::ivec3 cpos;
 	std::atomic<CompressedIVec3> atomic_cpos;
 	glm::mat4 orientation;
+	bool broadcasted;
 
 	bool digging_on;
 	Timestamp digging_start;
@@ -1618,6 +1619,7 @@ void Player::turn(float dx, float dy)
 	if (pitch > M_PI / 2 * 0.999) pitch = M_PI / 2 * 0.999;
 	if (pitch < -M_PI / 2 * 0.999) pitch = -M_PI / 2 * 0.999;
 	orientation = glm::rotate(glm::rotate(glm::mat4(), -yaw, glm::vec3(0, 0, 1)), -pitch, glm::vec3(1, 0, 0));
+	broadcasted = false;
 }
 
 void Player::start_digging(glm::ivec3 cube)
@@ -1731,6 +1733,7 @@ bool Player::load()
 	cpos = glm::ivec3(glm::floor(position)) >> ChunkSizeBits;
 	atomic_cpos = compress_ivec3(cpos);
 	digging_on = false;
+	broadcasted = false;
 	return true;
 }
 
@@ -2744,13 +2747,12 @@ void simulate(float dt, glm::vec3 dir, bool jump)
 		}
 		if (c == 0)	break;
 		float sum2 = glm::length2(sum);
-		if (sum2 > 0)
-		{
-			glm::vec3 normal = sum * glm::inversesqrt(sum2);
-			float d = glm::dot(normal, g_player.velocity);
-			if (d < 0) g_player.velocity -= d * normal;
-			if (glm::dot(normal, glm::normalize(gravity(g_player.position))) < -0.9) on_the_ground = true;
-		}
+		if (sum2 == 0) return;
+
+		glm::vec3 normal = sum * glm::inversesqrt(sum2);
+		float d = glm::dot(normal, g_player.velocity);
+		if (d < 0) g_player.velocity -= d * normal;
+		if (glm::dot(normal, glm::normalize(gravity(g_player.position))) < -0.9) on_the_ground = true;
 		g_player.position += sum / (float)c;
 	}
 }
@@ -2808,6 +2810,7 @@ void model_move_player(GLFWwindow* window, float dt)
 		glm::vec3 direction(ma[4], ma[5], ma[6]);
 		glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
 		visible_chunks.cleanup(cplayer, direction);
+		g_player.broadcasted = false;
 	}
 }
 
@@ -2964,15 +2967,15 @@ void mark_remesh_chunk(glm::ivec3 pos)
 	if (chunk && chunk->get(pos & ChunkSizeMask) != Block::none) chunk->m_remesh = true;
 }
 
-void mark_remesh_chunk(Chunk& chunk, glm::ivec3 p, glm::ivec3 q)
+void mark_remesh_chunk(Chunk& chunk, glm::ivec3 pos, glm::ivec3 q)
 {
 	chunk.m_remesh = true;
-	if (q.x == CMin) mark_remesh_chunk(p - ix);
-	if (q.x == CMax) mark_remesh_chunk(p + ix);
-	if (q.y == CMin) mark_remesh_chunk(p - iy);
-	if (q.y == CMax) mark_remesh_chunk(p + iy);
-	if (q.z == CMin) mark_remesh_chunk(p - iz);
-	if (q.z == CMax) mark_remesh_chunk(p + iz);
+	if (q.x == CMin) mark_remesh_chunk(pos - ix);
+	if (q.x == CMax) mark_remesh_chunk(pos + ix);
+	if (q.y == CMin) mark_remesh_chunk(pos - iy);
+	if (q.y == CMax) mark_remesh_chunk(pos + iy);
+	if (q.z == CMin) mark_remesh_chunk(pos - iz);
+	if (q.z == CMax) mark_remesh_chunk(pos + iz);
 }
 
 void update_block(BlockRef& ref, Block b)
@@ -2981,8 +2984,9 @@ void update_block(BlockRef& ref, Block b)
 	glm::ivec3 q(ref.ipos);
 	glm::ivec3 p = ref.chunk->get_cpos();
 	ref.chunk->set(glm::ivec3(ref.ipos), b);
-	mark_remesh_chunk(*ref.chunk, p, q);
-	activate_block(q + (p << ChunkSizeBits));
+	glm::ivec3 pos = q + (p << ChunkSizeBits);
+	mark_remesh_chunk(*ref.chunk, pos, q);
+	activate_block(pos);
 }
 
 void update_block(glm::ivec3 pos, Block b)
@@ -2992,7 +2996,7 @@ void update_block(glm::ivec3 pos, Block b)
 	Chunk& chunk = g_chunks.get(p);
 	assert(chunk.get_cpos() == p);
 	chunk.set(q, b);
-	mark_remesh_chunk(chunk, p, q);
+	mark_remesh_chunk(chunk, pos, q);
 	activate_block(pos);
 }
 
@@ -3900,8 +3904,9 @@ void client_frame()
 
 	// send my position and orientation
 	MessageAvatarState as;
-	if (g_send_buffer.space() >= 1 + sizeof(as))
+	if (!g_player.broadcasted && g_send_buffer.space() >= 1 + sizeof(as))
 	{
+		g_player.broadcasted = true;
 		MessageType type = MessageType::AvatarState;
 		as.position = g_player.position;
 		as.pitch = g_player.pitch;
