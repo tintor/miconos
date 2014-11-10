@@ -133,6 +133,8 @@ static GLuint text_matrix_loc;
 static GLuint text_sampler_loc;
 static GLuint text_position_loc;
 static GLuint text_uv_loc;
+static GLuint text_fg_color_loc;
+static GLuint text_bg_color_loc;
 
 void make_character(float* vertex, float* texture, float x, float y, float n, float m, char c)
 {
@@ -205,6 +207,8 @@ Text::Text()
 	text_program = load_program("text");
 	text_matrix_loc = glGetUniformLocation(text_program, "matrix");
 	text_sampler_loc = glGetUniformLocation(text_program, "sampler");
+	text_fg_color_loc = glGetUniformLocation(text_program, "fg_color");
+	text_bg_color_loc = glGetUniformLocation(text_program, "bg_color");
 	text_position_loc = glGetAttribLocation(text_program, "position");
 	text_uv_loc = glGetAttribLocation(text_program, "uv");
 	glBindFragDataLocation(text_program, 0, "color");
@@ -219,15 +223,19 @@ Text::Text()
 	load_png_texture("font.png");
 }
 
-void Text::Reset(int width, int height, glm::mat4& matrix)
+void Text::Reset(int width, int height, glm::mat4& matrix, bool down)
 {
+	fg_color = glm::vec4(1, 1, 1, 1);
+	bg_color = glm::vec4(0, 0, 0, 0.4);
 	glBindTexture(GL_TEXTURE_2D, text_texture);
 	glUseProgram(text_program);
 	glUniformMatrix4fv(text_matrix_loc, 1, GL_FALSE, glm::value_ptr(matrix));
 	glUniform1i(text_sampler_loc, 0/*text_texture*/);
-	m_ts = (height > width) ? height / 160 : height / 80;
+	int lines = (height > width) ? 80 : 40;
+	m_ts = height / (lines * 2);
 	m_tx = m_ts / 2;
-	m_ty = height - m_ts;
+	m_ty = down ? (height - m_ts) : (m_ts);
+	m_tdy = down ? (-m_ts * 2) : (m_ts * 2);
 }
 
 void Text::Print(const char* format, ...)
@@ -244,12 +252,14 @@ void Text::Print(const char* format, ...)
 void Text::PrintBuffer(const char* buffer, int length)
 {
 	PrintAt(m_tx, m_ty, m_ts, buffer, length);
-	m_ty -= m_ts * 2;
+	m_ty += m_tdy;
 }
 
 void Text::PrintAt(float x, float y, float n, const char* text, int length)
 {
 	text_gen_buffers(m_positionBuffer, m_uvBuffer, x, y, (n == 0) ? m_ts : n, text, m_position_data, m_uv_data);
+	glUniform4fv(text_fg_color_loc, 1, glm::value_ptr(fg_color));
+	glUniform4fv(text_bg_color_loc, 1, glm::value_ptr(bg_color));
 	text_draw_buffers(m_positionBuffer, m_uvBuffer, text_position_loc, text_uv_loc, length);
 }
 

@@ -2226,7 +2226,7 @@ void edit_block(glm::ivec3 pos, Block block)
 void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	show_palette = false;
-	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
+	if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE && mods == GLFW_MOD_SHIFT)
 	{
 		glfwSetWindowShouldClose(window, GL_TRUE);
 		return;
@@ -3815,13 +3815,19 @@ Socket g_client;
 RingBuffer g_recv_buffer;
 RingBuffer g_send_buffer;
 
+struct ChatLine
+{
+	uint8_t id;
+	Timestamp timestamp;
+	char* text;
+};
+
+arraydeque<ChatLine> g_chat_lines;
+
 void client_receive_text_message(const char* message, uint length)
 {
-	console.Print("Server: [%.*s]\n", length, message);
-
 	std::vector<Token> tokens;
 	tokenize(message, length, /*out*/tokens);
-	if (tokens.size() == 0) return;
 
 	if (tokens[0] == "left")
 	{
@@ -3834,10 +3840,17 @@ void client_receive_text_message(const char* message, uint length)
 	if (tokens[0] == "chat")
 	{
 		assertf(tokens.size() >= 3 && is_integer(tokens[1]), "message [%.*s]", length, message);
-		int id = parse_int(tokens[1]);
-		// TODO add to chat list
+		ChatLine line;
+		line.id = parse_int(tokens[1]);
+		int a = length - (tokens[2].first - message);
+		line.text = (char*)malloc(a + 1);
+		memcpy(line.text, tokens[2].first, a);
+		line.text[a] = 0;
+		g_chat_lines.push_front(line);
 		return;
 	}
+
+	console.Print(">> %.*s\n", length, message);
 }
 
 bool client_receive_message()
@@ -3921,9 +3934,9 @@ void render_gui()
 {
 	glm::mat4 matrix = glm::ortho<float>(0, width, 0, height, -1, 1);
 
-	text->Reset(width, height, matrix);
 	if (show_counters && !console.IsVisible())
 	{
+		text->Reset(width, height, matrix, true);
 		int raytrace = std::round(100.0f * (directions.size() - rays_remaining) / directions.size());
 		text->Print("[%.1f %.1f %.1f] C:%4d Q:%3dk frame:%2.0f model:%1.0f raytrace:%2.0f %d%% render %2.0f F%c%c%c recv:%d send:%d",
 			g_player.position.x, g_player.position.y, g_player.position.z, stats::chunk_count, stats::quad_count / 1000,
@@ -3946,6 +3959,28 @@ void render_gui()
 		}
 	}
 
+	if (!console.IsVisible())
+	{
+		text->Reset(width, height, matrix, false);
+		text->Print("");
+		FOR(i, g_chat_lines.size())
+		{
+			double e = (10000 - g_chat_lines[i].timestamp.elapsed_ms()) / 10000;
+			if (e < 0)
+			{
+				while (g_chat_lines.size() > i) free(g_chat_lines.pop_back().text);
+				break;
+			}
+			e = sqrt(e);
+			glm::vec3 colors[] = { glm::vec3(1, 1, 1), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), glm::vec3(0, 0, 1) };
+			glm::vec3 c = colors[g_chat_lines[i].id % (sizeof(colors) / sizeof(colors[0]))];
+			text->fg_color = glm::vec4(c.x, c.y, c.z, e);
+			text->bg_color = glm::vec4(0, 0, 0, 0.4 * e);
+			text->Print("%s", g_chat_lines[i].text);
+		}
+	}
+
+	text->Reset(width, height, matrix, true);
 	console.Render(text, glfwGetTime());
 	glUseProgram(0);
 
@@ -4014,7 +4049,7 @@ void render_gui()
 		glUseProgram(0);
 		glDisable(GL_BLEND);
 
-		text->Reset(width, height, matrix);
+		text->Reset(width, height, matrix, true);
 		text->PrintAt(width / 2 - height / 40, height / 2 - height / 40, 0, block_name[(uint)g_player.palette_block], strlen(block_name[(uint)g_player.palette_block]));
 
 		if (ts_palette.elapsed_ms() >= 1000) show_palette = false;
@@ -4121,8 +4156,7 @@ void MyConsole::Execute(const char* command, int length)
 		if (length == 1) return;
 		command += 1;
 		length -= 1;
-		Print("You: %.*s\n", length, command);
-		write_text_message(g_send_buffer, "chat '%.*s'", length, command);
+		write_text_message(g_send_buffer, "chat %.*s", length, command);
 		return;
 	}
 

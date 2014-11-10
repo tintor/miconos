@@ -26,15 +26,19 @@ class Text
 {
 public:
 	Text();
-	void Reset(int width, int height, glm::mat4& matrix);
+	void Reset(int width, int height, glm::mat4& matrix, bool down);
 	void Print(const char* fmt, ...) __printflike(2, 3);
 	void PrintBuffer(const char* buffer, int length);
 	void PrintAt(float x, float y, float n, const char* text, int length);
+
+	glm::vec4 fg_color;
+	glm::vec4 bg_color;
 
 private:
 	float m_tx;
 	float m_ty;
 	float m_ts;
+	float m_tdy;
 
 	GLuint m_positionBuffer;
 	GLuint m_uvBuffer;

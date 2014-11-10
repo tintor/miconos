@@ -178,6 +178,14 @@ struct arraydeque
 	arraydeque() : m_begin(0), m_end(0), m_size(0), m_capacity(0), m_array(nullptr) { }
 	~arraydeque() { free(m_array); }
 
+	T& operator[](int index)
+	{
+		assert(0 <= index && index < size);
+		index += m_begin;
+		if (index >= m_capacity) index -= m_capacity;
+		return m_array[index];
+	}
+
 	void clear()
 	{
 		m_begin = 0;

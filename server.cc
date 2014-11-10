@@ -43,7 +43,7 @@ void destroy_id(uint8_t id)
 
 void server_receive_text_message(Connection& conn, const char* message, uint length)
 {
-	fprintf(stderr, "Client[%s]: [%.*s]\n", conn.host, length, message);
+	fprintf(stderr, "Player #%d [%s]: %.*s\n", conn.avatar.id, conn.host, length, message);
 
 	std::vector<Token> tokens;
 	tokenize(message, length, /*out*/tokens);
@@ -51,8 +51,11 @@ void server_receive_text_message(Connection& conn, const char* message, uint len
 
 	if (tokens[0] == "chat")
 	{
-		assert(tokens.size() == 2);
-		// TODO broadcast
+		if (tokens.size() < 2) return;
+		for (Connection* conn : g_connections)
+		{
+			write_text_message(conn->send_buffer, "chat %d %.*s", conn->avatar.id, length - (tokens[1].first - message), tokens[1].first);
+		}
 		return;
 	}
 
