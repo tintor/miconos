@@ -180,7 +180,7 @@ struct arraydeque
 
 	T& operator[](int index)
 	{
-		assert(0 <= index && index < size);
+		//assert(0 <= index && index < size);
 		index += m_begin;
 		if (index >= m_capacity) index -= m_capacity;
 		return m_array[index];

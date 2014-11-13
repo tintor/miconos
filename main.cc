@@ -907,6 +907,7 @@ struct MapChunk
 	}
 
 	Block get(glm::ivec3 a) const { return m_block[index(a)]; }
+	const Block* getp(glm::ivec3 a) const { return m_block + index(a); }
 	void set(glm::ivec3 a, Block b) { m_empty = false; *m_modified = true; m_block[index(a)] = b; }
 	static int index(glm::ivec3 a) { return (((a.z << ChunkSizeBits) | a.y) << ChunkSizeBits) | a.x; }
 
@@ -1830,6 +1831,7 @@ struct Chunk
 	Chunk() : m_cpos(NullChunk) { }
 
 	Block get(glm::ivec3 a) const { return m_mc.get(a); }
+	const Block* getp(glm::ivec3 a) const { return m_mc.getp(a); }
 	void set(glm::ivec3 a, Block b) { m_mc.set(a, b); }
 	bool empty() const { return m_mc.empty(); }
 	void update_empty() { m_mc.update_empty(); }
@@ -2074,28 +2076,41 @@ struct BoundaryBlocks : public std::vector<glm::ivec3>
 	}
 } boundary_blocks;
 
-struct Directions : public std::vector<glm::ivec3>
+struct Direction
+{
+	glm::vec3 dir;
+	glm::vec3 inv_dir;
+};
+
+struct Directions : public std::vector<Direction>
 {
 	enum { Bits = 9 };
 	Directions()
 	{
 		const int M = 1 << Bits, N = M - 1;
-		FOR2(x, 1, M) FOR2(y, 1, M) FOR2(z, 1, M)
+		FOR2(x, 1, M) FOR2(y, 1, M) for(int z = 1; z <= M; z++)
 		{
 			int d2 = x*x + y*y + z*z;
 			if (N*N < d2 && d2 <= M*M) for (int i : {-x, x}) for (int j : {-y, y})
 			{
-				push_back(glm::ivec3(i, j, z));
-				push_back(glm::ivec3(i, j, -z));
+				add(i, j, z);
+				add(i, j, -z);
 			}
 		}
 		for (int m : {M, -M})
 		{
-			push_back(glm::ivec3(m, 0, 0));
-			push_back(glm::ivec3(0, m, 0));
-			push_back(glm::ivec3(0, 0, m));
+			add(m, 0, 0);
+			add(0, m, 0);
+			add(0, 0, m);
 		}
 		FOR(i, size()) std::swap(operator[](std::rand() % size()), operator[](i));
+	}
+	void add(int x, int y, int z)
+	{
+		Direction e;
+		e.dir = glm::normalize(glm::vec3(x, y, z));
+		e.inv_dir = glm::abs(1.0f / e.dir);
+		push_back(e);
 	}
 } directions;
 
@@ -2104,58 +2119,132 @@ int rays_remaining = 0;
 
 VisibleChunks visible_chunks;
 
-const int E = Directions::Bits + 1;
-
-void raytrace(Chunk* chunk, glm::ivec3 photon, glm::ivec3 dir)
+void raytrace(Chunk* chunk, glm::ivec3 pos, glm::ivec3 cpos, const Block* bp, glm::ivec3 id, glm::vec3 dd, glm::vec3 crossing)
 {
-	const int MaxDist2 = sqr(RenderDistance * ChunkSize);
-	const int B = ChunkSizeBits + E;
-	glm::ivec3 svoxel = photon >> E, voxel = svoxel;
+	const float MaxDist = RenderDistance * ChunkSize;
+
 	while (true)
 	{
-		do photon += dir; while ((photon >> E) == voxel);
-		glm::ivec3 cvoxel = photon >> B;
-		if (chunk->get_cpos() != cvoxel) while (true)
+		if (crossing.x < crossing.y)
 		{
-			chunk = &g_chunks.get(cvoxel);
-			if (chunk->get_cpos() != cvoxel) return; // TODO: chunk not loaded yet. Render it as big fog cube. Need to retrace it again once it is loaded.
-			if (!chunk->empty()) break;
-			do photon += dir; while ((photon >> B) == cvoxel);
-			voxel = photon >> E;
-			if (glm::distance2(voxel, svoxel) > MaxDist2) return;
-			cvoxel = photon >> B;
+			if (crossing.x < crossing.z)
+			{
+				if (crossing.x > MaxDist) return;
+				pos.x += id.x;
+				crossing.x += dd.x;
+				if (cpos.x != (pos.x >> ChunkSizeBits)) { cpos.x = pos.x >> ChunkSizeBits; goto next_chunk; }
+				bp += id.x;
+			}
+			else
+			{
+				if (crossing.z > MaxDist) return;
+				pos.z += id.z;
+				crossing.z += dd.z;
+				if (cpos.z != (pos.z >> ChunkSizeBits)) { cpos.z = pos.z >> ChunkSizeBits; goto next_chunk; }
+				bp += id.z * ChunkSize2;
+			}
 		}
-		voxel = photon >> E;
-		if (glm::distance2(voxel, svoxel) > MaxDist2) break;
-		Block block = chunk->get(voxel & ChunkSizeMask);
-		if (block == Block::none) continue;
-		visible_chunks.add(cvoxel);
-		if (!can_see_through(block)) break;
+		else
+		{
+			if (crossing.y < crossing.z)
+			{
+				if (crossing.y > MaxDist) return;
+				pos.y += id.y;
+				crossing.y += dd.y;
+				if (cpos.y != (pos.y >> ChunkSizeBits)) { cpos.y = pos.y >> ChunkSizeBits; goto next_chunk; }
+				bp += id.y * ChunkSize;
+			}
+			else
+			{
+				if (crossing.z > MaxDist) return;
+				pos.z += id.z;
+				crossing.z += dd.z;
+				if (cpos.z != (pos.z >> ChunkSizeBits)) { cpos.z = pos.z >> ChunkSizeBits; goto next_chunk; }
+				bp += id.z * ChunkSize2;
+			}
+		}
+
+		resume:
+		Block block = *bp;
+		if (block != Block::none)
+		{
+			visible_chunks.add(cpos);
+			if (!can_see_through(block)) return;
+		}
+	}
+
+next_chunk:
+	chunk = &g_chunks.get(cpos);
+	if (chunk->get_cpos() != cpos) return;
+	if (!chunk->empty())
+	{
+		bp = chunk->getp(pos & ChunkSizeMask);
+		goto resume;
+	}
+
+	while (true)
+	{
+		if (crossing.x < crossing.y && crossing.x < crossing.z)
+		{
+			if (crossing.x > MaxDist) return;
+			pos.x += id.x;
+			crossing.x += dd.x;
+			if (cpos.x != (pos.x >> ChunkSizeBits)) { cpos.x = pos.x >> ChunkSizeBits; goto next_chunk; }
+		}
+		else if (crossing.y < crossing.z)
+		{
+			if (crossing.y > MaxDist) return;
+			pos.y += id.y;
+			crossing.y += dd.y;
+			if (cpos.y != (pos.y >> ChunkSizeBits)) { cpos.y = pos.y >> ChunkSizeBits; goto next_chunk; }
+		}
+		else
+		{
+			if (crossing.z > MaxDist) return;
+			pos.z += id.z;
+			crossing.z += dd.z;
+			if (cpos.z != (pos.z >> ChunkSizeBits)) { cpos.z = pos.z >> ChunkSizeBits; goto next_chunk; }
+		}
 	}
 }
 
 // which chunks must be rendered from the center chunk?
-void update_render_list(glm::ivec3 cpos, Frustum& frustum)
+void update_render_list(Frustum& frustum)
 {
 	if (rays_remaining == 0) return;
 
+	glm::vec3 origin = g_player.position;
+	glm::ivec3 pos = glm::ivec3(glm::floor(origin));
+	glm::ivec3 cpos = pos >> ChunkSizeBits;
 	Chunk* chunk = &g_chunks.get(cpos);
 	assert(chunk->get_cpos() == cpos);
-
-	float k = 1 << E;
-	glm::ivec3 origin = glm::ivec3(glm::floor(g_player.position * k));
 
 	int64_t budget = 40 / Timestamp::milisec_per_tick;
 	Timestamp ta;
 
+	const Block* bp = chunk->getp(pos & ChunkSizeMask);
+
+	glm::vec3 crossingA = glm::ceil(origin) - origin;
+	glm::vec3 crossingB = origin - glm::floor(origin);
+
 	int q = 0;
 	while (rays_remaining > 0)
 	{
-		glm::ivec3 dir = directions[ray_it++];
+		const Direction& e = directions[ray_it++];
 		if (ray_it == directions.size()) ray_it = 0;
 		rays_remaining -= 1;
-		if (frustum.contains_point(g_player.position + glm::vec3(dir))) raytrace(chunk, origin, dir);
-		if ((q++ % 2048) == 0 && ta.elapsed() > budget) break;
+		if (frustum.contains_point(g_player.position + e.dir))
+		{
+			glm::ivec3 id;
+			glm::vec3 crossing;
+			FOR(i, 3)
+			{
+				id[i] = (e.dir[i] > 0) ? 1 : -1;
+				crossing[i] = (e.inv_dir[i] == INFINITY) ? INFINITY : ((e.dir[i] > 0 ? crossingA[i] : crossingB[i]) * e.inv_dir[i]);
+			}
+			raytrace(chunk, pos, cpos, bp, id, e.inv_dir, crossing);
+		}
+		if ((q++ % 1024) == 0 && ta.elapsed() > budget) break;
 	}
 	visible_chunks.sort(g_player.position);
 }
@@ -3523,7 +3612,7 @@ std::vector<MeshVertex> g_avatar_mesh;
 
 void render_init()
 {
-	printf("OpenGL version: [%s]\n", glGetString(GL_VERSION));
+	fprintf(stderr, "OpenGL version: [%s]\n", glGetString(GL_VERSION));
 	glEnable(GL_CULL_FACE);
 
 	{
@@ -4094,7 +4183,7 @@ void stall_alarm_thread()
 		usleep(1000);
 		if (!stall_enable.load(std::memory_order_relaxed)) break;
 		Timestamp a = stall_ts;
-		if (a.elapsed_ms() > 10000)
+		if (a.elapsed_ms() > 5000)
 		{
 			fprintf(stderr, "main thread stalled :(\n");
 			exit(1);
@@ -4327,7 +4416,7 @@ int main(int argc, char** argv)
 		g_player.atomic_cpos = compress_ivec3(g_player.cpos);
 
 		Timestamp tb;
-		update_render_list(cplayer, frustum);
+		update_render_list(frustum);
 
 		Timestamp tc;
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

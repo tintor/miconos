@@ -10,6 +10,7 @@
 #include <functional>
 #include <atomic>
 #include <unistd.h>
+#include <assert.h>
 
 #include "jansson/jansson.h"
 

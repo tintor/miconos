@@ -14,7 +14,7 @@ jansson/hashtable.h		jansson/jansson.h		jansson/jansson_private.h	jansson/lookup
 
 add_definitions(-g -O3 -Wno-c++11-extensions -flto)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++0x -DNDEBUG")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++0x")
 
 add_subdirectory(glfw)
 include_directories(glfw/include)
