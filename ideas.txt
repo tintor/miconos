@@ -1,0 +1,47 @@
+- ISSUES: import command should preload chunks
+- ISSUES: save console / command history BEFORE executing command
+- BUG: transparency of slime block is broken
+
+- general config file: render distance, num loader threads, reduce textures, basically allow customizing every constant, stall alarm timeout
+- unexploration - erase all generated blocks from map files (leaving only modified ones), replace erased blocks using new gen_block function
+- store block_id -> block_name mapping inside *.sc files to enable upgrade if block_ids change
+- merge quads: Is it sufficient to only do one fixed order like XY, and not both?
+- try RunLengthEncoding instead of LZ4 for chunks
+
+Multiplayer:
+- 3rd person view chase camera
+- nicer player avatars + animated limbs
+
+Server:
+- move block simulation (and chunk generation) to server
+- server sleep mode when no connections (accept thread can wake it up!)
+- ping command to measure latency
+- log on stderr if send buffer becomes full (and message gets dropped)
+
+Survival mode:
+- climbing with hands when next to a block / step (move into step and jump to climb instead)
+- ladders! have extra keyboard key for grabbing (or use sneak).
+- elevator!
+- rock-climbing on vertical walls
+- swimming and diving (jump not working, up/down directions not working)
+- physical tiredness when running / jumping / digging / swimming
+
+World sim:
+- animated translation / rotation of blocks (render in-between steps), enables more physical interation and large moving structures (ships / trains)
+- allow extra per-block state for active chunks (like falling/rotating blocks / falling water)
+
+Rendering:
+- nicer ambient lighting for water
+- PERF: keep chunk meshes in GPU memory
+
+Trees:
+- sideways falling trees when cutting them (animated in-between rotation + breaking of tree when falling)
+- growing trees! (game of life)
+- cactus!
+- rounder tree trunks + new blocks for branches + new blocks for roots + more realistic spruce trees
+- BUG: some leaf blocks missing from trees
+- blocks sticking to tree leaves (not affected by gravity)
+
+Server:
+- start server in a background thread of the same process, have client connect via TCP loopback
+- with live server have script to auto-upgrade client to the same version (without requiring source code + compilation by user)

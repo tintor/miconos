@@ -502,7 +502,7 @@ bool can_move_through(Block block) { return block <= Block::cloud; }
 bool can_see_through_non_water(Block block) { return block == Block::none || is_leaves(block) || block == Block::ice || block == Block::glass_white; }
 bool can_see_through(Block block) { return block <= Block::glass_white; }
 
-bool is_blended(BlockTexture a) { return a == BlockTexture::ice || a == BlockTexture::glass_white || a == BlockTexture::water_still; }
+bool is_blended(BlockTexture a) { return a == BlockTexture::ice || a == BlockTexture::glass_white || a == BlockTexture::water_still || a == BlockTexture::slime; }
 
 static_assert(Block::water1 == (Block)1, "");
 bool accepts_water(Block b) { return b < Block::water; }
@@ -1195,45 +1195,94 @@ const float BlockRadius = sqrtf(3) / 2;
 
 struct VisibleChunks
 {
-	VisibleChunks() { set.clear(); }
+	VisibleChunks() : m_frame(0) { set.clear(); }
 
 	void add(glm::ivec3 v)
 	{
-		if (set.xset(v & MapSizeMask)) array.push_back(v);
-	}
-
-	void cleanup(glm::ivec3 center, glm::vec3 direction)
-	{
-		int w = 0;
-		for (glm::ivec3 c : array)
+		if (set.xset(v & MapSizeMask))
 		{
-			if (glm::dot(direction, glm::vec3(c - center)) < 0 || glm::distance2(c, center) > sqr(RenderDistance))
-			{
-				assert(set[c & MapSizeMask]);
-				set.clear(c & MapSizeMask);
-			}
-			else
-			{
-				array[w++] = c;
-			}
+			Element e;
+			e.cpos = v;
+			e.frame = m_frame;
+			array.push_back(e);
 		}
-		array.resize(w);
 	}
 
-	void sort(glm::vec3 camera)
+	void cleanup()
+	{
+		m_reset_frame = m_frame;
+		set.clear();
+	}
+
+	void sort(glm::vec3 camera, bool done)
 	{
 		camera -= ii * ChunkSize / 2;
 		camera /= ChunkSize;
-		auto cmp = [camera](glm::ivec3 a, glm::ivec3 b) { return glm::distance2(glm::vec3(a), camera) > glm::distance2(glm::vec3(b), camera); };
-		std::sort(array.begin(), array.end(), cmp);
+
+		if (done)
+		{
+			int i = 0;
+			while (i < array.size())
+			{
+				if (array[i].frame - m_frame <= m_reset_frame - m_frame)
+				{
+					array[i] = array.back();
+					array.pop_back();
+					continue;
+				}
+				i += 1;
+			}
+
+			for (Element& e : array) e.distance = glm::distance2(glm::vec3(e.cpos), camera);
+			std::sort(array.begin(), array.end());
+		}
+		else
+		{
+			for (Element& e : array) e.distance = glm::distance2(glm::vec3(e.cpos), camera);
+			std::sort(array.begin(), array.end());
+
+			// remove duplicate array entries
+			uint max_age = (m_reset_frame - m_frame + 10);
+			int w = 0;
+			for (int i = 0; i < array.size(); i++)
+			{
+				int j = i + 1;
+				uint frame = array[i].frame;
+				while (j < array.size() && array[i].cpos == array[j].cpos)
+				{
+					if (array[j].frame - m_frame < frame - m_frame) frame = array[j].frame;
+					j += 1;
+				}
+				if (frame - m_frame <= max_age)
+				{
+					array[w].cpos = array[i].cpos;
+					array[w].frame = frame;
+					w += 1;
+				}
+				i = j - 1;
+			}
+			array.resize(w);
+		}
+
+		m_frame -= 1;
 	}
 
-	glm::ivec3* begin() { return &array[0]; }
-	glm::ivec3* end() { return begin() + array.size(); }
+	struct Element
+	{
+		glm::ivec3 cpos;
+		float distance;
+		uint frame;
+		bool operator<(const Element& b) const { return distance > b.distance; }
+	};
+
+	Element* begin() { return &array[0]; }
+	Element* end() { return begin() + array.size(); }
 
 private:
+	uint m_reset_frame;
+	uint m_frame;
 	BitCube<MapSize> set;
-	std::vector<glm::ivec3> array;
+	std::vector<Element> array;
 };
 
 struct Chunk;
@@ -1945,9 +1994,7 @@ public:
 	{
 		Chunk& c = get(cpos);
 		if (c.get_cpos() != cpos) return;
-		c.m_renderable = false;
 		c.remesh(renderer);
-		c.m_renderable = true;
 	}
 
 	Chunk& get(glm::ivec3 cpos)
@@ -2058,23 +2105,11 @@ void rasterize_mesh(const Mesh& mesh, glm::ivec3 base, float scale, Block block)
 		Chunk& chunk = g_chunks.get(cpos);
 		assert(chunk.get_cpos() == cpos);
 		chunk.m_remesh = true;
-		// TODO activate chunk for simulation
+		chunk.m_active = true;
 	}
 }
 
 // ======================
-
-struct BoundaryBlocks : public std::vector<glm::ivec3>
-{
-	BoundaryBlocks()
-	{
-		const int M = ChunkSize - 1;
-		FOR(x, ChunkSize) FOR(y, ChunkSize) FOR(z, ChunkSize)
-		{
-			if (x == 0 || x == M || y == 0 || y == M || z == 0 || z == M) push_back(glm::ivec3(x, y, z));
-		}
-	}
-} boundary_blocks;
 
 struct Direction
 {
@@ -2246,7 +2281,7 @@ void update_render_list(Frustum& frustum)
 		}
 		if ((q++ % 1024) == 0 && ta.elapsed() > budget) break;
 	}
-	visible_chunks.sort(g_player.position);
+	visible_chunks.sort(g_player.position, rays_remaining == 0);
 }
 
 namespace stats
@@ -2290,26 +2325,20 @@ void activate_block(glm::ivec3 pos)
 	}
 }
 
+void mark_remesh_chunk(Chunk& chunk, glm::ivec3 pos, glm::ivec3 q);
+
 void edit_block(glm::ivec3 pos, Block block)
 {
 	glm::ivec3 cpos = pos >> ChunkSizeBits;
 	glm::ivec3 p = pos & ChunkSizeMask;
-	static BlockRenderer renderer;
 
 	Chunk& c = g_chunks.get(cpos);
 	if (c.get_cpos() != cpos) return;
 
 	c.set(p, block);
 	if (block == Block::none) c.update_empty();
-	c.remesh(renderer);
 	activate_block(pos);
-
-	if (p.x == 0) g_chunks.reset(cpos - ix, renderer);
-	if (p.y == 0) g_chunks.reset(cpos - iy, renderer);
-	if (p.z == 0) g_chunks.reset(cpos - iz, renderer);
-	if (p.x == ChunkSizeMask) g_chunks.reset(cpos + ix, renderer);
-	if (p.y == ChunkSizeMask) g_chunks.reset(cpos + iy, renderer);
-	if (p.z == ChunkSizeMask) g_chunks.reset(cpos + iz, renderer);
+	mark_remesh_chunk(c, pos, p);
 }
 
 void on_key(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -2895,10 +2924,6 @@ void model_move_player(GLFWwindow* window, float dt)
 	if (p != g_player.position)
 	{
 		rays_remaining = directions.size();
-		float* ma = glm::value_ptr(g_player.orientation);
-		glm::vec3 direction(ma[4], ma[5], ma[6]);
-		glm::ivec3 cplayer = glm::ivec3(glm::floor(g_player.position)) >> ChunkSizeBits;
-		visible_chunks.cleanup(cplayer, direction);
 		g_player.broadcasted = false;
 	}
 }
@@ -3045,9 +3070,9 @@ struct BlockRef
 	explicit BlockRef(glm::ivec3 p) : chunk(g_chunks.get_opt(p >> ChunkSizeBits)), ipos(p & ChunkSizeMask), block(chunk ? chunk->get(glm::ivec3(ipos)) : Block::none) { }
 };
 
-static const int SimulationDistance = 6; // in chunks
+static const int SimulationDistance = 7; // in chunks
 
-static const int MaxActiveChunks = 50;
+static const int MaxActiveChunks = 100;
 std::vector<glm::ivec3> sim_active_chunks;
 
 void mark_remesh_chunk(glm::ivec3 pos)
@@ -3438,6 +3463,7 @@ void model_frame(GLFWwindow* window, double delta_ms)
 	Timestamp tc;
 	model_digging(window);
 	model_simulate_blocks();
+	visible_chunks.cleanup();
 
 	stats::collide_time_ms = glm::mix<float>(stats::collide_time_ms, ta.elapsed_ms(tb), 0.15f);
 	stats::select_time_ms = glm::mix<float>(stats::select_time_ms, tb.elapsed_ms(tc), 0.15f);
@@ -3802,8 +3828,9 @@ void render_world_blocks(const glm::mat4& matrix, const Frustum& frustum)
 
 	glEnable(GL_BLEND);
 	static BlockRenderer renderer;
-	for (glm::ivec3 cpos : visible_chunks)
+	for (VisibleChunks::Element e : visible_chunks)
 	{
+		glm::ivec3 cpos = e.cpos;
 		if (!frustum.is_sphere_outside(glm::vec3(cpos * ChunkSize + ChunkSize / 2), ChunkSize * BlockRadius))
 		{
 			Chunk& chunk = g_chunks.get(cpos);
@@ -4289,7 +4316,7 @@ GLFWwindow* create_window()
 	GLFWwindow* window = glfwCreateWindow(mode->width*2, mode->height*2, "Arena", glfwGetPrimaryMonitor(), NULL);
 	if (!window) return nullptr;
 	glfwMakeContextCurrent(window);
-	glfwSwapInterval(1/*VSYNC*/);
+	glfwSwapInterval(0/*VSYNC*/);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwGetFramebufferSize(window, &width, &height);
 	return window;

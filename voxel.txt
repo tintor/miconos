@@ -1,0 +1,142 @@
+const int VoxelSizeBits = 2;
+const int VoxelSize = 1 << VoxelSizeBits;
+const int VoxelSizeMask = VoxelSize - 1;
+
+void connect(Voxel* a, Voxel* b)
+{
+	glm::ivec3 d = a->vpos - b->vpos;
+	assert(std::abs(d.x) + std::abs(d.y) + std::abs(d.z) == 1);
+	assert(!contains(a->links, b));
+	assert(!contains(b->links, a));
+	a->links.push_back(b);
+	b->links.push_back(a);
+}
+
+void disconnect(Voxel* a, Voxel* b)
+{
+	glm::ivec3 d = a->vpos - b->vpos;
+	assert(std::abs(d.x) + std::abs(d.y) + std::abs(d.z) == 1);
+	remove_unordered(a->links, b);
+	remove_unordered(b->links, a);
+}
+
+/*Voxel* find_voxel(glm::ivec3 pos)
+{
+	Chunk* chunk = g_chunks.get_opt(pos >> ChunkSizeBits);
+	if (!chunk) return nullptr;
+
+	glm::ivec3 vpos = pos >> VoxelSizeBits;
+	uint64_t mask = 1lu << (vpos & VoxelSizeMask);
+	// TODO keep m_voxels sorted to be able to do binary search
+	for (Voxel* v : chunk->m_voxels)
+	{
+		if (v->vpos == vpos && (v->blocks & mask) != 0) return v;
+	}
+	return nullptr;
+}
+
+void recompute_voxels(Chunk& chunk)
+{
+	// delete existing ones
+	for (Voxel* c : chunk.m_voxels) for (Voxel* a : c->links)
+	{
+		glm::ivec3 ci = c->vpos >> (ChunkSizeBits - VoxelSizeBits);
+		glm::ivec3 ai = a->vpos >> (ChunkSizeBits - VoxelSizeBits);
+		if (ci != ai) disconnect(c, a);
+	}
+	for (Voxel* c : chunk.m_voxels) delete c;
+	chunk.m_voxels.clear();
+
+	// compute new ones
+	// for each block in chunk
+	// - if block not visited and can_see_through(block):
+	// - - flood fill from block across voxel and find all neighbour voxels
+	// - - create new voxel and connect it to all neighbouring voxels
+}*/
+
+// Voxel is set of up to 4x4x4 connected can_see_through() blocks from chunk.
+// Chunk can have more than 64 voxels.
+struct Voxel
+{
+	glm::ivec3 vpos; // = pos >> 2
+	uint64_t blocks; // one bit set for every can_see_through() block in component
+	std::vector<Voxel*> links;
+};
+
+struct ScreenVoxel
+{
+	Voxel* voxel;
+	// Bounding box of voxel in screen space (assuming voxel is axis-aligned with screen)
+	float xmin, xmax;
+	float ymin, ymax;
+};
+
+void compute_render_list(glm::ivec3 pos, Frustum& frustum)
+{
+	// for voxel visible from <pos> (group by vpos):
+	// - generate 4 frustum planes that are aligned to the world axes and the direction of voxel
+	// - reduce them (if possible) with screen frustum
+	// - given initial list of voxels in queue do a BFS across Voxels
+	// - each keeps track of 4 frustum planes and know the neighbours that are visible from it
+
+	BitSet<4> set;
+	arraydeque<ScreenVoxel> queue;
+	// TODO init
+	while (queue.size() > 0)
+	{
+		ScreenVoxel vr = queue.pop_front();
+	}
+}
+
+struct Voxel
+{
+	// Used for ray-tracing (store on GPU)
+	Voxel* side[6];
+	Voxel* parent;
+	float alpha; // density of voxel, relative to voxel size (can be >1)
+	glm::u8vec3 color;
+	uint8_t depth;
+
+	// Not used for ray-tracing, but for tree maintenance and to find origin for raytrace
+	uint8_t child_id;
+	Voxel* child_first;
+	Voxel* child_next;
+};
+
+void advance_ray(glm::ivec3 origin, glm::ivec3 dir, uint8_t depth, int& exit_face, float& delta_distance)
+{
+	// Must be very robust!
+
+}
+
+// raytracing fragment shader
+glm::vec3 raytrace(Voxel* voxel, glm::ivec3 origin, glm::ivec3 dir)
+{
+	glm::vec3 color(0, 0, 0);
+	float alpha = 0;
+	float distance = 0;
+	while (true)
+	{
+		int exit_face;
+		float delta_distance;
+		advance_ray(origin, dir, voxel->depth, /*out*/exit_face, /*out*/delta_distance);
+
+		float delta_alpha = voxel->alpha * delta_distance / pow(0.5, voxel->depth);
+		if (alpha + delta_alpha >= 1.0)
+		{
+			color += voxel->color.rgb * (1.0 - alpha);
+			return color / 256;
+		}
+
+		alpha += delta_alpha;
+		color += voxel->color.rgb * delta_alpha;
+		distance += delta_distance;
+
+		Voxel* parent = voxel->parent;
+		voxel = voxel->side[exit_face];
+		if (voxel == nullptr) return color;
+		if (voxel->parent == parent) continue;
+		if (distance > 16 * pow(0.5, voxel->depth)) voxel = voxel->parent;
+	}
+}
+

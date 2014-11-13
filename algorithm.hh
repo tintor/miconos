@@ -5,6 +5,21 @@ void release(std::vector<T>& a) { std::vector<T> v; std::swap(a, v); }
 template<typename T>
 bool contains(const std::vector<T>& p, T a) { return std::find(p.begin(), p.end(), a) != p.end(); }
 
+template<typename T>
+bool remove_unordered(std::vector<T>& container, T v)
+{
+	for (int i = 0; i < container.size(); i++)
+	{
+		if (container[i] == v)
+		{
+			std::swap(container[i], container.back());
+			container.back();
+			return true;
+		}
+	}
+	return false;
+}
+
 // ==========
 
 template<typename Type, size_t Capacity>
@@ -212,8 +227,9 @@ struct arraydeque
 	T pop_front()
 	{
 		m_size -= 1;
-		Auto(m_begin = (m_begin + 1) & (m_capacity - 1));
-		return m_array[m_begin];
+		uint b = m_begin;
+		m_begin = (m_begin + 1) & (m_capacity - 1);
+		return m_array[b];
 	}
 
 	T pop_back()
