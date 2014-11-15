@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 2.8)
 project(arena)
 
 add_executable(arena main.cc algorithm.hh util.hh util.cc auto.hh callstack.hh rendering.cc rendering.hh server.cc socket.hh socket.cc
-parse.hh message.hh
+parse.hh message.hh block.cc block.hh
 lodepng/lodepng.cc tinycthread/tinycthread.c
 lz4.c lz4.h
 ply_io.h ply_io.c

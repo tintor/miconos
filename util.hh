@@ -214,4 +214,6 @@ void __assert_rtn_format(const char* func, const char* file, int line, const cha
 
 #define release_assertf(C, fmt, ...) do { if (!(C)) __assert_rtn_format(__func__, __FILE__, __LINE__, #C, fmt, __VA_ARGS__); } while(0)
 
+#define FAIL __assert_rtn_format(__func__, __FILE__, __LINE__, "", "")
+
 #define AutoLock(A) (A).lock(); Auto((A).unlock());

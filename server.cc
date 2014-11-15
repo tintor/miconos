@@ -107,15 +107,15 @@ bool server_receive_message(Connection& conn)
 		conn.avatar.broadcasted = false;
 		return true;
 	}
-	/*case MessageType::ChunkState:
+	case MessageType::ChunkState: FAIL;
+	case MessageType::EditBlock:
 	{
-		MessageChunkState msg;
+		MessageEditBlock msg;
 		if (recv.size < 1 + sizeof(msg)) return false;
 		recv.read_ignore(1);
 		recv.read(&msg, sizeof(msg));
-		// TODO update state of chunk
-		return true;
-	}*/
+		FAIL; // UNDONE
+	}
 	}
 	return false;
 }
