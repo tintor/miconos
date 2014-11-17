@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+typedef uint32_t uint;
+
 class Socket
 {
 public:
@@ -21,24 +23,39 @@ private:
 	int m_sock;
 };
 
-struct RingBuffer
+struct SocketBuffer
 {
-	int begin;
-	int end;
-	int size;
-	uint8_t buffer[1 << 20];
+	SocketBuffer() : m_begin(0), m_end(0), m_capacity(0), m_buffer(0) { }
+	~SocketBuffer() { free(m_buffer); }
 
-	RingBuffer() : begin(0), end(0), size(0) { }
-	int space() { return sizeof(buffer) - size; }
+	uint space() { return m_capacity - m_end; }
+	uint size() { return m_end - m_begin; }
+	uint capacity() { return m_capacity; }
+	uint8_t* data() { return m_buffer + m_begin; }
 	void check();
 
-	void read_ignore(int len);
-	void read(void* str, int len);
-	void write(const void* str, int len);
+	void reserve(uint capacity);
+	void ensure_space(uint space);
+
+	void write_byte(uint8_t byte);
+	void write(const void* str, uint len);
+
+	template<typename T> T* read() { return (size() < sizeof(T)) ? nullptr : (T*)read_message(sizeof(T)); }
+	template<typename T> T* write() { ensure_space(sizeof(T)); return (T*)write_message(sizeof(T)); }
+
+	uint8_t* read_message(uint len);
+	uint8_t* write_message(uint len);
 
 	bool recv_any(const Socket& sock);
 	bool send_any(const Socket& sock);
-};
 
-bool has_text_message(RingBuffer& recv, int& size);
-bool write_text_message(RingBuffer& send, const char* fmt, ...);
+private:
+	SocketBuffer(const SocketBuffer&) { }
+	void operator=(const SocketBuffer&) { }
+
+private:
+	uint m_begin;
+	uint m_end;
+	uint m_capacity;
+	uint8_t* m_buffer;
+};

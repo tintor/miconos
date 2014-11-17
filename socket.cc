@@ -12,7 +12,8 @@
 
 #include "socket.hh"
 
-#define CHECK(A) do { if (!(A)) { fprintf(stderr, "%s failed at %s line %d. Errno %d (%s)\n", #A, __FILE__, __LINE__, errno, strerror(errno)); return false; } } while(0);
+#define CHECK2(A, B) do { if (!(A)) { fprintf(stderr, "%s failed at %s line %d. Errno %d (%s)\n", #A, __FILE__, __LINE__, errno, strerror(errno)); B; } } while(0);
+#define CHECK(A) CHECK2(A, return false)
 
 ssize_t Socket::recv(void* buffer, size_t size) const
 {
@@ -112,150 +113,123 @@ void Socket::close()
 	m_sock = -1;
 }
 
-void RingBuffer::check()
+void SocketBuffer::check()
 {
-	assert(0 <= begin && begin < sizeof(buffer));
-	assert(0 <= size && size <= sizeof(buffer));
-	assert((begin + size) % sizeof(buffer) == end);
+	assert(0 <= m_begin && m_begin <= m_end && m_end <= m_capacity);
 }
 
-void RingBuffer::read_ignore(int len)
+void SocketBuffer::reserve(uint capacity)
 {
-	assert(len > 0);
-	assert(size >= len);
-	begin += len;
-	if (begin >= sizeof(buffer)) begin -= sizeof(buffer);
-	size -= len;
-	check();
+	if (capacity <= m_capacity) return;
+
+	CHECK2(capacity <= 0x80000000, exit(1));
+	uint a = (m_capacity == 0) ? 1024 : m_capacity;
+	while (a < capacity) a += a;
+	capacity = a;
+
+	uint8_t* buffer = (uint8_t*)malloc(capacity);
+	if (m_buffer)
+	{
+		memcpy(buffer, m_buffer + m_begin, m_end - m_begin);
+		free(m_buffer);
+	}
+	m_end -= m_begin;
+	m_begin = 0;
+	m_capacity = capacity;
+	m_buffer = buffer;
 }
 
-void RingBuffer::read(void* str, int len)
+void SocketBuffer::ensure_space(uint _space)
 {
-	assert(len > 0);
-	assert(size >= len);
-	if (begin + len <= sizeof(buffer))
+	if (space() >= _space) return;
+	if (space() + m_begin >= _space)
 	{
-		memcpy(str, buffer + begin, len);
-		begin += len;
-		if (begin == sizeof(buffer)) begin = 0;
+		memmove(m_buffer, m_buffer + m_begin, m_end - m_begin);
+		m_end -= m_begin;
+		m_begin = 0;
+		return;
 	}
-	else
-	{
-		int e = sizeof(buffer) - begin;
-		memcpy(str, buffer + begin, e);
-		memcpy((uint8_t*)str + e, buffer, len - e);
-		begin = len - e;
-	}
-	size -= len;
-	check();
+	reserve(size() + _space);
 }
 
-void RingBuffer::write(const void* str, int len)
+uint8_t* SocketBuffer::read_message(uint len)
 {
-	assert(len > 0);
-	assert(space() >= len);
-	if (end + len <= sizeof(buffer))
-	{
-		memcpy(buffer + end, str, len);
-		end += len;
-		if (end == sizeof(buffer)) end = 0;
-	}
-	else
-	{
-		int e = sizeof(buffer) - end;
-		memcpy(buffer + end, str, e);
-		memcpy(buffer, (const uint8_t*)str + e, len - e);
-		end = len - e;
-	}
-	size += len;
-	check();
+	assert(m_begin + len <= m_end);
+	uint8_t* p = m_buffer + m_begin;
+	m_begin += len;
+	return p;
+}
+
+uint8_t* SocketBuffer::write_message(uint len)
+{
+	assert(m_end + len <= m_capacity);
+	uint8_t* p = m_buffer + m_end;
+	m_end += len;
+	return p;
+}
+
+void SocketBuffer::write_byte(uint8_t byte)
+{
+	assert(m_end < m_capacity);
+	m_buffer[m_end++] = byte;
+}
+
+void SocketBuffer::write(const void* str, uint len)
+{
+	assert(m_end + len <= m_capacity);
+	memcpy(m_buffer + m_end, str, len);
+	m_end += len;
 }
 
 int min(int a, int b) { return (a < b) ? a : b; }
 
-bool RingBuffer::recv_any(const Socket& sock)
+bool SocketBuffer::recv_any(const Socket& sock)
 {
-	//check();
-	while (size < sizeof(buffer))
+	assert(m_capacity >= 1024);
+	if (m_begin > 0)
 	{
-		int length = min(sizeof(buffer) - end, sizeof(buffer) - size);
-		int ret = sock.recv(buffer + end, length);
+		memmove(m_buffer, m_buffer + m_begin, m_end - m_begin);
+		m_end -= m_begin;
+		m_begin = 0;
+	}
+	while (m_end < m_capacity)
+	{
+		int ret = sock.recv(m_buffer + m_end, m_capacity - m_end);
 		if (ret > 0)
 		{
-			end += ret;
-			size += ret;
-			if (end == sizeof(buffer)) end = 0;
-			//check();
+			m_end += ret;
 			continue;
 		}
 		if (ret < 0 && errno == EAGAIN) break;
 		if (ret == 0) fprintf(stderr, "recv() failed: connection closed\n");
 		if (ret < 0) fprintf(stderr, "recv() failed: %s (%d)\n", strerror(errno), errno);
-		//check();
 		return false;
 	}
-	//check();
+	check();
 	return true;
 }
 
-bool RingBuffer::send_any(const Socket& sock)
+bool SocketBuffer::send_any(const Socket& sock)
 {
-	//check();
-	while (size > 0)
+	while (m_begin < m_end)
 	{
-		int length = min(size, sizeof(buffer) - begin);
-		int ret = sock.send(buffer + begin, length);
+		int ret = sock.send(m_buffer + m_begin, m_end - m_begin);
 		if (ret > 0)
 		{
-			begin += ret;
-			size -= ret;
-			if (begin == sizeof(buffer)) begin = 0;
-			//check();
+			m_begin += ret;
 			continue;
 		}
 		if (ret < 0 && errno == EAGAIN) break;
 		if (ret == 0) fprintf(stderr, "send() failed: connection closed\n");
 		if (ret < 0) fprintf(stderr, "send() failed: %s (%d)\n", strerror(errno), errno);
-		//check();
 		return false;
 	}
-	//check();
-	return true;
-}
-
-// Move to message.cc?
-bool has_text_message(RingBuffer& recv, int& size)
-{
-	if (recv.size < 3) return false;
-	uint16_t size16;
-	if (recv.begin + 3 <= sizeof(RingBuffer::buffer))
+	if (m_begin > 0)
 	{
-		*reinterpret_cast<uint16_t*>(&size16) = *reinterpret_cast<uint16_t*>(recv.buffer + recv.begin + 1);
+		memmove(m_buffer, m_buffer + m_begin, m_end - m_begin);
+		m_end -= m_begin;
+		m_begin = 0;
 	}
-	else
-	{
-		reinterpret_cast<uint8_t*>(&size16)[0] = recv.buffer[(recv.begin + 1) % sizeof(recv.buffer)];
-		reinterpret_cast<uint8_t*>(&size16)[1] = recv.buffer[(recv.begin + 2) % sizeof(recv.buffer)];
-	}
-	size = size16 + 1;
-	if (recv.size < 3 + size) return false;
-	recv.read_ignore(3);
-	return true;
-}
-
-bool write_text_message(RingBuffer& send, const char* fmt, ...)
-{
-	char buffer[1024];
-	va_list va;
-	va_start(va, fmt);
-	int length = vsnprintf(buffer, sizeof(buffer), fmt, va);
-	va_end(va);
-
-	if (send.space() < 3 + length) return false;
-	uint8_t type = 0; // MessageType::Text
-	send.write(&type, 1);
-	uint16_t size16 = length - 1;
-	send.write(&size16, 2);
-	send.write(&buffer, length);
+	check();
 	return true;
 }

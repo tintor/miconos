@@ -1,3 +1,4 @@
+#pragma once
 #include "util.hh"
 
 template<typename T>
@@ -43,19 +44,34 @@ private:
 
 // ==========
 
-template<int N>
+template<uint N, typename T>
+struct XCube
+{
+	void clear(T v) { FOR(i, N*N*N) m_array[i] = v; }
+	T operator[](glm::ivec3 a) const { return m_array[index(a)]; }
+	T& operator[](glm::ivec3 a) { return m_array[index(a)]; }
+	const T* getp(glm::ivec3 a) const { return &m_array[index(a)]; }
+	T* data() { return m_array.data(); }
+private:
+	int index(glm::ivec3 a) const { assert((uint)a.x < N && (uint)a.y < N && (uint)a.z < N); return a.z*N*N + a.y*N + a.x; }
+private:
+	std::array<T, N*N*N> m_array;
+};
+
+template<uint N>
 struct BitCube
 {
 	typedef uint64_t Word;
-	static const int W = sizeof(Word) * 8;
-	static const int Z = (N * N * N + W - 1) / W;
-	static const int Bytes = sizeof(Word) * Z;
+	static const uint W = sizeof(Word) * 8;
+	static const uint Z = (N * N * N + W - 1) / W;
+	static const uint Bytes = sizeof(Word) * Z;
 
-	void clear() { FOR(i, Z) m_words[i] = 0; }
+	void set_all() { FOR(i, Z) m_words[i] = ~Word(0); }
+	void clear_all() { FOR(i, Z) m_words[i] = 0; }
 	void operator=(const BitCube<N>& q) { FOR(i, Z) m_words[i] = q.m_words[i]; }
-	void set(glm::ivec3 a) { int i = index(a); m_words[i / W] |= mask(i); }
-	void clear(glm::ivec3 a) { int i = index(a); m_words[i / W] &= ~mask(i); }
-	bool operator[](glm::ivec3 a) { int i = index(a); return (m_words[i / W] & mask(i)) != 0; }
+	void set(glm::ivec3 a) { uint i = index(a); m_words[i / W] |= mask(i); }
+	void clear(glm::ivec3 a) { uint i = index(a); m_words[i / W] &= ~mask(i); }
+	bool operator[](glm::ivec3 a) { uint i = index(a); return (m_words[i / W] & mask(i)) != 0; }
 
 	uint count()
 	{
@@ -80,7 +96,7 @@ struct BitCube
 	}
 private:
 	static Word mask(int index) { return Word(1) << (index % W); }
-	int index(glm::ivec3 a) { assert(a.x >= 0 && a.x < N && a.y >= 0 && a.y < N && a.z >= 0 && a.z < N); return (a.x*N + a.y)*N + a.z; }
+	uint index(glm::ivec3 a) { assertf((uint)a.x < N && (uint)a.y < N && (uint)a.z < N, "[%d %d %d] N=%u", a.x, a.y, a.z, N); return (a.x*N + a.y)*N + a.z; }
 private:
 	std::array<Word, Z> m_words;
 };
@@ -141,7 +157,7 @@ public:
 			q->cube = new BitCube<Size>;
 		}
 		q->cpos = cpos;
-		q->cube->clear();
+		q->cube->clear_all();
 		q->cube->set(a & Mask);
 		m_last = q;
 		q->next = m_map[index];

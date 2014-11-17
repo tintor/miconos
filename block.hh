@@ -1,5 +1,6 @@
 #pragma once
 #include "util.hh"
+#include "algorithm.hh"
 
 const int ChunkSizeBits = 4, SuperChunkSizeBits = 4, MapSizeBits = 7;
 const int ChunkSize = 1 << ChunkSizeBits, SuperChunkSize = 1 << SuperChunkSizeBits, MapSize = 1 << MapSizeBits;
@@ -13,7 +14,7 @@ const int ChunkSize3 = ChunkSize * ChunkSize * ChunkSize;
 #define FuncCount(E) +1
 #define FuncList(E) E,
 
-#define Blocks(A, F, B) A \
+#define EnumBlocks(A, F, B) A \
 	F(none) \
 	F(water1) \
 	F(water2) \
@@ -127,10 +128,10 @@ const int ChunkSize3 = ChunkSize * ChunkSize * ChunkSize;
 	F(water_drain) \
 	B
 
-static const uint block_count = Blocks(0, FuncCount, +0);
+static const uint block_count = EnumBlocks(0, FuncCount, +0);
 extern const char* block_name[block_count];
 static_assert(block_count <= 256, "");
-enum class Block : uint8_t Blocks({, FuncList, });
+enum class Block : uint8_t EnumBlocks({, FuncList, });
 
 static_assert((uint)Block::none == 0, "common in conditions");
 
@@ -496,3 +497,5 @@ static_assert((uint)BlockTexture::redstone_lamp_top_off == 159, "used in shader"
 static_assert((uint)BlockTexture::water_flow == 161, "used in shader");
 
 BlockTexture get_block_texture(Block block, int face);
+
+typedef XCube<ChunkSize, Block> Blocks;

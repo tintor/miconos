@@ -92,6 +92,13 @@ inline glm::mat3 rotate_z(float radians)
 static const glm::ivec3 ix(1, 0, 0), iy(0, 1, 0), iz(0, 0, 1), ii(1, 1, 1);
 static const glm::ivec3 ia[3] = { ix, iy, iz };
 
+static const std::array<glm::ivec3, 6> face_dir = { -ix, ix, -iy, iy, -iz, iz };
+
+inline bool between(glm::ivec3 a, glm::ivec3 b, glm::ivec3 c)
+{
+	return a.x <= b.x && b.x <= c.x && a.y <= b.y && b.y <= c.y && a.z <= b.z && b.z <= c.z;
+}
+
 // ==============
 
 inline const char* str(glm::ivec3 a)
@@ -214,6 +221,24 @@ void __assert_rtn_format(const char* func, const char* file, int line, const cha
 
 #define release_assertf(C, fmt, ...) do { if (!(C)) __assert_rtn_format(__func__, __FILE__, __LINE__, #C, fmt, __VA_ARGS__); } while(0)
 
-#define FAIL __assert_rtn_format(__func__, __FILE__, __LINE__, "", "")
+#define FAIL __assert_rtn_format(__func__, __FILE__, __LINE__, "false", "")
 
 #define AutoLock(A) (A).lock(); Auto((A).unlock());
+
+// ================
+
+#include "city.h"
+
+namespace std
+{
+	template<>
+	struct hash<glm::ivec3>
+	{
+		typedef glm::ivec3 argument_type;
+		typedef std::size_t result_type;
+		static_assert(sizeof(glm::ivec3) == 12, "");
+		result_type operator()(argument_type const& s) const { return CityHash64(reinterpret_cast<const char*>(&s), sizeof(glm::ivec3)); }
+	};
+}
+
+static const glm::ivec3 x_bad_ivec3(0x80000000, 0x80000000, 0x80000000);
