@@ -2374,6 +2374,10 @@ void client_receive_text_message(const char* message, uint length)
 	console.Print(">> %.*s\n", length, message);
 }
 
+MessageServerStatus g_server_status;
+uint32_t g_bytes_received;
+uint32_t g_server_frames = 0;
+
 bool client_receive_message()
 {
 	SocketBuffer& recv = g_recv_buffer;
@@ -2411,13 +2415,23 @@ bool client_receive_message()
 		}
 		return true;
 	}
+	case MessageType::ServerStatus:
+	{
+		auto message = recv.read<MessageServerStatus>();
+		if (!message) return false;
+		g_server_status = *message;
+		g_server_frames += 1;
+		return true;
+	}
 	}
 	return false;
 }
 
 void client_frame()
 {
+	uint size_before = g_recv_buffer.size();
 	CHECK2(g_recv_buffer.recv_any(g_client), exit(1));
+	g_bytes_received = g_recv_buffer.size() - size_before;
 	while (client_receive_message()) { }
 
 	if (!g_player.broadcasted)
@@ -2448,6 +2462,9 @@ void render_gui()
 		text->Print("collide:%1.0f select:%1.0f simulate:%1.0f [%.1f %.1f %.1f] %.1f%s",
 			stats::collide_time_ms, stats::select_time_ms, stats::simulate_time_ms,
 			g_player.velocity.x, g_player.velocity.y, g_player.velocity.z, glm::length(g_player.velocity), on_the_ground ? " ground" : "");
+
+		text->Print("exchange:%u inbox:%u simulation:%u chunk:%u avatar:%u received:%ukb frame:%u",
+			g_server_status.exchange_time, g_server_status.inbox_time, g_server_status.simulation_time, g_server_status.chunk_time, g_server_status.avatar_time, g_bytes_received / 1024, g_server_frames);
 
 		if (selection)
 		{

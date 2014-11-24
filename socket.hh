@@ -42,6 +42,7 @@ struct SocketBuffer
 
 	template<typename T> T* read() { return (size() < sizeof(T)) ? nullptr : (T*)read_message(sizeof(T)); }
 	template<typename T> T* write() { ensure_space(sizeof(T)); return (T*)write_message(sizeof(T)); }
+	template<typename T> void write(const T& msg) { ensure_space(sizeof(T)); *(T*)write_message(sizeof(T)) = msg; }
 
 	uint8_t* read_message(uint len);
 	uint8_t* write_message(uint len);

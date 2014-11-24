@@ -762,6 +762,12 @@ bool server_receive_message(Connection& conn)
 	return false;
 }
 
+float exchange_time_ms = 0;
+float inbox_time_ms = 0;
+float simulation_time_ms = 0;
+float chunk_time_ms = 0;
+float avatar_time_ms = 0;
+
 void server_main()
 {
 	FOR(i, 255) g_free_ids.push_back(254 - i);
@@ -780,6 +786,10 @@ void server_main()
 			new_connection = c;
 		}
 	}).detach();
+
+	MessageServerStatus mss;
+	mss.type = MessageType::ServerStatus;
+	mss.frame = 0;
 
 	Timestamp ta;
 	while (true)
@@ -801,9 +811,11 @@ void server_main()
 			new_connection = nullptr;
 		}
 
+		Timestamp tb;
 		for (int i = 0; i < g_connections.size(); i++)
 		{
 			Connection* conn = g_connections[i];
+
 			if (!conn->exchange())
 			{
 				fprintf(stderr, "Player #%d disconnected from %s\n", conn->avatar.id, conn->host);
@@ -823,15 +835,17 @@ void server_main()
 			}
 		}
 
-		// read all messages
+		Timestamp tc;
 		for (Connection* conn : g_connections)
 		{
 			while (server_receive_message(*conn)) { }
 		}
 
+		Timestamp td;
 		server_simulate_blocks();
 
 		// send chunk updates
+		Timestamp te;
 		for (Connection* conn : g_connections)
 		{
 			Timestamp ta;
@@ -849,6 +863,7 @@ void server_main()
 		}
 
 		// broadcast avatar states
+		Timestamp tf;
 		for (Connection* conn : g_connections)
 		{
 			if (conn->avatar.broadcasted) continue;
@@ -860,13 +875,29 @@ void server_main()
 			message.yaw = conn->avatar.yaw;
 			for (Connection* conn2 : g_connections)
 			{
-				if (conn2 != conn) *conn2->send_buffer.write<MessageAvatarState>() = message;
+				if (conn2 != conn) conn2->send_buffer.write(message);
 			}
 			conn->avatar.broadcasted = true;
 		}
+		Timestamp tg;
 
-		Timestamp tb;
-		double ft = ta.elapsed_ms(tb);
+		exchange_time_ms   = glm::mix<float>(exchange_time_ms,   tb.elapsed_ms(tc), 0.15f);
+		inbox_time_ms      = glm::mix<float>(inbox_time_ms,      tc.elapsed_ms(td), 0.15f);
+		simulation_time_ms = glm::mix<float>(simulation_time_ms, td.elapsed_ms(te), 0.15f);
+		chunk_time_ms      = glm::mix<float>(chunk_time_ms,      te.elapsed_ms(tf), 0.15f);
+		avatar_time_ms     = glm::mix<float>(avatar_time_ms,     tf.elapsed_ms(tg), 0.15f);
+
+		mss.exchange_time = exchange_time_ms * 10;
+		mss.inbox_time = inbox_time_ms * 10;
+		mss.simulation_time = simulation_time_ms * 10;
+		mss.chunk_time = chunk_time_ms * 10;
+		mss.avatar_time = avatar_time_ms * 10;
+		mss.frame += 1;
+		for (Connection* conn : g_connections) conn->send_buffer.write(mss);
+
+		Timestamp tx;
+		double ft = ta.elapsed_ms(tx);
 		if (ft < 10) usleep(int((10 - ft) * 1000));
+		ta = tx;
 	}
 }

@@ -6,7 +6,8 @@ enum class MessageType : uint8_t
 {
 	Text = 0,
 	AvatarState = 1,
-	ChunkState = 2
+	ChunkState = 2,
+	ServerStatus = 3
 };
 
 struct MessageText
@@ -29,6 +30,19 @@ struct MessageChunkState
 	MessageType type;
 	glm::ivec3 cpos;
 	Block blocks[ChunkSize3];
+} __attribute__((packed));
+
+struct MessageServerStatus
+{
+	MessageType type;
+	uint8_t dummy;
+	// All times in units of 100us
+	uint16_t exchange_time;
+	uint16_t inbox_time;
+	uint16_t simulation_time;
+	uint16_t chunk_time;
+	uint16_t avatar_time;
+	uint32_t frame;
 } __attribute__((packed));
 
 struct SocketBuffer;
